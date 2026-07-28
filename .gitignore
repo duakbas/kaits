@@ -1,0 +1,10 @@
+# NEVER commit — WhatsApp session + message history
+wad/wa-session.db
+wad/wa-session.db.*
+wad/*.db
+wad/*.db-wal
+wad/*.db-shm
+*.backup-*
+# build artifacts
+wad/wad
+.DS_Store

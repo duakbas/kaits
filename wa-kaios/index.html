@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=240, initial-scale=1, user-scalable=no">
+  <title>WhatsApp</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <span>WhatsApp</span>
+      <span id="status" class="status closed">○</span>
+    </header>
+
+    <!-- chat list -->
+    <div id="chatlist" class="screen"></div>
+
+    <!-- thread -->
+    <div id="thread" class="screen" hidden>
+      <div id="thread-title"></div>
+      <div id="thread-msgs"></div>
+      <div id="reply-bar" hidden>
+        <div id="reply-bar-text"></div>
+        <span id="reply-bar-x">✕</span>
+      </div>
+      <input id="composer" type="text" placeholder="Type a message…">
+    </div>
+
+    <!-- action menu overlay (reply / delete / forward) -->
+    <div id="action-menu" hidden>
+      <div class="menu-box">
+        <div class="menu-item" data-action="reply" data-nav>Reply</div>
+        <div class="menu-item" data-action="forward" data-nav>Forward</div>
+        <div class="menu-item" data-action="delete" data-nav>Delete</div>
+        <div class="menu-item" data-action="copy" data-nav>Copy text</div>
+      </div>
+    </div>
+
+    <!-- incoming call -->
+    <div id="call" class="screen" hidden>
+      <div class="label">Incoming call</div>
+      <div class="ring">📞</div>
+      <div id="call-name"></div>
+    </div>
+
+    <!-- forward destination picker -->
+    <div id="fwd-picker" hidden>
+      <div class="menu-box">
+        <div class="fwd-title">Forward to…</div>
+        <div id="fwd-list"></div>
+      </div>
+    </div>
+
+    <!-- softkey bar -->
+    <div id="softkeys">
+      <span id="sk-left"></span>
+      <span id="sk-center"></span>
+      <span id="sk-right"></span>
+    </div>
+  </div>
+
+  <!-- load order matters: config -> wire -> nav -> app -->
+  <script src="js/config.js"></script>
+  <script src="js/wire.js"></script>
+  <script src="js/nav.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
