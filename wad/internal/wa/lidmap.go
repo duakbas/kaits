@@ -317,6 +317,64 @@ func repeatPlaceholders(n int) string {
 	return out
 }
 
+// phoneContacts lists every phone-form address in whatsmeow's contact table.
+// These are the inputs for a LID-mapping backfill: WhatsApp's usync takes a
+// phone JID and answers with that person's LID.
+func (s *sessionStore) phoneContacts() []string {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT their_jid FROM whatsmeow_contacts
+		WHERE their_jid LIKE '%@s.whatsapp.net'`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil && j != "" {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// unmappedPhoneContacts is phoneContacts minus the ones the lid map already
+// knows, so a re-run only asks about what's still missing.
+func (s *sessionStore) unmappedPhoneContacts() []string {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT c.their_jid FROM whatsmeow_contacts c
+		WHERE c.their_jid LIKE '%@s.whatsapp.net'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM whatsmeow_lid_map m
+		    WHERE m.pn = replace(c.their_jid, '@s.whatsapp.net', ''))`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil && j != "" {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// lidMapCount is the number of LID<->phone pairs currently stored.
+func (s *sessionStore) lidMapCount() int {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM whatsmeow_lid_map`).Scan(&n)
+	return n
+}
+
 // logSessionStoreState reports what the direct-table resolver found at startup,
 // so a broken or empty lid map is obvious in the logs rather than showing up
 // later as names silently rendering as raw numbers.

@@ -92,17 +92,48 @@ That merges duplicate `@lid` chats into their phone JID, then re-resolves chat,
 sender and quoted-reply names that are still bare numbers, and exits. It's safe
 to re-run — each pass only touches rows that are still unresolved.
 
-If names are *still* raw numbers after that, the mapping genuinely isn't in
-whatsmeow's tables yet. Ask WhatsApp to re-send the whole contact list first:
+If names are *still* raw numbers — or a contact shows their own WhatsApp name in
+groups while the DM shows the name you saved — the mapping genuinely isn't in
+whatsmeow's tables. Reading the tables can't fix a row that was never written.
+Fetch the missing data:
 
 ```
 WAD_RESYNC=1 go run ./cmd/wad
 ```
 
-This refreshes the same tables a fresh pairing would, **without unlinking** —
-it's the thing to try before re-pairing, which costs you the session and gains
-nothing our own message db doesn't already hold. It runs the repair passes
-afterwards automatically.
+That does three things before the repair passes:
+
+1. asks WhatsApp to re-send the whole contact list (app-state full sync);
+2. **looks up the LID of every contact that doesn't have one** and stores the
+   pairs — this is the step that fixes the "different name in every group"
+   symptom, because those contacts had a saved name on their phone row and no
+   row linking it to the LID their group messages arrive under;
+3. drops the resolver's caches so nothing stale survives.
+
+Step 2 is one server round-trip per batch of 50 contacts, paced to stay well
+under any rate limit, so it takes a little while on a large address book. The
+log reports how many contacts were asked about and how many new mappings landed.
+
+All of this happens **without unlinking**. Re-pairing is not the fix: your
+messages live in our own `.history.db`, which a fresh pairing doesn't
+repopulate — WhatsApp caps how much history a linked device receives, so you'd
+end up with less, not more.
+
+### Checking directly
+
+The tables are plain SQLite, so you can look:
+
+```bash
+# what WhatsApp knows this person by
+sqlite3 wa-session.db "SELECT their_jid, full_name, push_name FROM whatsmeow_contacts WHERE full_name LIKE '%name%';"
+# is their LID linked to their number?
+sqlite3 wa-session.db "SELECT * FROM whatsmeow_lid_map WHERE pn='<their number>';"
+# how many pairs are known at all
+sqlite3 wa-session.db "SELECT COUNT(*) FROM whatsmeow_lid_map;"
+```
+
+A contact with a `full_name` on their `@s.whatsapp.net` row but no `lid_map`
+row is exactly the case step 2 above repairs.
 
 ## Chat actions write to the account
 

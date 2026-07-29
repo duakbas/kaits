@@ -3,7 +3,9 @@
 // backend interface (wire meowcaller into internal/calls to enable them).
 //
 // Run:
-//   WAD_TOKEN=somesecret go run ./cmd/wad
+//
+//	WAD_TOKEN=somesecret go run ./cmd/wad
+//
 // First run prints a QR — scan it from WhatsApp > Linked devices.
 package main
 
@@ -70,6 +72,12 @@ func main() {
 				time.Sleep(10 * time.Second)
 				log.Printf("LID migration: contact resync done")
 			}
+			// Then fill in the LID<->phone pairs. This is the step that fixes a
+			// contact whose saved name is on their phone row while their group
+			// messages arrive under an unlinked LID.
+			log.Printf("LID migration: looking up LIDs for contacts that have none…")
+			queried, learned := waCli.ResyncLIDMappings(ctx)
+			log.Printf("LID migration: asked about %d contacts, learned %d new LID mappings", queried, learned)
 		}
 		seen, merged, unmapped := waCli.RunLIDMigration()
 		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)

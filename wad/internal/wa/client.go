@@ -8,6 +8,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"wad/internal/ws"
 
@@ -776,6 +777,64 @@ func (c *Client) ResyncContacts(ctx context.Context) error {
 	}
 	c.sess.reset()
 	return nil
+}
+
+// ResyncLIDMappings fills in whatsmeow_lid_map for contacts that have no
+// LID<->phone pair yet.
+//
+// This is the fix for the most stubbon symptom: a contact whose saved name sits
+// on their phone row while their group messages arrive under a LID that nothing
+// links back to it. Reading the tables can't help when the connecting row was
+// never written — the mapping has to be fetched.
+//
+// WhatsApp's usync answers a phone JID with that person's LID, and whatsmeow
+// stores the pairs itself as a side effect of GetUserInfo. So we walk the known
+// phone contacts in small batches and let it populate the table.
+//
+// Batched and paced deliberately: usync is a server round-trip per call, and
+// firing thousands at once is exactly the kind of traffic that gets an
+// unofficial client rate-limited (the same mistake the avatar flood made).
+func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned int) {
+	targets := c.sess.unmappedPhoneContacts()
+	if len(targets) == 0 {
+		return 0, 0
+	}
+	before := c.sess.lidMapCount()
+
+	const batchSize = 50
+	for start := 0; start < len(targets); start += batchSize {
+		end := start + batchSize
+		if end > len(targets) {
+			end = len(targets)
+		}
+		jids := make([]types.JID, 0, end-start)
+		for _, s := range targets[start:end] {
+			if j, err := types.ParseJID(s); err == nil {
+				jids = append(jids, j)
+			}
+		}
+		if len(jids) == 0 {
+			continue
+		}
+		bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := c.WA.GetUserInfo(bctx, jids)
+		cancel()
+		queried += len(jids)
+		if err != nil {
+			log.Printf("wa: LID lookup batch %d-%d failed: %v", start, end, err)
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		time.Sleep(400 * time.Millisecond) // stay well under any rate limit
+	}
+
+	c.sess.reset()
+	learned = c.sess.lidMapCount() - before
+	if learned < 0 {
+		learned = 0
+	}
+	return queried, learned
 }
 
 // BackfillQuotedNamesNow re-resolves quoted-message authors stored as raw
