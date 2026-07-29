@@ -206,6 +206,82 @@ func TestBackfillChatNamesSkipsRealNames(t *testing.T) {
 	}
 }
 
+// The case the numeric backfills miss entirely: rows hold a real, plausible
+// name — the one the contact chose — when the user has them saved as something
+// else. Nothing looks broken, so only RefreshNames corrects it.
+func TestRefreshNamesFixesWrongButPlausibleNames(t *testing.T) {
+	h := newHist(t)
+	chat := "41783345556@s.whatsapp.net"
+	group := "g@g.us"
+
+	putMsg(h, chat, "m1", chat, "Sarp Doruk Gerenli", "dm", 100, false)
+	putMsg(h, group, "m2", chat, "Sarp Doruk Gerenli", "in group", 101, false)
+	// A quoted reply stores the author's name, not their JID.
+	h.putMessage(ws.MsgData{
+		MsgID: "m3", ChatJID: group, SenderJID: "other@s.whatsapp.net",
+		SenderName: "Someone", Timestamp: 102, Kind: "text", Text: "re",
+		QuotedID: "m2", QuotedText: "in group", QuotedName: "Sarp Doruk Gerenli",
+	})
+
+	chats, msgs, quotes := h.RefreshNames(func(jid string) string {
+		if jid == chat {
+			return "bulgayrian"
+		}
+		return ""
+	})
+
+	if chats != 1 {
+		t.Errorf("chat titles fixed = %d, want 1", chats)
+	}
+	if msgs != 2 {
+		t.Errorf("sender names fixed = %d, want 2", msgs)
+	}
+	if quotes != 1 {
+		t.Errorf("quoted names fixed = %d, want 1", quotes)
+	}
+
+	if got := h.listChats(); got[0]["name"] != "bulgayrian" && got[1]["name"] != "bulgayrian" {
+		t.Errorf("chat title not updated: %+v", got)
+	}
+	for _, m := range h.history(group, 0, 10) {
+		if m.MsgID == "m2" && m.SenderName != "bulgayrian" {
+			t.Errorf("group sender = %q, want bulgayrian", m.SenderName)
+		}
+		if m.MsgID == "m3" && m.QuotedName != "bulgayrian" {
+			t.Errorf("quoted author = %q, want bulgayrian", m.QuotedName)
+		}
+	}
+}
+
+// RefreshNames must never touch rows it has no authoritative name for —
+// returning "" has to mean "leave it alone", not "blank it".
+func TestRefreshNamesLeavesUnknownContactsAlone(t *testing.T) {
+	h := newHist(t)
+	chat := "999@s.whatsapp.net"
+	putMsg(h, chat, "m1", chat, "Their Own Name", "hi", 100, false)
+
+	chats, msgs, quotes := h.RefreshNames(func(string) string { return "" })
+	if chats != 0 || msgs != 0 || quotes != 0 {
+		t.Errorf("changed %d/%d/%d rows with no resolution, want 0/0/0", chats, msgs, quotes)
+	}
+	if got := h.history(chat, 0, 10)[0].SenderName; got != "Their Own Name" {
+		t.Errorf("sender name = %q, want it untouched", got)
+	}
+}
+
+// Messages the user sent are labelled "You" and must not be rewritten.
+func TestRefreshNamesSkipsOwnMessages(t *testing.T) {
+	h := newHist(t)
+	chat := "41783345556@s.whatsapp.net"
+	putMsg(h, chat, "m1", "me@s.whatsapp.net", "You", "mine", 100, true)
+
+	h.RefreshNames(func(string) string { return "bulgayrian" })
+
+	if got := h.history(chat, 0, 10)[0].SenderName; got != "You" {
+		t.Errorf("own message sender = %q, want You", got)
+	}
+}
+
 func TestRenameChatAndMessagesAppliesSavedName(t *testing.T) {
 	h := newHist(t)
 	chat := "41791234567@s.whatsapp.net"

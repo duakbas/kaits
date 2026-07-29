@@ -302,10 +302,17 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 			&qid, &qtext, &qname); err != nil {
 			continue
 		}
-		d.SenderJID=sender.String; d.SenderName=sname.String; d.Kind=kind.String
-		d.Text=text.String; d.MediaURL=media.String; d.Mime=mime.String
-		d.QuotedID=qid.String; d.QuotedText=qtext.String; d.QuotedName=qname.String
-		d.Timestamp=ts.Int64; d.FromMe = fromme.Int64 == 1
+		d.SenderJID = sender.String
+		d.SenderName = sname.String
+		d.Kind = kind.String
+		d.Text = text.String
+		d.MediaURL = media.String
+		d.Mime = mime.String
+		d.QuotedID = qid.String
+		d.QuotedText = qtext.String
+		d.QuotedName = qname.String
+		d.Timestamp = ts.Int64
+		d.FromMe = fromme.Int64 == 1
 		tmp = append(tmp, d)
 	}
 	for i := len(tmp) - 1; i >= 0; i-- {
@@ -325,8 +332,12 @@ func boolToInt(b bool) int {
 // JID. Accumulates identity knowledge beyond whatsmeow's own map so the same
 // person's many per-group LIDs can be unified by name.
 func (h *histStore) learnLID(lid, name, pn string) {
-	if h == nil || h.db == nil || lid == "" { return }
-	if name == "" && pn == "" { return }
+	if h == nil || h.db == nil || lid == "" {
+		return
+	}
+	if name == "" && pn == "" {
+		return
+	}
 	h.db.Exec(`INSERT INTO lid_identity (lid,name,pn) VALUES (?,?,?)
 		ON CONFLICT(lid) DO UPDATE SET
 			name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE lid_identity.name END,
@@ -338,7 +349,9 @@ func (h *histStore) learnLID(lid, name, pn string) {
 // other LID we've seen carrying a phone JID under the same name (aggressive
 // unification by display name).
 func (h *histStore) resolveLIDName(lid string) string {
-	if h == nil || h.db == nil { return "" }
+	if h == nil || h.db == nil {
+		return ""
+	}
 	var name string
 	h.db.QueryRow(`SELECT name FROM lid_identity WHERE lid=? AND name<>''`, lid).Scan(&name)
 	return name
@@ -347,7 +360,9 @@ func (h *histStore) resolveLIDName(lid string) string {
 // resolvePN returns the phone JID we learned for a LID, "" if we never saw one.
 // This is the last-resort arm of canonicalJID, behind whatsmeow's own tables.
 func (h *histStore) resolvePN(lid string) string {
-	if h == nil || h.db == nil { return "" }
+	if h == nil || h.db == nil {
+		return ""
+	}
 	var pn string
 	h.db.QueryRow(`SELECT pn FROM lid_identity WHERE lid=? AND pn<>''`, lid).Scan(&pn)
 	return pn
@@ -356,18 +371,32 @@ func (h *histStore) resolvePN(lid string) string {
 // BackfillSenderNames rewrites messages whose sendername is a raw number, using
 // the resolver (which consults the learned table). Returns rows fixed.
 func (h *histStore) BackfillSenderNames(resolve func(sender string) string) int {
-	if h == nil || h.db == nil { return 0 }
+	if h == nil || h.db == nil {
+		return 0
+	}
 	rows, err := h.db.Query(`SELECT DISTINCT sender FROM messages WHERE sendername GLOB '[0-9]*' OR sendername=''`)
-	if err != nil { return 0 }
+	if err != nil {
+		return 0
+	}
 	var senders []string
-	for rows.Next() { var sn string; if rows.Scan(&sn)==nil { senders=append(senders,sn) } }
+	for rows.Next() {
+		var sn string
+		if rows.Scan(&sn) == nil {
+			senders = append(senders, sn)
+		}
+	}
 	rows.Close()
-	fixed:=0
+	fixed := 0
 	for _, sn := range senders {
 		name := resolve(sn)
-		if name=="" { continue }
-		res,_ := h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND (sendername GLOB '[0-9]*' OR sendername='')`, name, sn)
-		if res!=nil { n,_:=res.RowsAffected(); fixed+=int(n) }
+		if name == "" {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND (sendername GLOB '[0-9]*' OR sendername='')`, name, sn)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			fixed += int(n)
+		}
 	}
 	return fixed
 }
@@ -375,51 +404,175 @@ func (h *histStore) BackfillSenderNames(resolve func(sender string) string) int 
 // BackfillChatNames rewrites chats whose stored name is missing or is just a
 // raw number, using the resolver. Returns the number of chats renamed.
 func (h *histStore) BackfillChatNames(resolve func(jid string) string) int {
-	if h == nil || h.db == nil { return 0 }
+	if h == nil || h.db == nil {
+		return 0
+	}
 	// GLOB '[0-9]*' catches names that start with a digit — i.e. bare numbers,
 	// which is exactly what an unresolved LID/phone JID leaves behind.
 	rows, err := h.db.Query(`SELECT jid FROM chats WHERE name IS NULL OR name='' OR name GLOB '[0-9]*'`)
-	if err != nil { return 0 }
+	if err != nil {
+		return 0
+	}
 	var jids []string
-	for rows.Next() { var j string; if rows.Scan(&j)==nil { jids=append(jids,j) } }
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil {
+			jids = append(jids, j)
+		}
+	}
 	rows.Close()
 	fixed := 0
 	for _, j := range jids {
 		name := resolve(j)
-		if name=="" || isNumeric(name) { continue }
-		res,_ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, name, j)
-		if res!=nil { n,_:=res.RowsAffected(); fixed+=int(n) }
+		if name == "" || isNumeric(name) {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, name, j)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			fixed += int(n)
+		}
 	}
 	return fixed
+}
+
+// RefreshNames rewrites stored names for anyone the resolver can now name
+// authoritatively — i.e. where the user has a saved nickname or an address-book
+// entry — regardless of what the row currently says.
+//
+// This is deliberately different from the Backfill* passes, which only touch
+// names that look like bare numbers. That test misses the case that actually
+// hurts: a contact stored under the name THEY chose ("Sarp Doruk Gerenli")
+// when the user has them saved as something else ("bulgayrian"). Nothing about
+// that stored value looks broken, so the numeric passes skip it forever.
+//
+// resolve must return only authoritative names (saved nickname / address book)
+// and "" otherwise — never a push name — or this would happily overwrite good
+// data with whatever the contact currently calls themselves.
+//
+// Returns (chats, messages, quotes) rows updated.
+func (h *histStore) RefreshNames(resolve func(jid string) string) (int, int, int) {
+	if h == nil || h.db == nil {
+		return 0, 0, 0
+	}
+	chatsFixed, msgsFixed, quotesFixed := 0, 0, 0
+
+	// --- message senders ---
+	rows, err := h.db.Query(`SELECT DISTINCT sender, sendername FROM messages
+		WHERE fromme=0 AND sender<>''`)
+	if err != nil {
+		return 0, 0, 0
+	}
+	type pair struct{ jid, name string }
+	var senders []pair
+	for rows.Next() {
+		var j, n sql.NullString
+		if rows.Scan(&j, &n) == nil {
+			senders = append(senders, pair{j.String, n.String})
+		}
+	}
+	rows.Close()
+
+	// Old name -> new name, so quoted-reply authors can be corrected too. A
+	// quote stores the author's NAME, not their JID, so a string swap is the
+	// only handle we have on it.
+	renames := map[string]string{}
+	for _, s := range senders {
+		want := resolve(s.jid)
+		if want == "" || want == s.name {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND fromme=0`,
+			want, s.jid)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			msgsFixed += int(n)
+		}
+		if s.name != "" {
+			renames[s.name] = want
+		}
+	}
+
+	for old, want := range renames {
+		res, _ := h.db.Exec(`UPDATE messages SET quoted_name=? WHERE quoted_name=?`, want, old)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			quotesFixed += int(n)
+		}
+	}
+
+	// --- 1:1 chat titles ---
+	crows, err := h.db.Query(`SELECT jid, name FROM chats WHERE COALESCE(is_group,0)=0`)
+	if err != nil {
+		return chatsFixed, msgsFixed, quotesFixed
+	}
+	var chatRows []pair
+	for crows.Next() {
+		var j string
+		var n sql.NullString
+		if crows.Scan(&j, &n) == nil {
+			chatRows = append(chatRows, pair{j, n.String})
+		}
+	}
+	crows.Close()
+	for _, c := range chatRows {
+		want := resolve(c.jid)
+		if want == "" || want == c.name {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, want, c.jid)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			chatsFixed += int(n)
+		}
+	}
+	return chatsFixed, msgsFixed, quotesFixed
 }
 
 // MigrateLIDs rewrites @lid chats/messages to their phone JID (via resolver)
 // and merges duplicate chats. Returns (seen, merged, unmapped).
 func (h *histStore) MigrateLIDs(resolve func(string) (string, bool)) (int, int, int) {
-	if h == nil || h.db == nil { return 0,0,0 }
+	if h == nil || h.db == nil {
+		return 0, 0, 0
+	}
 	rows, err := h.db.Query(`SELECT jid FROM chats WHERE jid LIKE '%@lid'`)
-	if err != nil { return 0,0,0 }
+	if err != nil {
+		return 0, 0, 0
+	}
 	var lids []string
-	for rows.Next() { var j string; if rows.Scan(&j)==nil { lids=append(lids,j) } }
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil {
+			lids = append(lids, j)
+		}
+	}
 	rows.Close()
-	seen,merged,unmapped := 0,0,0
+	seen, merged, unmapped := 0, 0, 0
 	for _, lid := range lids {
 		seen++
 		pn, ok := resolve(lid)
-		if !ok || pn=="" || pn==lid { unmapped++; continue }
-		tx, err := h.db.Begin(); if err!=nil { continue }
+		if !ok || pn == "" || pn == lid {
+			unmapped++
+			continue
+		}
+		tx, err := h.db.Begin()
+		if err != nil {
+			continue
+		}
 		tx.Exec(`UPDATE OR IGNORE messages SET chat=? WHERE chat=?`, pn, lid)
 		tx.Exec(`DELETE FROM messages WHERE chat=?`, lid)
 		var exists int
 		tx.QueryRow(`SELECT COUNT(*) FROM chats WHERE jid=?`, pn).Scan(&exists)
-		if exists>0 {
+		if exists > 0 {
 			tx.Exec(`UPDATE chats SET name=COALESCE(NULLIF((SELECT name FROM chats WHERE jid=?),''),name) WHERE jid=?`, lid, pn)
 			tx.Exec(`UPDATE chats SET last_ts=MAX(last_ts,(SELECT last_ts FROM chats WHERE jid=?)) WHERE jid=?`, lid, pn)
 			tx.Exec(`DELETE FROM chats WHERE jid=?`, lid)
 		} else {
 			tx.Exec(`UPDATE chats SET jid=? WHERE jid=?`, pn, lid)
 		}
-		if tx.Commit()==nil { merged++ }
+		if tx.Commit() == nil {
+			merged++
+		}
 	}
-	return seen,merged,unmapped
+	return seen, merged, unmapped
 }

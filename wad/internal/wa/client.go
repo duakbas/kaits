@@ -794,16 +794,28 @@ func (c *Client) ResyncContacts(ctx context.Context) error {
 // Batched and paced deliberately: usync is a server round-trip per call, and
 // firing thousands at once is exactly the kind of traffic that gets an
 // unofficial client rate-limited (the same mistake the avatar flood made).
-func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned int) {
+// Pacing for the usync walk. WhatsApp rate-limits this endpoint hard: 50-name
+// batches 400ms apart earned a 429 after about 250 contacts. These numbers are
+// the conservative end — a repair pass that takes two minutes and finishes is
+// worth more than a fast one that gets throttled halfway.
+const (
+	lidBatchSize    = 20
+	lidBatchPause   = 2 * time.Second
+	lidRetryBackoff = 30 * time.Second
+	lidMaxRetries   = 3
+)
+
+func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned, failed int) {
 	targets := c.sess.unmappedPhoneContacts()
 	if len(targets) == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	before := c.sess.lidMapCount()
+	log.Printf("wa: %d contacts have no LID mapping; this takes about %s",
+		len(targets), (time.Duration(len(targets)/lidBatchSize+1) * lidBatchPause).Round(time.Second))
 
-	const batchSize = 50
-	for start := 0; start < len(targets); start += batchSize {
-		end := start + batchSize
+	for start := 0; start < len(targets); start += lidBatchSize {
+		end := start + lidBatchSize
 		if end > len(targets) {
 			end = len(targets)
 		}
@@ -816,17 +828,35 @@ func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned int) {
 		if len(jids) == 0 {
 			continue
 		}
-		bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, err := c.WA.GetUserInfo(bctx, jids)
-		cancel()
+
+		// Retry a throttled batch after a real pause. Without this, one 429
+		// cascades: every following batch fires into the same closed window and
+		// fails within milliseconds, which is what happened at 50/400ms.
+		var err error
+		for attempt := 0; attempt <= lidMaxRetries; attempt++ {
+			bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err = c.WA.GetUserInfo(bctx, jids)
+			cancel()
+			if err == nil || !isRateLimited(err) || ctx.Err() != nil {
+				break
+			}
+			wait := lidRetryBackoff * time.Duration(attempt+1)
+			log.Printf("wa: rate-limited at contact %d/%d, waiting %s", start, len(targets), wait)
+			if !sleepCtx(ctx, wait) {
+				break
+			}
+		}
 		queried += len(jids)
 		if err != nil {
-			log.Printf("wa: LID lookup batch %d-%d failed: %v", start, end, err)
+			failed += len(jids)
+			log.Printf("wa: LID lookup %d-%d failed: %v", start, end, err)
 		}
 		if ctx.Err() != nil {
 			break
 		}
-		time.Sleep(400 * time.Millisecond) // stay well under any rate limit
+		if !sleepCtx(ctx, lidBatchPause) {
+			break
+		}
 	}
 
 	c.sess.reset()
@@ -834,7 +864,49 @@ func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned int) {
 	if learned < 0 {
 		learned = 0
 	}
-	return queried, learned
+	return queried, learned, failed
+}
+
+// isRateLimited spots WhatsApp's 429 so a batch can be retried rather than
+// counted as a permanent failure.
+func isRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "429") || strings.Contains(s, "rate-overlimit")
+}
+
+// sleepCtx waits, returning false if the context was cancelled meanwhile.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// RefreshNamesNow rewrites stored chat titles, sender names and quoted-reply
+// authors for everyone the user has saved or has in their address book —
+// including rows that currently hold a perfectly plausible but wrong name (the
+// contact's own WhatsApp name instead of the user's name for them).
+//
+// Only authoritative names are used, so this can never replace a saved name
+// with a push name.
+func (c *Client) RefreshNamesNow() (int, int, int) {
+	return c.hist.RefreshNames(func(jidStr string) string {
+		jid, err := types.ParseJID(jidStr)
+		if err != nil {
+			return ""
+		}
+		if n := c.hist.localContactName(c.canonicalJID(jid).String()); n != "" {
+			return n
+		}
+		return c.sess.addressBookName(jid)
+	})
 }
 
 // BackfillQuotedNamesNow re-resolves quoted-message authors stored as raw

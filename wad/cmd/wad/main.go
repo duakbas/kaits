@@ -76,14 +76,23 @@ func main() {
 			// contact whose saved name is on their phone row while their group
 			// messages arrive under an unlinked LID.
 			log.Printf("LID migration: looking up LIDs for contacts that have none…")
-			queried, learned := waCli.ResyncLIDMappings(ctx)
+			queried, learned, failed := waCli.ResyncLIDMappings(ctx)
 			log.Printf("LID migration: asked about %d contacts, learned %d new LID mappings", queried, learned)
+			if failed > 0 {
+				log.Printf("LID migration: %d contacts could not be looked up (rate limit) — "+
+					"re-run WAD_RESYNC=1 later to pick up the rest", failed)
+			}
 		}
 		seen, merged, unmapped := waCli.RunLIDMigration()
 		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
 		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())
 		log.Printf("LID migration: %d message sender names backfilled", waCli.BackfillSenderNamesNow())
 		log.Printf("LID migration: %d quoted-reply names backfilled", waCli.BackfillQuotedNamesNow())
+		// Finally, correct rows holding a wrong-but-plausible name — the passes
+		// above only touch names that look like bare numbers.
+		rc, rm, rq := waCli.RefreshNamesNow()
+		log.Printf("LID migration: refreshed %d chat titles, %d sender names, %d quoted names "+
+			"to saved/address-book names", rc, rm, rq)
 		return
 	}
 

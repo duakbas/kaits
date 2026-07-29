@@ -317,6 +317,49 @@ func repeatPlaceholders(n int) string {
 	return out
 }
 
+// addressBookName returns ONLY a name the user themselves put on this contact —
+// full_name or first_name, never push_name. It's the authoritative tier: if
+// this returns something, it is what the person should be displayed as.
+//
+// Used by the repair passes, which need to tell "we now know a better name"
+// from "we know some name". Uncached: it runs in one-shot backfills, not on the
+// message path.
+func (s *sessionStore) addressBookName(jid types.JID) string {
+	if s == nil || s.db == nil || jid.User == "" {
+		return ""
+	}
+	ordered := orderedContactJIDs(s, jid.ToNonAD())
+	args := make([]any, len(ordered))
+	for i, j := range ordered {
+		args[i] = j
+	}
+	q := `SELECT their_jid, full_name, first_name FROM whatsmeow_contacts
+	      WHERE their_jid IN (?` + repeatPlaceholders(len(ordered)-1) + `)`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	type row [2]string
+	byJID := map[string]row{}
+	for rows.Next() {
+		var who string
+		var full, first sql.NullString
+		if rows.Scan(&who, &full, &first) != nil {
+			continue
+		}
+		byJID[who] = row{full.String, first.String}
+	}
+	for col := 0; col < 2; col++ {
+		for _, j := range ordered {
+			if v := byJID[j][col]; v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // phoneContacts lists every phone-form address in whatsmeow's contact table.
 // These are the inputs for a LID-mapping backfill: WhatsApp's usync takes a
 // phone JID and answers with that person's LID.
