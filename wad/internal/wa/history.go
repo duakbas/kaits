@@ -68,6 +68,21 @@ func openHistStore(path string) (*histStore, error) {
 		name TEXT,
 		ts   INTEGER
 	);
+	-- Everything needed to re-download one attachment from WhatsApp's CDN.
+	-- Without this, media only worked while the message that carried it was
+	-- still in the in-memory cache, so every photo broke on daemon restart.
+	-- These are decryption keys for blobs already on the CDN, not the account
+	-- session, but they still belong to the user's messages — this file is
+	-- gitignored for the same reason the rest of it is.
+	CREATE TABLE IF NOT EXISTS media_keys (
+		msgid       TEXT PRIMARY KEY,
+		direct_path TEXT,
+		enc_sha256  BLOB,
+		sha256      BLOB,
+		media_key   BLOB,
+		media_type  TEXT,
+		mime        TEXT
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -217,6 +232,63 @@ func (h *histStore) dropChat(jid string) {
 	}
 	h.db.Exec(`DELETE FROM messages WHERE chat=?`, jid)
 	h.db.Exec(`DELETE FROM chats WHERE jid=?`, jid)
+}
+
+// mediaRef is the persisted form of a downloadable attachment.
+type mediaRef struct {
+	directPath string
+	encSHA256  []byte
+	sha256     []byte
+	mediaKey   []byte
+	mediaType  string
+	mime       string
+}
+
+// putMediaRef stores the keys for one attachment so it stays fetchable across
+// restarts.
+func (h *histStore) putMediaRef(msgid string, r mediaRef) {
+	if h == nil || h.db == nil || msgid == "" || r.directPath == "" {
+		return
+	}
+	h.db.Exec(`INSERT INTO media_keys
+		(msgid, direct_path, enc_sha256, sha256, media_key, media_type, mime)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(msgid) DO UPDATE SET
+			direct_path=excluded.direct_path, enc_sha256=excluded.enc_sha256,
+			sha256=excluded.sha256, media_key=excluded.media_key,
+			media_type=excluded.media_type, mime=excluded.mime`,
+		msgid, r.directPath, r.encSHA256, r.sha256, r.mediaKey, r.mediaType, r.mime)
+}
+
+// mediaRefFor loads an attachment's stored keys.
+func (h *histStore) mediaRefFor(msgid string) (mediaRef, bool) {
+	if h == nil || h.db == nil || msgid == "" {
+		return mediaRef{}, false
+	}
+	var r mediaRef
+	var dp, mt, mime sql.NullString
+	err := h.db.QueryRow(`SELECT direct_path, enc_sha256, sha256, media_key, media_type, mime
+		FROM media_keys WHERE msgid=?`, msgid).
+		Scan(&dp, &r.encSHA256, &r.sha256, &r.mediaKey, &mt, &mime)
+	if err != nil || dp.String == "" {
+		return mediaRef{}, false
+	}
+	r.directPath, r.mediaType, r.mime = dp.String, mt.String, mime.String
+	return r, true
+}
+
+// mimeForMessage returns a stored message's mime type, for serving media after
+// the in-memory table is gone.
+func (h *histStore) mimeForMessage(msgid string) string {
+	if h == nil || h.db == nil || msgid == "" {
+		return ""
+	}
+	var mime sql.NullString
+	if h.db.QueryRow(`SELECT mime FROM media_keys WHERE msgid=?`, msgid).Scan(&mime) == nil && mime.String != "" {
+		return mime.String
+	}
+	h.db.QueryRow(`SELECT mime FROM messages WHERE msgid=? LIMIT 1`, msgid).Scan(&mime)
+	return mime.String
 }
 
 // localContactName returns the nickname the user saved for a JID, or "".
@@ -545,6 +617,88 @@ func (h *histStore) RefreshNames(resolve func(jid string) string) (int, int, int
 			continue
 		}
 		res, _ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, want, c.jid)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			chatsFixed += int(n)
+		}
+	}
+	return chatsFixed, msgsFixed, quotesFixed
+}
+
+// markUnsavedNames prefixes "~" onto stored names belonging to people the user
+// hasn't saved.
+//
+// RefreshNames can't do this: it only ever writes authoritative names, and by
+// definition there is none for an unsaved contact — so rows holding a push name
+// ("David Cannone") were left unmarked. This pass changes no name, it only adds
+// the marker, and only for people isSaved confirms are unsaved. Rows already
+// marked, empty, or still bare numbers are skipped.
+//
+// Returns (chats, messages, quotes) rows updated.
+func (h *histStore) markUnsavedNames(isSaved func(jid string) bool) (int, int, int) {
+	if h == nil || h.db == nil {
+		return 0, 0, 0
+	}
+	chatsFixed, msgsFixed, quotesFixed := 0, 0, 0
+
+	rows, err := h.db.Query(`SELECT DISTINCT sender, sendername FROM messages
+		WHERE fromme=0 AND sender<>'' AND sendername<>'' AND sendername NOT LIKE '~%'`)
+	if err != nil {
+		return 0, 0, 0
+	}
+	type pair struct{ jid, name string }
+	var senders []pair
+	for rows.Next() {
+		var j, n sql.NullString
+		if rows.Scan(&j, &n) == nil {
+			senders = append(senders, pair{j.String, n.String})
+		}
+	}
+	rows.Close()
+
+	renames := map[string]string{}
+	for _, s := range senders {
+		// A bare number isn't a name; leave it for the name passes to resolve.
+		if isNumeric(s.name) || isSaved(s.jid) {
+			continue
+		}
+		want := "~" + s.name
+		res, _ := h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND fromme=0
+			AND sendername=?`, want, s.jid, s.name)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			msgsFixed += int(n)
+		}
+		renames[s.name] = want
+	}
+
+	for old, want := range renames {
+		res, _ := h.db.Exec(`UPDATE messages SET quoted_name=? WHERE quoted_name=?`, want, old)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			quotesFixed += int(n)
+		}
+	}
+
+	crows, err := h.db.Query(`SELECT jid, name FROM chats
+		WHERE COALESCE(is_group,0)=0 AND name<>'' AND name NOT LIKE '~%'`)
+	if err != nil {
+		return chatsFixed, msgsFixed, quotesFixed
+	}
+	var chatRows []pair
+	for crows.Next() {
+		var j string
+		var n sql.NullString
+		if crows.Scan(&j, &n) == nil {
+			chatRows = append(chatRows, pair{j, n.String})
+		}
+	}
+	crows.Close()
+	for _, c := range chatRows {
+		if isNumeric(c.name) || isSaved(c.jid) {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, "~"+c.name, c.jid)
 		if res != nil {
 			n, _ := res.RowsAffected()
 			chatsFixed += int(n)

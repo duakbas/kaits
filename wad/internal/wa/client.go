@@ -368,19 +368,35 @@ func (c *Client) rememberReply(id string, msg *waE2E.Message, sender, chat types
 	c.replyCtx[id] = replyContext{msg: msg, sender: sender, chat: chat}
 }
 
-// cacheMedia stores the downloadable part + its mime for later /media/ fetch.
+// cacheMedia stores the downloadable part + its mime for later /media/ fetch,
+// and persists the CDN keys so the attachment survives a restart.
 func (c *Client) cacheMedia(id string, dl whatsmeow.DownloadableMessage, mime string) {
 	c.media.put(id, dl)
 	c.mimeMu.Lock()
 	c.mediaMime[id] = mime
 	c.mimeMu.Unlock()
+
+	c.hist.putMediaRef(id, mediaRef{
+		directPath: dl.GetDirectPath(),
+		encSHA256:  dl.GetFileEncSHA256(),
+		sha256:     dl.GetFileSHA256(),
+		mediaKey:   dl.GetMediaKey(),
+		mediaType:  string(whatsmeow.GetMediaType(dl)),
+		mime:       mime,
+	})
 }
 
 // mimeFor returns the cached mime type for a media id.
+// MimeFor returns the content type for a media id, falling back to what we
+// stored — the in-memory table doesn't survive a restart either.
 func (c *Client) MimeFor(id string) string {
 	c.mimeMu.RLock()
-	defer c.mimeMu.RUnlock()
-	return c.mediaMime[id]
+	mime := c.mediaMime[id]
+	c.mimeMu.RUnlock()
+	if mime != "" {
+		return mime
+	}
+	return c.hist.mimeForMessage(id)
 }
 
 // DownloadMedia is the exported entry the HTTP handler uses.
@@ -443,9 +459,13 @@ func (c *Client) canonicalJID(jid types.JID) types.JID {
 // whatsmeow_contacts lookup started checking the phone<->LID counterpart — a
 // LID-addressed sender used to miss the saved name entirely, which is why the
 // event push name used to be consulted first.
+// It marks names the contact chose for themselves with a leading "~". Every
+// caller that renders a name to the user goes through here, so the marker is
+// consistent across the chat list, thread headers, group sender labels, quoted
+// authors, mentions and the info screen. Use displayNameSourced directly only
+// when you need the unmarked name plus its provenance.
 func (c *Client) displayName(jid types.JID, pushName string) string {
-	n, _ := c.displayNameSourced(jid, pushName)
-	return n
+	return tildeUnsaved(c.displayNameSourced(jid, pushName))
 }
 
 // displayNameSourced is displayName plus where the name came from. saved=true
@@ -519,8 +539,8 @@ func (c *Client) senderName(v *events.Message) string {
 	if v.Info.IsFromMe {
 		return "You"
 	}
-	if n, saved := c.displayNameSourced(v.Info.Sender, v.Info.PushName); n != "" {
-		return tildeUnsaved(n, saved)
+	if n := c.displayName(v.Info.Sender, v.Info.PushName); n != "" {
+		return n
 	}
 	return c.canonicalJID(v.Info.Sender).User
 }
@@ -585,8 +605,7 @@ func (c *Client) resolveMentions(text string, ci *waE2E.ContextInfo) string {
 			continue
 		}
 		canon := c.canonicalJID(jid)
-		name, saved := c.displayNameSourced(jid, "")
-		name = tildeUnsaved(name, saved)
+		name := c.displayName(jid, "")
 		if name == "" {
 			// Nobody knows them. Still better to show a phone number than a raw
 			// LID, which is an opaque internal id — but only if the LID actually
@@ -624,9 +643,8 @@ var mentionPattern = regexp.MustCompile(`@(\d{6,})`)
 func (c *Client) ResolveStoredMentions() int {
 	return c.hist.rewriteMessageText(mentionPattern, func(digits string) string {
 		for _, server := range []string{types.HiddenUserServer, types.DefaultUserServer} {
-			jid := types.JID{User: digits, Server: server}
-			if n, saved := c.displayNameSourced(jid, ""); n != "" {
-				return "@" + tildeUnsaved(n, saved)
+			if n := c.displayName(types.JID{User: digits, Server: server}, ""); n != "" {
+				return "@" + n
 			}
 		}
 		return "" // unknown — leave the original text untouched
@@ -735,7 +753,21 @@ func (c *Client) BackfillSenderNamesNow() int {
 		if err != nil {
 			return ""
 		}
-		return tildeUnsaved(c.displayNameSourced(jid, ""))
+		return c.displayName(jid, "")
+	})
+}
+
+// MarkUnsavedNamesNow adds the "~" marker to stored names for people the user
+// hasn't saved — the rows RefreshNames leaves alone, because there's no
+// authoritative name to replace them with.
+func (c *Client) MarkUnsavedNamesNow() (int, int, int) {
+	return c.hist.markUnsavedNames(func(jidStr string) bool {
+		jid, err := types.ParseJID(jidStr)
+		if err != nil {
+			return true // unparseable — don't touch it
+		}
+		_, saved := c.displayNameSourced(jid, "")
+		return saved
 	})
 }
 
@@ -754,7 +786,7 @@ func (c *Client) BackfillChatNamesNow() int {
 		if err != nil || jid.Server == types.GroupServer {
 			return ""
 		}
-		return tildeUnsaved(c.displayNameSourced(jid, ""))
+		return c.displayName(jid, "")
 	})
 }
 
@@ -1060,8 +1092,8 @@ func (c *Client) BackfillQuotedNamesNow() int {
 	return c.hist.BackfillQuotedNames(func(num string) string {
 		// Stored quoted names are bare user ids; try both address forms.
 		for _, server := range []string{types.HiddenUserServer, types.DefaultUserServer} {
-			if n, saved := c.displayNameSourced(types.JID{User: num, Server: server}, ""); n != "" {
-				return tildeUnsaved(n, saved)
+			if n := c.displayName(types.JID{User: num, Server: server}, ""); n != "" {
+				return n
 			}
 		}
 		return ""

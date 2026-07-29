@@ -484,3 +484,160 @@ func TestOpenHistStoreUpgradesOldSchema(t *testing.T) {
 		t.Error("archived flag did not persist after in-place upgrade")
 	}
 }
+
+// Unsaved people's stored names must gain the "~" marker. RefreshNames can't do
+// this — it only writes authoritative names, and an unsaved contact has none.
+func TestMarkUnsavedNamesAddsTilde(t *testing.T) {
+	h := newHist(t)
+	unsaved := "111@s.whatsapp.net"
+	saved := "222@s.whatsapp.net"
+	group := "g@g.us"
+
+	putMsg(h, group, "m1", unsaved, "David Cannone", "hi", 100, false)
+	putMsg(h, group, "m2", saved, "bulgayrian", "yo", 101, false)
+	putMsg(h, unsaved, "m3", unsaved, "David Cannone", "dm", 102, false)
+	h.putMessage(ws.MsgData{
+		MsgID: "m4", ChatJID: group, SenderJID: saved, SenderName: "bulgayrian",
+		Timestamp: 103, Kind: "text", Text: "re", QuotedID: "m1",
+		QuotedText: "hi", QuotedName: "David Cannone",
+	})
+
+	chats, msgs, quotes := h.markUnsavedNames(func(jid string) bool {
+		return jid == saved
+	})
+
+	if msgs != 2 {
+		t.Errorf("sender names marked = %d, want 2", msgs)
+	}
+	if quotes != 1 {
+		t.Errorf("quoted names marked = %d, want 1", quotes)
+	}
+	if chats != 1 {
+		t.Errorf("chat titles marked = %d, want 1 (the unsaved DM)", chats)
+	}
+
+	for _, m := range h.history(group, 0, 10) {
+		switch m.MsgID {
+		case "m1":
+			if m.SenderName != "~David Cannone" {
+				t.Errorf("unsaved sender = %q, want ~David Cannone", m.SenderName)
+			}
+		case "m2":
+			if m.SenderName != "bulgayrian" {
+				t.Errorf("saved sender = %q, must stay unmarked", m.SenderName)
+			}
+		case "m4":
+			if m.QuotedName != "~David Cannone" {
+				t.Errorf("quoted author = %q, want ~David Cannone", m.QuotedName)
+			}
+		}
+	}
+}
+
+// Running twice must not produce "~~Name".
+func TestMarkUnsavedNamesIsIdempotent(t *testing.T) {
+	h := newHist(t)
+	jid := "111@s.whatsapp.net"
+	putMsg(h, "g@g.us", "m1", jid, "David Cannone", "hi", 100, false)
+
+	never := func(string) bool { return false }
+	h.markUnsavedNames(never)
+	_, msgs, _ := h.markUnsavedNames(never)
+	if msgs != 0 {
+		t.Errorf("second pass changed %d rows, want 0", msgs)
+	}
+	if got := h.history("g@g.us", 0, 10)[0].SenderName; got != "~David Cannone" {
+		t.Errorf("name = %q, want a single tilde", got)
+	}
+}
+
+// Bare numbers are not names — the marker must not be stuck on them.
+func TestMarkUnsavedNamesSkipsBareNumbers(t *testing.T) {
+	h := newHist(t)
+	jid := "111@s.whatsapp.net"
+	putMsg(h, "g@g.us", "m1", jid, "104570072096833", "hi", 100, false)
+
+	if _, msgs, _ := h.markUnsavedNames(func(string) bool { return false }); msgs != 0 {
+		t.Errorf("marked %d numeric names, want 0", msgs)
+	}
+	if got := h.history("g@g.us", 0, 10)[0].SenderName; got != "104570072096833" {
+		t.Errorf("name = %q, want it untouched", got)
+	}
+}
+
+// Media used to break on every restart because the only record of an attachment
+// was an in-memory cache. The CDN keys must persist and round-trip.
+func TestMediaRefRoundTrip(t *testing.T) {
+	h := newHist(t)
+	ref := mediaRef{
+		directPath: "/v/t62.7118-24/foo.enc",
+		encSHA256:  []byte{1, 2, 3},
+		sha256:     []byte{4, 5, 6},
+		mediaKey:   []byte{7, 8, 9},
+		mediaType:  "WhatsApp Image Keys",
+		mime:       "image/jpeg",
+	}
+	h.putMediaRef("MSG1", ref)
+
+	got, ok := h.mediaRefFor("MSG1")
+	if !ok {
+		t.Fatal("stored media ref not found")
+	}
+	if got.directPath != ref.directPath || got.mediaType != ref.mediaType || got.mime != ref.mime {
+		t.Errorf("scalars round-tripped wrong: %+v", got)
+	}
+	for _, p := range [][2][]byte{
+		{got.encSHA256, ref.encSHA256}, {got.sha256, ref.sha256}, {got.mediaKey, ref.mediaKey},
+	} {
+		if string(p[0]) != string(p[1]) {
+			t.Errorf("blob round-tripped wrong: %v vs %v", p[0], p[1])
+		}
+	}
+
+	if _, ok := h.mediaRefFor("NOPE"); ok {
+		t.Error("unknown msgid reported as found")
+	}
+}
+
+// A ref with no direct path can't be downloaded from, so it must not be stored
+// and must not be reported as usable.
+func TestMediaRefRejectsEmptyDirectPath(t *testing.T) {
+	h := newHist(t)
+	h.putMediaRef("MSG1", mediaRef{mediaType: "WhatsApp Image Keys"})
+	if _, ok := h.mediaRefFor("MSG1"); ok {
+		t.Error("ref with no direct path should not be usable")
+	}
+}
+
+// Re-receiving the same message (history sync overlapping live traffic) must
+// update the keys, not fail on the primary key.
+func TestPutMediaRefUpserts(t *testing.T) {
+	h := newHist(t)
+	h.putMediaRef("MSG1", mediaRef{directPath: "/old", mediaType: "WhatsApp Image Keys"})
+	h.putMediaRef("MSG1", mediaRef{directPath: "/new", mediaType: "WhatsApp Video Keys"})
+	got, ok := h.mediaRefFor("MSG1")
+	if !ok || got.directPath != "/new" || got.mediaType != "WhatsApp Video Keys" {
+		t.Errorf("upsert failed: %+v ok=%v", got, ok)
+	}
+}
+
+// Serving media needs a content type after a restart, when the in-memory mime
+// table is gone. Prefer the media_keys row, fall back to the message row.
+func TestMimeForMessageFallsBackToMessageRow(t *testing.T) {
+	h := newHist(t)
+	h.putMessage(ws.MsgData{
+		MsgID: "MSG1", ChatJID: "c@s.whatsapp.net", Timestamp: 1,
+		Kind: "image", Mime: "image/png", MediaURL: "/media/MSG1",
+	})
+	if got := h.mimeForMessage("MSG1"); got != "image/png" {
+		t.Errorf("mime from message row = %q, want image/png", got)
+	}
+	// The media_keys row wins when present.
+	h.putMediaRef("MSG1", mediaRef{directPath: "/p", mime: "image/webp"})
+	if got := h.mimeForMessage("MSG1"); got != "image/webp" {
+		t.Errorf("mime = %q, want the media_keys value image/webp", got)
+	}
+	if got := h.mimeForMessage("NOPE"); got != "" {
+		t.Errorf("unknown id mime = %q, want empty", got)
+	}
+}

@@ -758,9 +758,11 @@
     else sub.textContent = p.members ? p.members + " participants" : "Group";
     elProfileBody.appendChild(sub);
 
-    // If we're showing a nickname, note what they call themselves, so the two
-    // names aren't confusable.
-    if (!p.group && p.pushname && p.pushname !== p.name) {
+    // If we're showing a name the user chose, note what the contact calls
+    // themselves underneath. Compare with the tilde stripped: for an unsaved
+    // person the heading IS their own name, already marked, and repeating it
+    // here would just print the same string twice.
+    if (!p.group && p.pushname && p.pushname !== (p.name || "").replace(/^~/, "")) {
       var pn = document.createElement("div");
       pn.className = "profile-sub dim";
       pn.textContent = "~" + p.pushname + (p.business ? " (business)" : "");

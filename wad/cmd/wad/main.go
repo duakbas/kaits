@@ -93,6 +93,11 @@ func main() {
 		rc, rm, rq := waCli.RefreshNamesNow()
 		log.Printf("LID migration: refreshed %d chat titles, %d sender names, %d quoted names "+
 			"to saved/address-book names", rc, rm, rq)
+		// Then mark everyone the user hasn't saved with "~". Must come after the
+		// refresh above, which is what un-marks anyone who IS saved.
+		mc, mm, mq := waCli.MarkUnsavedNamesNow()
+		log.Printf("LID migration: marked %d chat titles, %d sender names, %d quoted names "+
+			"as unsaved (~)", mc, mm, mq)
 		// Mentions are baked into the stored message body at receive time, so
 		// ones that failed to resolve then are frozen as raw ids until now.
 		log.Printf("LID migration: %d messages had @mentions resolved", waCli.ResolveStoredMentions())
