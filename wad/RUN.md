@@ -88,9 +88,21 @@ To repair them in place, run once:
 WAD_MIGRATE_LIDS=1 go run ./cmd/wad
 ```
 
-That merges duplicate `@lid` chats into their phone JID, then re-resolves chat
-and sender names that are still bare numbers, and exits. It's safe to re-run —
-each pass only touches rows that are still unresolved.
+That merges duplicate `@lid` chats into their phone JID, then re-resolves chat,
+sender and quoted-reply names that are still bare numbers, and exits. It's safe
+to re-run — each pass only touches rows that are still unresolved.
+
+If names are *still* raw numbers after that, the mapping genuinely isn't in
+whatsmeow's tables yet. Ask WhatsApp to re-send the whole contact list first:
+
+```
+WAD_RESYNC=1 go run ./cmd/wad
+```
+
+This refreshes the same tables a fresh pairing would, **without unlinking** —
+it's the thing to try before re-pairing, which costs you the session and gains
+nothing our own message db doesn't already hold. It runs the repair passes
+afterwards automatically.
 
 ## Chat actions write to the account
 
@@ -128,3 +140,4 @@ address book syncs one way, from a phone *into* the account:
 | `WAD_ADDR`  | `:8080`    | listen address |
 | `WAD_DB`    | `wa-session.db` | session store path |
 | `WAD_MIGRATE_LIDS` | unset | `1` = run the one-shot LID/name repair, then exit |
+| `WAD_RESYNC` | unset | `1` = full contact resync, then the repair, then exit |

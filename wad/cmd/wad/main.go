@@ -50,11 +50,27 @@ func main() {
 	// the current resolver, then exits: merge duplicate @lid chats into their
 	// phone JID, then re-resolve chat and sender names that are still raw
 	// numbers. Safe to re-run — each pass only touches rows still unresolved.
-	if os.Getenv("WAD_MIGRATE_LIDS") == "1" {
+	// WAD_RESYNC=1 additionally asks WhatsApp to re-send the whole contact list
+	// before repairing, which is what to reach for when stored history still
+	// shows raw numbers. It refreshes the same tables a fresh pairing would,
+	// without unlinking the session.
+	resync := os.Getenv("WAD_RESYNC") == "1"
+	if os.Getenv("WAD_MIGRATE_LIDS") == "1" || resync {
 		if err := waCli.Connect(ctx); err != nil {
 			log.Fatalf("connect for migration: %v", err)
 		}
 		time.Sleep(3 * time.Second) // let the LID store settle
+		if resync {
+			log.Printf("LID migration: requesting a full contact resync…")
+			if err := waCli.ResyncContacts(ctx); err != nil {
+				log.Printf("LID migration: contact resync failed (%v) — repairing with what we have", err)
+			} else {
+				// The sync arrives as app-state patches; give them a moment to
+				// land in whatsmeow's tables before we read them back.
+				time.Sleep(10 * time.Second)
+				log.Printf("LID migration: contact resync done")
+			}
+		}
 		seen, merged, unmapped := waCli.RunLIDMigration()
 		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
 		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())

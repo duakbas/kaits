@@ -12,6 +12,7 @@ import (
 	"wad/internal/ws"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -759,6 +760,22 @@ func (c *Client) DirectJIDFor(srcMsgID string) (string, error) {
 		return "", fmt.Errorf("no direct address for the sender of %s", srcMsgID)
 	}
 	return dest.String(), nil
+}
+
+// ResyncContacts forces WhatsApp to re-send the account's whole contact list,
+// refilling whatsmeow_contacts (and, as traffic resolves, whatsmeow_lid_map).
+//
+// This is the cheap alternative to unlinking and re-pairing when stored history
+// still shows raw numbers: it refreshes the same tables a fresh pairing would,
+// without touching the session, and our own message db is never involved.
+// Afterwards the resolver's caches are dropped so previously-missing names get
+// looked up again rather than waiting out their negative-cache TTL.
+func (c *Client) ResyncContacts(ctx context.Context) error {
+	if err := c.WA.FetchAppState(ctx, appstate.WAPatchCriticalUnblockLow, true, false); err != nil {
+		return fmt.Errorf("contact resync: %w", err)
+	}
+	c.sess.reset()
+	return nil
 }
 
 // BackfillQuotedNamesNow re-resolves quoted-message authors stored as raw

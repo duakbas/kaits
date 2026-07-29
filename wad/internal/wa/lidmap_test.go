@@ -178,6 +178,61 @@ func TestContactNamePrefersSavedNameAcrossRows(t *testing.T) {
 	}
 }
 
+// When BOTH rows carry a full_name — your saved nickname on the phone row and
+// the contact's own profile name on the LID row — the saved one must win. Row
+// order from sqlite is arbitrary, so without an explicit address ordering the
+// same person renders under different names in different groups.
+func TestContactNamePrefersPhoneRowWhenBothHaveFullName(t *testing.T) {
+	path := newFakeSession(t, true)
+	mustExec(t, path, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES (?,?)`,
+		"104570072096833", "905322873800")
+	// Inserted LID-row first on purpose: it is what a naive query returns first.
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "104570072096833@lid", "Sarp Doruk Gerenli")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "905322873800@s.whatsapp.net", "bulgayrian")
+
+	s, err := openSessionStore(path)
+	if err != nil {
+		t.Fatalf("openSessionStore: %v", err)
+	}
+	defer s.close()
+
+	// Reached from the group (a LID) and from the DM (a phone JID), the answer
+	// has to be the same — that consistency is the whole point.
+	lid := types.JID{User: "104570072096833", Server: types.HiddenUserServer}
+	if got := s.contactName(lid); got != "bulgayrian" {
+		t.Errorf("contactName(lid) = %q, want saved name %q", got, "bulgayrian")
+	}
+	s.reset()
+	pn := types.JID{User: "905322873800", Server: types.DefaultUserServer}
+	if got := s.contactName(pn); got != "bulgayrian" {
+		t.Errorf("contactName(pn) = %q, want saved name %q", got, "bulgayrian")
+	}
+}
+
+// The phone row wins only within a column: a LID-row full_name still beats a
+// phone-row push_name, because "you saved it" outranks "they named themselves".
+func TestContactNameColumnBeatsAddressOrder(t *testing.T) {
+	path := newFakeSession(t, true)
+	mustExec(t, path, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES (?,?)`, "555", "9051112233")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, push_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "9051112233@s.whatsapp.net", "selfnamed")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "555@lid", "Saved Name")
+
+	s, err := openSessionStore(path)
+	if err != nil {
+		t.Fatalf("openSessionStore: %v", err)
+	}
+	defer s.close()
+
+	lid := types.JID{User: "555", Server: types.HiddenUserServer}
+	if got := s.contactName(lid); got != "Saved Name" {
+		t.Errorf("contactName = %q, want %q (full_name outranks push_name)", got, "Saved Name")
+	}
+}
+
 func TestContactNameFallsBackThroughPreferenceOrder(t *testing.T) {
 	path := newFakeSession(t, true)
 	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, push_name, business_name) VALUES (?,?,?,?)`,
