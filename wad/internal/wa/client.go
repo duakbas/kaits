@@ -593,12 +593,30 @@ func (c *Client) ForwardMessage(ctx context.Context, srcMsgID, destChatJID strin
 		return "", err
 	}
 	c.replyMu.Lock()
-	rc, ok := c.replyCtx[srcMsgID]
+	rc, cached := c.replyCtx[srcMsgID]
 	c.replyMu.Unlock()
-	if !ok || rc.msg == nil {
-		return "", fmt.Errorf("message %s not in cache; cannot forward", srcMsgID)
+	if cached && rc.msg != nil {
+		// Best case: the original protobuf, so media forwards by reference
+		// without re-uploading.
+		resp, err := c.WA.SendMessage(ctx, dest, rc.msg)
+		if err != nil {
+			return "", err
+		}
+		return resp.ID, nil
 	}
-	resp, err := c.WA.SendMessage(ctx, dest, rc.msg)
+
+	// Not seen live this session. Text can be re-sent from what we stored;
+	// media can't, because forwarding it needs the encryption keys that only
+	// live in the original message.
+	_, _, kind, text, _, found := c.hist.messageByID(srcMsgID)
+	if !found {
+		return "", fmt.Errorf("message %s is not stored; cannot forward", srcMsgID)
+	}
+	if kind != "text" || text == "" {
+		return "", fmt.Errorf("can only forward %s from this session — reopen the chat "+
+			"and try while the message is fresh", kind)
+	}
+	resp, err := c.WA.SendMessage(ctx, dest, textMsg(text))
 	if err != nil {
 		return "", err
 	}
@@ -729,17 +747,15 @@ func (c *Client) SendReply(ctx context.Context, chatJID, text, quotedID string) 
 // to know the person's DM JID — which it often can't, since group senders
 // arrive as per-group LIDs.
 func (c *Client) SendPrivateReply(ctx context.Context, srcMsgID, text string) (string, string, error) {
-	c.replyMu.Lock()
-	rc, ok := c.replyCtx[srcMsgID]
-	c.replyMu.Unlock()
-	if !ok || rc.msg == nil {
-		return "", "", fmt.Errorf("message %s not in cache; cannot reply privately", srcMsgID)
+	sender, chat, quoted, ok := c.lookupMessage(srcMsgID)
+	if !ok {
+		return "", "", fmt.Errorf("message %s is not stored; cannot reply privately", srcMsgID)
 	}
-	dest := c.canonicalJID(rc.sender)
+	dest := c.canonicalJID(sender)
 	if dest.IsEmpty() || dest.Server == types.GroupServer {
 		return "", "", fmt.Errorf("no direct address for the sender of %s", srcMsgID)
 	}
-	msg := privateReplyMsg(text, srcMsgID, dest, rc.chat, rc.msg)
+	msg := privateReplyMsg(text, srcMsgID, dest, chat, quoted)
 	resp, err := c.WA.SendMessage(ctx, dest, msg)
 	if err != nil {
 		return "", "", err
@@ -750,17 +766,51 @@ func (c *Client) SendPrivateReply(ctx context.Context, srcMsgID, text string) (s
 // DirectJIDFor resolves the DM address for whoever sent a message, so the app
 // can open (or create) a 1:1 chat from a group bubble.
 func (c *Client) DirectJIDFor(srcMsgID string) (string, error) {
-	c.replyMu.Lock()
-	rc, ok := c.replyCtx[srcMsgID]
-	c.replyMu.Unlock()
+	sender, _, _, ok := c.lookupMessage(srcMsgID)
 	if !ok {
-		return "", fmt.Errorf("message %s not in cache", srcMsgID)
+		return "", fmt.Errorf("message %s is not stored", srcMsgID)
 	}
-	dest := c.canonicalJID(rc.sender)
+	dest := c.canonicalJID(sender)
 	if dest.IsEmpty() || dest.Server == types.GroupServer {
 		return "", fmt.Errorf("no direct address for the sender of %s", srcMsgID)
 	}
 	return dest.String(), nil
+}
+
+// lookupMessage resolves a message id to its sender, its chat, and something
+// usable as a quote.
+//
+// It prefers the in-memory reply cache, which holds the real protobuf and so
+// makes the richest quote. That cache only covers messages seen live this
+// session and is capped at 500, so it misses anything read back from stored
+// history and everything at all after a restart — which is most of what the
+// user is actually looking at. So it falls back to the message table and
+// rebuilds a text-only quote from the stored body. A reply is valid on the
+// stanza id and participant alone; the quoted copy is a rendering nicety.
+func (c *Client) lookupMessage(msgID string) (sender, chat types.JID, quoted *waE2E.Message, ok bool) {
+	c.replyMu.Lock()
+	rc, cached := c.replyCtx[msgID]
+	c.replyMu.Unlock()
+	if cached && rc.msg != nil {
+		return rc.sender, rc.chat, rc.msg, true
+	}
+
+	chatStr, senderStr, kind, text, _, found := c.hist.messageByID(msgID)
+	if !found || senderStr == "" {
+		return types.JID{}, types.JID{}, nil, false
+	}
+	sender, err := types.ParseJID(senderStr)
+	if err != nil {
+		return types.JID{}, types.JID{}, nil, false
+	}
+	chat, err = types.ParseJID(chatStr)
+	if err != nil {
+		chat = types.JID{}
+	}
+	if kind == "text" && text != "" {
+		quoted = textMsg(text)
+	}
+	return sender, chat, quoted, true
 }
 
 // ResyncContacts forces WhatsApp to re-send the account's whole contact list,

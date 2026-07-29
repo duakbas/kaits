@@ -282,6 +282,44 @@ func TestRefreshNamesSkipsOwnMessages(t *testing.T) {
 	}
 }
 
+// Reply-privately, DM-the-sender and view-profile all resolve a person from a
+// message id. They used to read only an in-memory cache of live messages, so
+// they failed on anything scrolled to out of stored history or on anything at
+// all after a restart. The message table has to be able to answer instead.
+func TestMessageByIDFindsStoredMessages(t *testing.T) {
+	h := newHist(t)
+	group := "120363422154151519@g.us"
+	sender := "41783345556@s.whatsapp.net"
+	putMsg(h, group, "4A26B05FDFEFC345EA2B", sender, "bulgayrian", "ayagin top tutar mi", 100, false)
+
+	chat, snd, kind, text, fromMe, ok := h.messageByID("4A26B05FDFEFC345EA2B")
+	if !ok {
+		t.Fatal("stored message not found by id")
+	}
+	if chat != group {
+		t.Errorf("chat = %q, want %q", chat, group)
+	}
+	if snd != sender {
+		t.Errorf("sender = %q, want %q", snd, sender)
+	}
+	if kind != "text" || text != "ayagin top tutar mi" {
+		t.Errorf("kind/text = %q/%q", kind, text)
+	}
+	if fromMe {
+		t.Error("fromMe should be false")
+	}
+}
+
+func TestMessageByIDMissesAreReported(t *testing.T) {
+	h := newHist(t)
+	if _, _, _, _, _, ok := h.messageByID("NOPE"); ok {
+		t.Error("unknown message id reported as found")
+	}
+	if _, _, _, _, _, ok := h.messageByID(""); ok {
+		t.Error("empty message id reported as found")
+	}
+}
+
 func TestRenameChatAndMessagesAppliesSavedName(t *testing.T) {
 	h := newHist(t)
 	chat := "41791234567@s.whatsapp.net"

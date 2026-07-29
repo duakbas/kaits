@@ -186,6 +186,26 @@ func (h *histStore) lastMessage(chat string) (msgid string, ts int64, fromMe boo
 	return id.String, t.Int64, fm.Int64 == 1, snd.String
 }
 
+// messageByID finds a stored message by id, across chats.
+//
+// This is the durable counterpart to the in-memory replyCtx cache: that only
+// holds messages seen live this session, so anything scrolled to out of stored
+// history — or anything at all after a restart — isn't in it. The columns here
+// are enough to address the sender and quote the message.
+func (h *histStore) messageByID(msgid string) (chat, sender, kind, text string, fromMe, ok bool) {
+	if h == nil || h.db == nil || msgid == "" {
+		return
+	}
+	var c, s, k, t sql.NullString
+	var fm sql.NullInt64
+	err := h.db.QueryRow(`SELECT chat, sender, kind, text, fromme FROM messages
+		WHERE msgid=? LIMIT 1`, msgid).Scan(&c, &s, &k, &t, &fm)
+	if err != nil {
+		return
+	}
+	return c.String, s.String, k.String, t.String, fm.Int64 == 1, true
+}
+
 // dropChat removes a chat and its messages from our own store. Used after a
 // delete is accepted by WhatsApp, so the app's list matches the account.
 func (h *histStore) dropChat(jid string) {
