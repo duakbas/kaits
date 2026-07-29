@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -45,11 +46,20 @@ func main() {
 	callMgr := calls.NewManager(calls.Noop{}, hub)
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 
+	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
+	// the current resolver, then exits: merge duplicate @lid chats into their
+	// phone JID, then re-resolve chat and sender names that are still raw
+	// numbers. Safe to re-run — each pass only touches rows still unresolved.
 	if os.Getenv("WAD_MIGRATE_LIDS") == "1" {
-		if err := waCli.Connect(ctx); err != nil { log.Fatalf("connect for migration: %v", err) }
+		if err := waCli.Connect(ctx); err != nil {
+			log.Fatalf("connect for migration: %v", err)
+		}
 		time.Sleep(3 * time.Second) // let the LID store settle
 		seen, merged, unmapped := waCli.RunLIDMigration()
-		log.Printf("LID migration done: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
+		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
+		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())
+		log.Printf("LID migration: %d message sender names backfilled", waCli.BackfillSenderNamesNow())
+		log.Printf("LID migration: %d quoted-reply names backfilled", waCli.BackfillQuotedNamesNow())
 		return
 	}
 
@@ -89,7 +99,6 @@ func main() {
 }
 
 func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *calls.Manager, hub *ws.Hub) {
-	log.Printf("FRAME-DEBUG received: %q", e.T)
 	switch e.T {
 	case ws.TSend:
 		var d ws.SendData
@@ -100,7 +109,16 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		if d.Kind == "text" {
 			var id string
 			var err error
-			if d.QuotedID != "" {
+			if d.Private && d.QuotedID != "" {
+				var dest string
+				id, dest, err = waCli.SendPrivateReply(ctx, d.QuotedID, d.Text)
+				if err == nil {
+					// Tell the app which DM it landed in so it can open it.
+					hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
+						Data: mustJSON(map[string]any{"msgid": id, "type": "sent", "chat": dest})})
+					return
+				}
+			} else if d.QuotedID != "" {
 				id, err = waCli.SendReply(ctx, d.ChatJID, d.Text, d.QuotedID)
 			} else {
 				id, err = waCli.SendText(ctx, d.ChatJID, d.Text)
@@ -146,12 +164,79 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			hub.PushT(ws.TError, map[string]string{"code": "forward", "msg": err.Error()})
 		}
 
-	case ws.TGetChats:
-		{
-			cl := waCli.ListChats()
-			log.Printf("CHATLIST-DEBUG: ListChats returned %d chats, pushing", len(cl))
-			hub.PushT(ws.TChatList, cl)
+	case ws.TChatAction:
+		var d ws.ChatActionData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badchataction", "msg": err.Error()})
+			return
 		}
+		var err error
+		switch d.Action {
+		case "pin":
+			err = waCli.SetPin(ctx, d.ChatJID, d.On)
+		case "mute":
+			err = waCli.SetMute(ctx, d.ChatJID, d.On, time.Duration(d.Duration)*time.Second)
+		case "archive":
+			err = waCli.SetArchive(ctx, d.ChatJID, d.On)
+		case "delete":
+			err = waCli.DeleteChat(ctx, d.ChatJID)
+		default:
+			err = fmt.Errorf("unknown chat action %q", d.Action)
+		}
+		if err != nil {
+			// The account rejected the write, so our stored state was left
+			// untouched. Tell the app so it can roll its optimistic UI back.
+			hub.PushT(ws.TError, map[string]string{"code": "chataction", "msg": err.Error()})
+			hub.PushT(ws.TChatList, waCli.ListChats())
+			return
+		}
+		if d.Action == "delete" {
+			hub.PushT(ws.TChatUpdate, map[string]any{"chat": d.ChatJID, "removed": true})
+		} else {
+			pinned, muted, archived := waCli.ChatFlags(d.ChatJID)
+			hub.PushT(ws.TChatUpdate, map[string]any{
+				"chat": d.ChatJID, "pinned": pinned, "muted": muted, "archived": archived,
+			})
+		}
+
+	case ws.TGetProfile:
+		var d struct {
+			JID      string `json:"jid"`
+			SrcMsgID string `json:"srcmsgid"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badprofile", "msg": err.Error()})
+			return
+		}
+		// A group bubble carries a per-group LID, not a usable address; when the
+		// app asks by message id instead, resolve the sender's DM JID first.
+		jid := d.JID
+		if d.SrcMsgID != "" {
+			resolved, err := waCli.DirectJIDFor(d.SrcMsgID)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "profile", "msg": err.Error()})
+				return
+			}
+			jid = resolved
+		}
+		hub.Push(ws.Envelope{T: ws.TProfile, ID: e.ID,
+			Data: mustJSON(waCli.ProfileFor(ctx, jid))})
+
+	case ws.TSaveContact:
+		var d struct {
+			JID  string `json:"jid"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badsavecontact", "msg": err.Error()})
+			return
+		}
+		hub.Push(ws.Envelope{T: ws.TProfile, ID: e.ID,
+			Data: mustJSON(waCli.SaveContact(d.JID, d.Name))})
+		hub.PushT(ws.TChatList, waCli.ListChats())
+
+	case ws.TGetChats:
+		hub.PushT(ws.TChatList, waCli.ListChats())
 
 	case ws.TGetHistory:
 		var d struct {

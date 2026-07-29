@@ -78,3 +78,13 @@ func replyTextMsg(body, quotedID string, sender types.JID, quoted *waE2E.Message
 	}
 }
 
+// privateReplyMsg builds a "reply privately" — a DM to someone that quotes a
+// message they sent in a group. It's an ordinary reply plus RemoteJID naming
+// the group the quoted message came from; without that, the recipient's client
+// can't resolve the quote and shows a bare, contextless bubble.
+func privateReplyMsg(body, quotedID string, sender, group types.JID, quoted *waE2E.Message) *waE2E.Message {
+	msg := replyTextMsg(body, quotedID, sender, quoted)
+	msg.ExtendedTextMessage.ContextInfo.RemoteJID = proto.String(group.String())
+	return msg
+}
+

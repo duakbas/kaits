@@ -22,18 +22,20 @@ type Envelope struct {
 
 // ---- daemon -> app ----
 const (
-	TReady      = "ready"       // daemon connected & WA session live
-	TPaired     = "paired"      // pairing completed (after QR scan)
-	TQR         = "qr"          // {code: "2@..."} render this as a QR on-screen
-	TMessage    = "message"     // an inbound WA message (see MsgData)
-	TReceipt    = "receipt"     // delivery/read receipt for a message we sent
-	TChatList   = "chatlist"    // reply to "getchats": [{jid,name,ts,preview,unread}]
-	THistory    = "history"     // reply to "gethistory": messages for one chat
-	TPresence   = "presence"    // someone came online / typing
-	TCallOffer  = "calloffer"   // incoming WA call (see CallData) -> app should ring
-	TCallState  = "callstate"   // call lifecycle: ringing/accepted/ended/failed
-	TCallSignal = "callsignal"  // WebRTC signalling from pion -> app (sdp/ice)
-	TError      = "error"       // {code, msg}
+	TReady      = "ready"      // daemon connected & WA session live
+	TPaired     = "paired"     // pairing completed (after QR scan)
+	TQR         = "qr"         // {code: "2@..."} render this as a QR on-screen
+	TMessage    = "message"    // an inbound WA message (see MsgData)
+	TReceipt    = "receipt"    // delivery/read receipt for a message we sent
+	TChatList   = "chatlist"   // reply to "getchats": [{jid,name,ts,preview,unread}]
+	THistory    = "history"    // reply to "gethistory": messages for one chat
+	TPresence   = "presence"   // someone came online / typing
+	TCallOffer  = "calloffer"  // incoming WA call (see CallData) -> app should ring
+	TCallState  = "callstate"  // call lifecycle: ringing/accepted/ended/failed
+	TCallSignal = "callsignal" // WebRTC signalling from pion -> app (sdp/ice)
+	TError      = "error"      // {code, msg}
+	TProfile    = "profile"    // reply to "getprofile"/"savecontact" (ProfileData)
+	TChatUpdate = "chatupdate" // {chat, pinned, muted, archived, removed}
 )
 
 // ---- app -> daemon ----
@@ -50,22 +52,25 @@ const (
 	TCallDial    = "calldial"    // {jid} place an outgoing call
 	TCallHangup  = "callhangup"  // end the active call
 	TCallSignalA = "callsignal"  // WebRTC signalling from app -> pion (same type both ways)
+	TChatAction  = "chataction"  // {chat, action, on} pin/mute/archive/delete a chat
+	TGetProfile  = "getprofile"  // {jid} request contact or group info
+	TSaveContact = "savecontact" // {jid, name} save a local nickname ("" clears)
 )
 
 // MsgData is an inbound message pushed to the app.
 type MsgData struct {
 	MsgID      string `json:"msgid"`
-	ChatJID    string `json:"chat"`             // conversation this belongs to
-	ChatName   string `json:"chatname"`         // resolved: group subject or contact name
-	SenderJID  string `json:"sender"`           // who sent it (matters in groups)
-	SenderName string `json:"sendername"`       // resolved display name of the sender
-	IsGroup    bool   `json:"group"`            // true if chat is a group (@g.us)
-	Pinned     bool   `json:"pinned"`           // chat is pinned (synced from account)
+	ChatJID    string `json:"chat"`       // conversation this belongs to
+	ChatName   string `json:"chatname"`   // resolved: group subject or contact name
+	SenderJID  string `json:"sender"`     // who sent it (matters in groups)
+	SenderName string `json:"sendername"` // resolved display name of the sender
+	IsGroup    bool   `json:"group"`      // true if chat is a group (@g.us)
+	Pinned     bool   `json:"pinned"`     // chat is pinned (synced from account)
 	FromMe     bool   `json:"fromme"`
-	Timestamp  int64  `json:"ts"`               // unix seconds
-	Kind       string `json:"kind"`             // "text" | "image" | "audio" | "video" | "doc"
-	Text       string `json:"text,omitempty"`   // body / caption
-	MediaURL   string `json:"media,omitempty"`  // http url on the daemon to fetch the blob
+	Timestamp  int64  `json:"ts"`              // unix seconds
+	Kind       string `json:"kind"`            // "text" | "image" | "audio" | "video" | "doc"
+	Text       string `json:"text,omitempty"`  // body / caption
+	MediaURL   string `json:"media,omitempty"` // http url on the daemon to fetch the blob
 	Mime       string `json:"mime,omitempty"`
 	QuotedID   string `json:"quoted,omitempty"`
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to
@@ -75,11 +80,58 @@ type MsgData struct {
 // SendData is an outgoing message from the app.
 type SendData struct {
 	ChatJID  string `json:"chat"`
-	Kind     string `json:"kind"`            // "text" | "image"
+	Kind     string `json:"kind"` // "text" | "image"
 	Text     string `json:"text,omitempty"`
 	MediaB64 string `json:"media,omitempty"` // base64 image bytes for kind=image
 	Mime     string `json:"mime,omitempty"`
 	QuotedID string `json:"quoted,omitempty"`
+	// Private turns a quoted reply into a "reply privately": the message goes
+	// to the quoted author's DM instead of ChatJID, which the daemon resolves
+	// from QuotedID (the app can't — group senders are per-group LIDs).
+	Private bool `json:"private,omitempty"`
+}
+
+// ProfileData is everything the contact / group info screen renders.
+//
+// Name is the resolved display name; the other name fields are kept separate so
+// the screen can show, for example, "Peder" as the heading with the WhatsApp
+// push name underneath, and can tell "saved by me" from "named themselves".
+type ProfileData struct {
+	JID           string       `json:"jid"`
+	Name          string       `json:"name"`                    // resolved display name
+	SavedName     string       `json:"savedname,omitempty"`     // nickname saved in this app
+	PushName      string       `json:"pushname,omitempty"`      // name the contact set on WhatsApp
+	Phone         string       `json:"phone,omitempty"`         // +<E.164>, when the number is known
+	RedactedPhone string       `json:"redactedphone,omitempty"` // "+90 ∙∙∙∙∙∙∙∙00" fallback
+	Status        string       `json:"status,omitempty"`        // "about" text, or a group's topic
+	AvatarURL     string       `json:"avatar,omitempty"`
+	IsGroup       bool         `json:"group"`
+	IsBusiness    bool         `json:"business,omitempty"`
+	Saved         bool         `json:"saved"`  // known under a name the user chose
+	InAddressBook bool         `json:"inbook"` // specifically from the synced address book
+	Pinned        bool         `json:"pinned"`
+	Muted         bool         `json:"muted"`
+	Archived      bool         `json:"archived"`
+	MemberCount   int          `json:"members,omitempty"`
+	CreatedAt     int64        `json:"created,omitempty"`
+	Members       []MemberData `json:"memberlist,omitempty"`
+}
+
+// MemberData is one participant row on a group's info screen.
+type MemberData struct {
+	JID     string `json:"jid"`
+	Name    string `json:"name"`
+	IsAdmin bool   `json:"admin,omitempty"`
+}
+
+// ChatActionData asks the daemon to change a chat's state on the account.
+// Action is "pin" | "mute" | "archive" | "delete"; On is the desired state and
+// is ignored for "delete". Duration is optional mute seconds (0 = indefinite).
+type ChatActionData struct {
+	ChatJID  string `json:"chat"`
+	Action   string `json:"action"`
+	On       bool   `json:"on"`
+	Duration int64  `json:"duration,omitempty"`
 }
 
 // CallData describes an incoming call for the ring screen.

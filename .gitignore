@@ -1,9 +1,12 @@
-# NEVER commit — WhatsApp session + message history
-wad/wa-session.db
-wad/wa-session.db.*
-wad/*.db
-wad/*.db-wal
-wad/*.db-shm
+# NEVER commit — WhatsApp session + message history.
+# These patterns are deliberately unanchored (no leading path): the daemon
+# writes its db relative to whatever directory it was started from, so a run
+# from the repo root would drop wa-session.db here, not under wad/.
+*.db
+*.db-wal
+*.db-shm
+*.db.*
+wa-session*
 *.backup-*
 # build artifacts
 wad/wad

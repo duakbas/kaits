@@ -239,6 +239,73 @@ header .status.closed { color: var(--danger); }
 }
 .menu-item:last-child { border-bottom: none; }
 .menu-item.focused { background: var(--accent-dim); }
+/* destructive rows read as destructive even before you open them */
+.menu-item.danger { color: var(--danger); }
+
+/* chat options menu (Right key on a chat row) and the text/confirm prompt.
+   Both reuse .menu-box and sit above the softkey bar like the action menu. */
+#chat-menu, #prompt {
+  position: absolute;
+  left: 0; right: 0; top: 30px; bottom: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0,0,0,0.5);
+}
+#chat-menu[hidden], #prompt[hidden] { display: none; }
+#chat-menu .menu-box, #prompt .menu-box { width: 92%; max-height: 100%; overflow-y: auto; }
+#prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+  border: none;
+  border-bottom: 1px solid var(--line);
+}
+#prompt-input[hidden] { display: none; }
+.prompt-hint {
+  padding: 6px 10px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* ---- contact / group info screen ---- */
+#profile-body { padding: 10px 8px 8px; text-align: center; }
+.profile-avatar {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  margin: 0 auto 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 700; color: #06251a;
+  overflow: hidden;
+}
+.profile-avatar .avatar-img { width: 64px; height: 64px; }
+.profile-name { font-size: 15px; font-weight: 700; word-break: break-word; }
+.profile-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.profile-sub.dim { opacity: 0.75; }
+.profile-status {
+  font-size: 11px;
+  margin: 6px 4px 0;
+  color: var(--fg);
+  word-break: break-word;
+}
+.profile-actions {
+  margin-top: 10px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.member-row {
+  text-align: left;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.member-row.dim { color: var(--muted); border-bottom: none; }
 
 /* forward picker */
 #fwd-picker {

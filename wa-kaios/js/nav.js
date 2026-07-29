@@ -51,6 +51,15 @@
     return focusIndex >= 0 ? items[focusIndex] : null;
   }
 
+  // True when the user is typing into a field, so key handling should leave
+  // text editing alone.
+  function isEditing() {
+    var a = document.activeElement;
+    if (!a) return false;
+    var tag = (a.tagName || "").toLowerCase();
+    return tag === "input" || tag === "textarea" || a.isContentEditable;
+  }
+
   document.addEventListener("keydown", function (e) {
     switch (e.key) {
       case "ArrowUp":
@@ -84,6 +93,12 @@
         break;
       // Back / End / Escape
       case "Backspace":
+        // While a text field has focus, Backspace has to delete a character —
+        // stealing it for "back" makes the composer and the contact-name
+        // prompt impossible to correct. The End key and Escape still go back.
+        if (isEditing()) break;
+        if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
+        break;
       case "EndCall":
       case "Escape":
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }

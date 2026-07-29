@@ -15,8 +15,12 @@
   var selectMode = false; // true when a bubble is focused (vs the composer)
   var selectIdx = -1;     // index into the current thread's messages
   var replyingTo = null;  // {msgid, name, text} when composing a reply
+  var privateReply = false; // reply goes to the sender's DM, not this chat
   var menuOpen = false;   // action menu overlay visible
   var forceScrollBottom = false; // force thread to bottom on next render (open)
+  var pendingProfile = null; // what to do with the next "profile" frame
+  var profileData = null;    // ProfileData currently on the info screen
+  var profileBack = null;    // where Back goes from the info screen
 
   // ---- element refs ----
   var elList = document.getElementById("chatlist");
@@ -27,12 +31,22 @@
   var elReplyBar = document.getElementById("reply-bar");
   var elReplyBarText = document.getElementById("reply-bar-text");
   var elMenu = document.getElementById("action-menu");
+  var elActionList = document.getElementById("action-list");
   var elCall = document.getElementById("call");
   var elCallName = document.getElementById("call-name");
   var elStatus = document.getElementById("status");
+  var elProfile = document.getElementById("profile");
+  var elProfileBody = document.getElementById("profile-body");
+  var elChatMenu = document.getElementById("chat-menu");
+  var elChatMenuList = document.getElementById("chat-menu-list");
+  var elChatMenuTitle = document.getElementById("chat-menu-title");
+  var elPrompt = document.getElementById("prompt");
+  var elPromptTitle = document.getElementById("prompt-title");
+  var elPromptInput = document.getElementById("prompt-input");
+  var elPromptHint = document.getElementById("prompt-hint");
 
   function show(el) {
-    [elList, elThread, elCall].forEach(function (s) { s.hidden = true; });
+    [elList, elThread, elCall, elProfile].forEach(function (s) { s.hidden = true; });
     el.hidden = false;
   }
 
@@ -40,7 +54,10 @@
   function renderChatList() {
     var arr = Object.keys(chats).map(function (j) { return chats[j]; });
     arr.sort(function (a, b) {
-      // pinned chats first, then by recency
+      // Archived sink to the bottom, pinned float to the top, rest by recency.
+      // (A separate "Archived" section like real WhatsApp would be nicer; this
+      // keeps them out of the way without another screen.)
+      if (!!a.archived !== !!b.archived) return a.archived ? 1 : -1;
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return (b.ts || 0) - (a.ts || 0);
     });
@@ -64,10 +81,7 @@
       // at once and trip WhatsApp's rate limit.
       var av = document.createElement("div");
       av.className = "avatar";
-      var initials = (c.name || c.jid || "?").replace(/[^A-Za-z0-9 ]/g, "")
-        .trim().split(/\s+/).slice(0, 2)
-        .map(function (w) { return w.charAt(0).toUpperCase(); }).join("") || "?";
-      av.textContent = initials;
+      av.textContent = initialsFor(c.name || c.jid);
       av.style.background = colorFor(c.name || c.jid);
       av.setAttribute("data-avatar-jid", c.jid); // observer picks this up
 
@@ -75,7 +89,8 @@
       col.className = "chat-text";
       var name = document.createElement("div");
       name.className = "chat-name";
-      name.textContent = (c.pinned ? "📌 " : "") + (c.name || c.jid);
+      name.textContent = (c.pinned ? "📌 " : "") + (c.muted ? "🔇 " : "") +
+        (c.archived ? "🗄 " : "") + (c.name || c.jid);
       var prev = document.createElement("div");
       prev.className = "chat-prev";
       prev.textContent = c.preview || "";
@@ -155,10 +170,94 @@
     show(elList);
     Nav.setScreen({
       list: elList,
-      onEnter: function (e, el) { if (el) openThread(el.getAttribute("data-jid")); }
+      onEnter: function (e, el) { if (el) openThread(el.getAttribute("data-jid")); },
+      // Right on a chat row opens its pin/mute/archive/delete menu. The right
+      // softkey does the same, since Right isn't discoverable on its own.
+      onRight: function () {
+        var el = Nav.focusedEl();
+        if (el) openChatMenu(el.getAttribute("data-jid"));
+      },
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (el) openChatMenu(el.getAttribute("data-jid"));
+      }
     });
-    Nav.setSoftkeys("", "SELECT", "");
+    Nav.setSoftkeys("", "SELECT", "Options");
     renderChatList();
+  }
+
+  // ---------- chat action menu (pin / mute / archive / delete / info) ----------
+  // These are real WhatsApp account changes, not local preferences: they sync
+  // to the phone and every other linked device. Delete is not undoable, so it
+  // asks for confirmation first.
+  var chatMenuJID = null;
+
+  function openChatMenu(jid) {
+    if (!jid) return;
+    var c = chats[jid] || { jid: jid };
+    chatMenuJID = jid;
+    elChatMenuTitle.textContent = c.name || jid;
+    elChatMenuList.innerHTML = "";
+    [
+      { action: "pin", label: c.pinned ? "Unpin" : "Pin" },
+      { action: "mute", label: c.muted ? "Unmute" : "Mute" },
+      { action: "archive", label: c.archived ? "Unarchive" : "Archive" },
+      { action: "info", label: c.group ? "Group info" : "Contact info" },
+      { action: "delete", label: "Delete chat" }
+    ].forEach(function (item) {
+      var row = document.createElement("div");
+      row.className = "menu-item" + (item.action === "delete" ? " danger" : "");
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-action", item.action);
+      row.textContent = item.label;
+      elChatMenuList.appendChild(row);
+    });
+    elChatMenu.hidden = false;
+    Nav.setScreen({
+      list: elChatMenu,
+      onEnter: function (e, el) { if (el) runChatAction(el.getAttribute("data-action")); },
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (el) runChatAction(el.getAttribute("data-action"));
+      },
+      onSoftLeft: closeChatMenu,
+      onBack: closeChatMenu
+    });
+    Nav.setSoftkeys("Cancel", "", "OK");
+  }
+
+  function closeChatMenu() {
+    elChatMenu.hidden = true;
+    chatMenuJID = null;
+    enterListScreen();
+  }
+
+  function runChatAction(action) {
+    var jid = chatMenuJID;
+    if (!jid) { closeChatMenu(); return; }
+    var c = chats[jid] || {};
+    if (action === "info") {
+      elChatMenu.hidden = true;
+      openProfile(jid, enterListScreen);
+      return;
+    }
+    if (action === "delete") {
+      elChatMenu.hidden = true;
+      confirmPrompt("Delete chat?",
+        "Deletes it on WhatsApp and every linked device. Cannot be undone.",
+        function () { W.send(W.T.CHATACTION, { chat: jid, action: "delete" }); enterListScreen(); },
+        function () { openChatMenu(jid); });
+      return;
+    }
+    // pin / mute / archive: flip the current state, and echo it locally so the
+    // list updates now. The daemon confirms with a chatupdate, or an error
+    // frame plus a fresh chatlist that puts the truth back.
+    var on = !c[action === "pin" ? "pinned" : action === "mute" ? "muted" : "archived"];
+    W.send(W.T.CHATACTION, { chat: jid, action: action, on: on });
+    if (action === "pin") c.pinned = on;
+    else if (action === "mute") c.muted = on;
+    else { c.archived = on; if (on) c.pinned = false; }
+    closeChatMenu();
   }
 
   // ---------- thread screen ----------
@@ -230,6 +329,33 @@
   function openActionMenu() {
     var msgs = threads[currentJID] || [];
     if (selectIdx < 0 || selectIdx >= msgs.length) return;
+    var m = msgs[selectIdx];
+    var isGroup = !!(chats[currentJID] && chats[currentJID].group);
+    var fromOther = !m.fromme;
+
+    // Build the rows that actually apply to THIS message. "Reply privately"
+    // and "Message directly" only make sense for someone else's message in a
+    // group; deleting for everyone only works on your own.
+    var items = [{ action: "reply", label: "Reply" }];
+    if (isGroup && fromOther) {
+      items.push({ action: "replyprivate", label: "Reply privately" });
+      items.push({ action: "dm", label: "Message " + shortName(m.sendername) });
+    }
+    if (fromOther) items.push({ action: "profile", label: "View profile" });
+    items.push({ action: "forward", label: "Forward" });
+    if (m.fromme) items.push({ action: "delete", label: "Delete" });
+    items.push({ action: "copy", label: "Copy text" });
+
+    elActionList.innerHTML = "";
+    items.forEach(function (it) {
+      var row = document.createElement("div");
+      row.className = "menu-item" + (it.action === "delete" ? " danger" : "");
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-action", it.action);
+      row.textContent = it.label;
+      elActionList.appendChild(row);
+    });
+
     menuOpen = true;
     elMenu.hidden = false;
     Nav.setScreen({
@@ -248,8 +374,12 @@
   function closeActionMenu() {
     menuOpen = false;
     elMenu.hidden = true;
-    enterSelectMode(); // return to selecting, keeping position
-    selectIdx = selectIdx; // (kept)
+    // enterSelectMode jumps to the newest message, which would silently move
+    // the user's selection out from under them on cancel — so restore it.
+    var keep = selectIdx;
+    enterSelectMode();
+    selectIdx = keep;
+    renderThread();
   }
 
   function runAction(action) {
@@ -286,7 +416,42 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "replyprivate") {
+      // Same composer, but the send is flagged private — the daemon redirects
+      // it to the sender's DM and keeps the group message as the quote.
+      startReply(m);
+      privateReply = true;
+      elReplyBarText.textContent = "↩ privately to " +
+        shortName(m.sendername) + ": " + truncate(replyingTo.text, 30);
+      menuOpen = false;
+      elMenu.hidden = true;
+      enterComposeMode();
+    } else if (action === "dm") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openDirectChat(m);
+    } else if (action === "profile") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      // In a group the bubble's sender is a per-group LID, so ask the daemon
+      // to resolve the real person from the message id instead of the JID.
+      var back = currentJID;
+      openProfileForMessage(m, function () { openThread(back); });
     }
+  }
+
+  // shortName trims a display name to something that fits a 240px menu row.
+  function shortName(n) {
+    if (!n) return "sender";
+    return n.length > 14 ? n.slice(0, 13) + "…" : n;
+  }
+
+  // openDirectChat resolves the sender of a group message to their DM and
+  // opens it. The chat may not exist locally yet — that's fine, it appears as
+  // an empty thread and the first message creates it.
+  function openDirectChat(m) {
+    pendingProfile = { mode: "dm" };
+    W.send(W.T.GETPROFILE, { srcmsgid: m.msgid });
   }
 
   // ---------- forward picker ----------
@@ -348,6 +513,7 @@
 
   function clearReply() {
     replyingTo = null;
+    privateReply = false;
     elReplyBar.hidden = true;
     elReplyBarText.textContent = "";
   }
@@ -515,19 +681,288 @@
     if (!text || !currentJID) return;
     var frame = { chat: currentJID, kind: "text", text: text };
     if (replyingTo) frame.quoted = replyingTo.msgid;
+    if (privateReply) frame.private = true;
     W.send(W.T.SEND, frame);
-    // optimistic local echo (include the quote preview so it shows immediately)
-    var echo = {
-      msgid: "local-" + Date.now(), chat: currentJID, fromme: true,
-      ts: Math.floor(Date.now() / 1000), kind: "text", text: text
-    };
-    if (replyingTo) {
-      echo.quotedtext = replyingTo.text;
-      echo.quotedname = replyingTo.name;
+    // A private reply leaves this chat entirely — the daemon routes it to the
+    // sender's DM — so don't echo it into the group thread. The receipt frame
+    // carries the destination and the message lands there instead.
+    if (!privateReply) {
+      var echo = {
+        msgid: "local-" + Date.now(), chat: currentJID, fromme: true,
+        ts: Math.floor(Date.now() / 1000), kind: "text", text: text
+      };
+      if (replyingTo) {
+        echo.quotedtext = replyingTo.text;
+        echo.quotedname = replyingTo.name;
+      }
+      pushMsg(echo);
+    } else {
+      toast("Sent privately");
     }
-    pushMsg(echo);
     elInput.value = "";
     clearReply();
+  }
+
+  // ---------- contact / group info screen ----------
+  function openProfile(jid, backFn) {
+    pendingProfile = { mode: "show" };
+    profileBack = backFn || enterListScreen;
+    W.send(W.T.GETPROFILE, { jid: jid });
+  }
+
+  function openProfileForMessage(m, backFn) {
+    pendingProfile = { mode: "show" };
+    profileBack = backFn || enterListScreen;
+    W.send(W.T.GETPROFILE, { srcmsgid: m.msgid });
+  }
+
+  function renderProfile(p) {
+    profileData = p;
+    elProfileBody.innerHTML = "";
+
+    var av = document.createElement("div");
+    av.className = "profile-avatar";
+    av.textContent = initialsFor(p.name || p.jid);
+    av.style.background = colorFor(p.name || p.jid);
+    if (p.avatar) {
+      var img = new Image();
+      img.className = "avatar-img";
+      img.onload = function () {
+        av.textContent = ""; av.style.background = "none"; av.appendChild(img);
+      };
+      img.src = mediaBase() + p.avatar;
+    }
+    elProfileBody.appendChild(av);
+
+    var nm = document.createElement("div");
+    nm.className = "profile-name";
+    nm.textContent = p.name || p.jid;
+    elProfileBody.appendChild(nm);
+
+    // The number, or the best we can do. For someone never saved and only
+    // known by LID, WhatsApp may expose just a redacted form — say so plainly
+    // instead of showing a meaningless internal id.
+    var sub = document.createElement("div");
+    sub.className = "profile-sub";
+    if (p.phone) sub.textContent = p.phone;
+    else if (p.redactedphone) sub.textContent = p.redactedphone + " (hidden)";
+    else if (!p.group) sub.textContent = "Number not available";
+    else sub.textContent = p.members ? p.members + " participants" : "Group";
+    elProfileBody.appendChild(sub);
+
+    // If we're showing a nickname, note what they call themselves, so the two
+    // names aren't confusable.
+    if (!p.group && p.pushname && p.pushname !== p.name) {
+      var pn = document.createElement("div");
+      pn.className = "profile-sub dim";
+      pn.textContent = "~" + p.pushname + (p.business ? " (business)" : "");
+      elProfileBody.appendChild(pn);
+    }
+    if (p.status) {
+      var st = document.createElement("div");
+      st.className = "profile-status";
+      st.textContent = p.status;
+      elProfileBody.appendChild(st);
+    }
+
+    var list = document.createElement("div");
+    list.className = "profile-actions";
+    profileActions(p).forEach(function (it) {
+      var row = document.createElement("div");
+      row.className = "menu-item" + (it.danger ? " danger" : "");
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-action", it.action);
+      row.textContent = it.label;
+      list.appendChild(row);
+    });
+    elProfileBody.appendChild(list);
+
+    if (p.group && p.memberlist && p.memberlist.length) {
+      var mh = document.createElement("div");
+      mh.className = "profile-sub dim";
+      mh.textContent = "Participants";
+      elProfileBody.appendChild(mh);
+      p.memberlist.forEach(function (mem) {
+        var r = document.createElement("div");
+        r.className = "member-row";
+        r.textContent = mem.name + (mem.admin ? " • admin" : "");
+        elProfileBody.appendChild(r);
+      });
+      if (p.members > p.memberlist.length) {
+        var more = document.createElement("div");
+        more.className = "member-row dim";
+        more.textContent = "+" + (p.members - p.memberlist.length) + " more";
+        elProfileBody.appendChild(more);
+      }
+    }
+
+    show(elProfile);
+    Nav.setScreen({
+      list: elProfile,
+      onEnter: function (e, el) { if (el) runProfileAction(el.getAttribute("data-action")); },
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (el) runProfileAction(el.getAttribute("data-action"));
+      },
+      onSoftLeft: function () { (profileBack || enterListScreen)(); },
+      onBack: function () { (profileBack || enterListScreen)(); }
+    });
+    Nav.setSoftkeys("Back", "", "OK");
+  }
+
+  function profileActions(p) {
+    var items = [{ action: "message", label: "Message" }];
+    if (!p.group) {
+      items.push({
+        action: "savename",
+        label: p.savedname ? "Edit saved name" : "Save as contact"
+      });
+      // Writing to the phone's own address book is a separate thing from the
+      // in-app nickname, and only possible on the device.
+      if (p.phone && deviceContactsAvailable()) {
+        items.push({ action: "addtophone", label: "Add to phone contacts" });
+      }
+      if (p.savedname) items.push({ action: "clearname", label: "Remove saved name" });
+    }
+    items.push({ action: "pin", label: p.pinned ? "Unpin chat" : "Pin chat" });
+    items.push({ action: "mute", label: p.muted ? "Unmute" : "Mute" });
+    items.push({ action: "archive", label: p.archived ? "Unarchive" : "Archive" });
+    return items;
+  }
+
+  function runProfileAction(action) {
+    var p = profileData;
+    if (!p) return;
+    if (action === "message") {
+      openThread(p.jid);
+    } else if (action === "savename") {
+      textPrompt("Save contact name", p.savedname || p.name || "",
+        "Saved in this app. Use “Add to phone contacts” for the address book.",
+        function (val) {
+          W.send(W.T.SAVECONTACT, { jid: p.jid, name: val });
+          pendingProfile = { mode: "show" };
+        },
+        function () { renderProfile(p); });
+    } else if (action === "clearname") {
+      W.send(W.T.SAVECONTACT, { jid: p.jid, name: "" });
+      pendingProfile = { mode: "show" };
+    } else if (action === "addtophone") {
+      addToDeviceContacts(p);
+    } else if (action === "pin" || action === "mute" || action === "archive") {
+      var on = !p[action === "pin" ? "pinned" : action === "mute" ? "muted" : "archived"];
+      W.send(W.T.CHATACTION, { chat: p.jid, action: action, on: on });
+      if (action === "pin") p.pinned = on;
+      else if (action === "mute") p.muted = on;
+      else p.archived = on;
+      renderProfile(p);
+    }
+  }
+
+  // ---------- device address book (KaiOS only) ----------
+  // Two routes, in order of preference:
+  //   1. navigator.mozContacts — writes directly, needs the "contacts"
+  //      permission granted to a privileged app.
+  //   2. a "new/webcontacts/contact" web activity — hands the details to the
+  //      phone's Contacts app with fields prefilled, which is the native UX
+  //      and needs no extra permission.
+  // Neither exists in a desktop browser, so the action is hidden there and the
+  // in-app nickname is the only thing that happens.
+  function deviceContactsAvailable() {
+    return !!(navigator.mozContacts || window.MozActivity);
+  }
+
+  function addToDeviceContacts(p) {
+    var name = p.savedname || p.name || p.phone;
+    var tel = p.phone;
+    if (!tel) { toast("No phone number to save"); return; }
+
+    if (navigator.mozContacts && window.mozContact) {
+      try {
+        var c = new window.mozContact();
+        c.init({ name: [name], givenName: [name], tel: [{ type: ["mobile"], value: tel }] });
+        var req = navigator.mozContacts.save(c);
+        req.onsuccess = function () { toast("Saved to phone contacts"); };
+        req.onerror = function () { activityAddContact(name, tel); };
+        return;
+      } catch (e) {
+        // fall through to the activity route
+      }
+    }
+    activityAddContact(name, tel);
+  }
+
+  function activityAddContact(name, tel) {
+    if (!window.MozActivity) { toast("Contacts not available here"); return; }
+    try {
+      var act = new window.MozActivity({
+        name: "new",
+        data: { type: "webcontacts/contact", params: { givenName: name, tel: tel } }
+      });
+      act.onerror = function () { toast("Could not open Contacts"); };
+    } catch (e) {
+      toast("Could not open Contacts");
+    }
+  }
+
+  // ---------- prompt overlays ----------
+  // One-line text input and a yes/no confirm, both driven by softkeys since
+  // there's no pointer. Each restores the caller's screen via its cancel fn.
+  function textPrompt(title, initial, hint, onOK, onCancel) {
+    elPromptTitle.textContent = title;
+    elPromptHint.textContent = hint || "";
+    elPromptInput.value = initial || "";
+    elPrompt.hidden = false;
+    Nav.setScreen({
+      onSoftLeft: function () { elPrompt.hidden = true; if (onCancel) onCancel(); },
+      onBack: function () { elPrompt.hidden = true; if (onCancel) onCancel(); },
+      onSoftRight: done,
+      onEnter: done
+    });
+    Nav.setSoftkeys("Cancel", "", "Save");
+    setTimeout(function () { elPromptInput.focus(); }, 0);
+    function done() {
+      var v = elPromptInput.value.trim();
+      elPrompt.hidden = true;
+      if (onOK) onOK(v);
+    }
+  }
+
+  function confirmPrompt(title, hint, onYes, onNo) {
+    elPromptTitle.textContent = title;
+    elPromptHint.textContent = hint || "";
+    elPromptInput.value = "";
+    elPromptInput.hidden = true;
+    elPrompt.hidden = false;
+    Nav.setScreen({
+      onSoftLeft: no, onBack: no,
+      onSoftRight: yes, onEnter: yes
+    });
+    Nav.setSoftkeys("No", "", "Yes");
+    function cleanup() { elPrompt.hidden = true; elPromptInput.hidden = false; }
+    function yes() { cleanup(); if (onYes) onYes(); }
+    function no() { cleanup(); if (onNo) onNo(); }
+  }
+
+  // toast: a brief status line in the header. No notification API assumptions.
+  var toastTimer = null;
+  var toastPrev = null;
+  function toast(msg) {
+    var hdr = document.querySelector("header span");
+    if (!hdr) return;
+    // Capture the real title once — a second toast within the window would
+    // otherwise "restore" the first toast's text permanently.
+    if (toastPrev === null) toastPrev = hdr.textContent;
+    hdr.textContent = msg;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      hdr.textContent = toastPrev;
+      toastPrev = null;
+    }, 2500);
+  }
+
+  function initialsFor(s) {
+    return (s || "?").replace(/[^A-Za-z0-9 ]/g, "").trim().split(/\s+/).slice(0, 2)
+      .map(function (w) { return w.charAt(0).toUpperCase(); }).join("") || "?";
   }
 
   // ---------- incoming call screen ----------
@@ -635,6 +1070,8 @@
           name: c.name || ex.name || c.jid,
           group: (typeof c.group === "boolean") ? c.group : ex.group,
           pinned: (typeof c.pinned === "boolean") ? c.pinned : ex.pinned,
+          muted: (typeof c.muted === "boolean") ? c.muted : ex.muted,
+          archived: (typeof c.archived === "boolean") ? c.archived : ex.archived,
           ts: Math.max(c.ts || 0, ex.ts || 0),
           preview: c.preview || ex.preview || "",
           unread: ex.unread || 0
@@ -642,6 +1079,40 @@
       });
       renderChatList(); // always render — list may be the visible screen after refresh
     }
+  });
+
+  W.on(W.T.PROFILE, function (p) {
+    if (!p || !p.jid) return;
+    var req = pendingProfile;
+    pendingProfile = null;
+    // A "dm" request only wanted the resolved JID so it could open the chat;
+    // seed the chat record from the profile so it has a name straight away.
+    if (req && req.mode === "dm") {
+      var c = chats[p.jid] = chats[p.jid] || { jid: p.jid, name: p.name || p.jid };
+      c.name = p.name || c.name;
+      c.group = !!p.group;
+      openThread(p.jid);
+      return;
+    }
+    if (chats[p.jid] && p.name) chats[p.jid].name = p.name;
+    renderProfile(p);
+  });
+
+  W.on(W.T.CHATUPDATE, function (d) {
+    if (!d || !d.chat) return;
+    if (d.removed) {
+      delete chats[d.chat];
+      delete threads[d.chat];
+      if (currentJID === d.chat) enterListScreen();
+      else renderChatList();
+      return;
+    }
+    var c = chats[d.chat];
+    if (!c) return;
+    if (typeof d.pinned === "boolean") c.pinned = d.pinned;
+    if (typeof d.muted === "boolean") c.muted = d.muted;
+    if (typeof d.archived === "boolean") c.archived = d.archived;
+    if (!elList.hidden) renderChatList();
   });
 
   W.on(W.T.CALLOFFER, function (d) { showIncomingCall(d); });

@@ -58,10 +58,67 @@ WAD_TOKEN=changeme go run ./cmd/wad
 
 ## What runs vs. not
 
-Runs: pairing, receive text/media(as label), send text.
-Stubbed: `/media/` download (returns 501), `getchats` (returns empty — the
-app's list fills from live messages), image send, and all call *audio*
-(call events ring the app but there's no media path yet).
+Runs: pairing, persistent history, chat list, send/receive text, receive
+photo/video/gif/sticker/voice, reply, delete, forward, avatars, pinned chats.
+Not yet: sending media, recording voice notes, and all call *audio* (call
+events ring the app, but there's no media path yet).
+
+## Contact names and LIDs
+
+Modern WhatsApp addresses people by LID (`<id>@lid`) rather than by phone
+number, and the same person gets a *different LID in every group*. Names are
+resolved by reading whatsmeow's own `whatsmeow_lid_map` and `whatsmeow_contacts`
+tables directly (read-only, alongside the store API), because:
+
+- the lid map table holds every mapping, while `GetPNForLID` only answers for
+  the ones the running session has activated; and
+- a name you saved in your address book syncs keyed by the *phone* JID, while
+  the message needing that name arrives keyed by a LID — so both the JID and
+  its phone↔LID counterpart have to be checked.
+
+On startup the daemon logs `direct LID resolver ready (N lid mappings, M
+contacts)`. If it instead logs `direct LID resolver disabled`, whatsmeow's
+schema has moved; name resolution falls back to the older, patchier path and
+some senders will show as raw numbers until `internal/wa/lidmap.go` is updated.
+
+Messages already stored under an unresolved LID aren't rewritten automatically.
+To repair them in place, run once:
+
+```
+WAD_MIGRATE_LIDS=1 go run ./cmd/wad
+```
+
+That merges duplicate `@lid` chats into their phone JID, then re-resolves chat
+and sender names that are still bare numbers, and exits. It's safe to re-run —
+each pass only touches rows that are still unresolved.
+
+## Chat actions write to the account
+
+Pin, mute, archive and delete go out as **app-state patches** (`SendAppState`),
+the same mechanism the official clients use. They are not local preferences:
+
+- muting here mutes on your phone and every other linked device;
+- **delete is a real WhatsApp chat delete and cannot be undone from here** (the
+  app asks for confirmation first);
+- archiving unpins, because WhatsApp does that server-side.
+
+Our own db is updated only *after* WhatsApp accepts the patch, so a rejected
+write can't leave the app showing state the account doesn't have — the daemon
+replies with an `error` frame plus a fresh `chatlist` to resync.
+
+## Saving contacts
+
+There are two separate things, because WhatsApp has no contact-write API — the
+address book syncs one way, from a phone *into* the account:
+
+1. **In-app nickname** — stored in our own `local_contacts` table (not
+   whatsmeow's, which its next contact sync would wipe). It wins over every
+   other name and is applied retroactively to stored chats and messages.
+2. **Phone address book** — on KaiOS only, the app writes the number via
+   `navigator.mozContacts`, falling back to a `new` / `webcontacts/contact`
+   web activity that opens the Contacts app prefilled. The manifest declares
+   the `contacts` permission for this. Neither API exists in a desktop browser,
+   so that action is hidden during development and only the nickname applies.
 
 ## Env vars
 
@@ -70,3 +127,4 @@ app's list fills from live messages), image send, and all call *audio*
 | `WAD_TOKEN` | `changeme` | shared secret; must match the app |
 | `WAD_ADDR`  | `:8080`    | listen address |
 | `WAD_DB`    | `wa-session.db` | session store path |
+| `WAD_MIGRATE_LIDS` | unset | `1` = run the one-shot LID/name repair, then exit |
