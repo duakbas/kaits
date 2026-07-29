@@ -27,13 +27,32 @@
       <input id="composer" type="text" placeholder="Type a message…">
     </div>
 
-    <!-- action menu overlay (reply / delete / forward) -->
+    <!-- contact / group info -->
+    <div id="profile" class="screen" hidden>
+      <div id="profile-body"></div>
+    </div>
+
+    <!-- message action menu overlay. Rows are rebuilt per message, because
+         which actions apply depends on the message (own vs someone else's,
+         group vs DM), so this starts empty. -->
     <div id="action-menu" hidden>
+      <div class="menu-box"><div id="action-list"></div></div>
+    </div>
+
+    <!-- chat action menu (Right key on a chat row) -->
+    <div id="chat-menu" hidden>
       <div class="menu-box">
-        <div class="menu-item" data-action="reply" data-nav>Reply</div>
-        <div class="menu-item" data-action="forward" data-nav>Forward</div>
-        <div class="menu-item" data-action="delete" data-nav>Delete</div>
-        <div class="menu-item" data-action="copy" data-nav>Copy text</div>
+        <div class="fwd-title" id="chat-menu-title"></div>
+        <div id="chat-menu-list"></div>
+      </div>
+    </div>
+
+    <!-- single-line text prompt, used for naming a contact -->
+    <div id="prompt" hidden>
+      <div class="menu-box">
+        <div class="fwd-title" id="prompt-title"></div>
+        <input id="prompt-input" type="text">
+        <div class="prompt-hint" id="prompt-hint"></div>
       </div>
     </div>
 

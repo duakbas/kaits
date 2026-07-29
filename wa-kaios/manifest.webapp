@@ -22,6 +22,10 @@
     },
     "push": {
       "description": "Wake on new message / incoming call"
+    },
+    "contacts": {
+      "description": "Save a chat's number to the phone's address book",
+      "access": "readcreate"
     }
   },
   "default_locale": "en",

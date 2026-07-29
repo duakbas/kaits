@@ -284,7 +284,9 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 				if n := c.displayNameForJID(jid); n != "" {
 					d.QuotedName = n
 				} else {
-					d.QuotedName = jid.User
+					// Fall back to the canonical (phone) number, not the raw
+					// LID — a LID is a meaningless internal id to the user.
+					d.QuotedName = c.canonicalJID(jid).User
 				}
 			}
 		}
@@ -435,6 +437,11 @@ func (c *Client) canonicalJID(jid types.JID) types.JID {
 // LID-addressed sender used to miss the saved name entirely, which is why the
 // event push name used to be consulted first.
 func (c *Client) displayName(jid types.JID, pushName string) string {
+	// 0. a nickname the user saved in this app beats everything — they chose it
+	//    most recently and most deliberately.
+	if n := c.hist.localContactName(c.canonicalJID(jid).String()); n != "" {
+		return n
+	}
 	// 1. address book, via the direct tables (checks the LID counterpart too).
 	if n := c.sess.contactName(jid); n != "" {
 		return n
@@ -713,6 +720,59 @@ func (c *Client) SendReply(ctx context.Context, chatJID, text, quotedID string) 
 		return "", err
 	}
 	return resp.ID, nil
+}
+
+// SendPrivateReply DMs the author of a group message, quoting that message.
+// The destination is derived from the original sender, so the app doesn't have
+// to know the person's DM JID — which it often can't, since group senders
+// arrive as per-group LIDs.
+func (c *Client) SendPrivateReply(ctx context.Context, srcMsgID, text string) (string, string, error) {
+	c.replyMu.Lock()
+	rc, ok := c.replyCtx[srcMsgID]
+	c.replyMu.Unlock()
+	if !ok || rc.msg == nil {
+		return "", "", fmt.Errorf("message %s not in cache; cannot reply privately", srcMsgID)
+	}
+	dest := c.canonicalJID(rc.sender)
+	if dest.IsEmpty() || dest.Server == types.GroupServer {
+		return "", "", fmt.Errorf("no direct address for the sender of %s", srcMsgID)
+	}
+	msg := privateReplyMsg(text, srcMsgID, dest, rc.chat, rc.msg)
+	resp, err := c.WA.SendMessage(ctx, dest, msg)
+	if err != nil {
+		return "", "", err
+	}
+	return resp.ID, dest.String(), nil
+}
+
+// DirectJIDFor resolves the DM address for whoever sent a message, so the app
+// can open (or create) a 1:1 chat from a group bubble.
+func (c *Client) DirectJIDFor(srcMsgID string) (string, error) {
+	c.replyMu.Lock()
+	rc, ok := c.replyCtx[srcMsgID]
+	c.replyMu.Unlock()
+	if !ok {
+		return "", fmt.Errorf("message %s not in cache", srcMsgID)
+	}
+	dest := c.canonicalJID(rc.sender)
+	if dest.IsEmpty() || dest.Server == types.GroupServer {
+		return "", fmt.Errorf("no direct address for the sender of %s", srcMsgID)
+	}
+	return dest.String(), nil
+}
+
+// BackfillQuotedNamesNow re-resolves quoted-message authors stored as raw
+// numbers (the reply quote bar keeps its own copy of the name).
+func (c *Client) BackfillQuotedNamesNow() int {
+	return c.hist.BackfillQuotedNames(func(num string) string {
+		// Stored quoted names are bare user ids; try both address forms.
+		for _, server := range []string{types.HiddenUserServer, types.DefaultUserServer} {
+			if n := c.displayName(types.JID{User: num, Server: server}, ""); n != "" {
+				return n
+			}
+		}
+		return ""
+	})
 }
 
 func firstID(ids []types.MessageID) string {

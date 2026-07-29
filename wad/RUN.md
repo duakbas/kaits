@@ -92,6 +92,34 @@ That merges duplicate `@lid` chats into their phone JID, then re-resolves chat
 and sender names that are still bare numbers, and exits. It's safe to re-run —
 each pass only touches rows that are still unresolved.
 
+## Chat actions write to the account
+
+Pin, mute, archive and delete go out as **app-state patches** (`SendAppState`),
+the same mechanism the official clients use. They are not local preferences:
+
+- muting here mutes on your phone and every other linked device;
+- **delete is a real WhatsApp chat delete and cannot be undone from here** (the
+  app asks for confirmation first);
+- archiving unpins, because WhatsApp does that server-side.
+
+Our own db is updated only *after* WhatsApp accepts the patch, so a rejected
+write can't leave the app showing state the account doesn't have — the daemon
+replies with an `error` frame plus a fresh `chatlist` to resync.
+
+## Saving contacts
+
+There are two separate things, because WhatsApp has no contact-write API — the
+address book syncs one way, from a phone *into* the account:
+
+1. **In-app nickname** — stored in our own `local_contacts` table (not
+   whatsmeow's, which its next contact sync would wipe). It wins over every
+   other name and is applied retroactively to stored chats and messages.
+2. **Phone address book** — on KaiOS only, the app writes the number via
+   `navigator.mozContacts`, falling back to a `new` / `webcontacts/contact`
+   web activity that opens the Contacts app prefilled. The manifest declares
+   the `contacts` permission for this. Neither API exists in a desktop browser,
+   so that action is hidden during development and only the nickname applies.
+
 ## Env vars
 
 | var | default | meaning |

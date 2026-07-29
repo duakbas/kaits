@@ -58,10 +58,24 @@ func openHistStore(path string) (*histStore, error) {
 		pn   TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_lid_name ON lid_identity(name);
+	-- Nicknames the user saves from the app. Deliberately OUR table, not
+	-- whatsmeow_contacts: WhatsApp has no contact-write API (the address book
+	-- syncs one way, phone -> account), and anything we wrote into whatsmeow's
+	-- table would be wiped by its next contact sync.
+	CREATE TABLE IF NOT EXISTS local_contacts (
+		jid  TEXT PRIMARY KEY,
+		name TEXT,
+		ts   INTEGER
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// Columns added after the first release. sqlite has no ADD COLUMN IF NOT
+	// EXISTS, and re-adding errors harmlessly, so existing dbs upgrade in place.
+	for _, col := range []string{"muted", "archived"} {
+		db.Exec(`ALTER TABLE chats ADD COLUMN ` + col + ` INTEGER DEFAULT 0`)
 	}
 	return &histStore{db: db}, nil
 }
@@ -111,7 +125,8 @@ func (h *histStore) listChats() []map[string]any {
 	if h == nil || h.db == nil {
 		return out
 	}
-	rows, err := h.db.Query(`SELECT jid,name,is_group,pinned,last_ts,preview FROM chats ORDER BY last_ts DESC`)
+	rows, err := h.db.Query(`SELECT jid,name,is_group,pinned,last_ts,preview,
+		COALESCE(muted,0),COALESCE(archived,0) FROM chats ORDER BY last_ts DESC`)
 	if err != nil {
 		return out
 	}
@@ -119,16 +134,136 @@ func (h *histStore) listChats() []map[string]any {
 	for rows.Next() {
 		var jid string
 		var name, preview sql.NullString
-		var isGroup, pinned, ts sql.NullInt64
-		if err := rows.Scan(&jid, &name, &isGroup, &pinned, &ts, &preview); err != nil {
+		var isGroup, pinned, ts, muted, archived sql.NullInt64
+		if err := rows.Scan(&jid, &name, &isGroup, &pinned, &ts, &preview, &muted, &archived); err != nil {
 			continue
 		}
 		out = append(out, map[string]any{
 			"jid": jid, "name": name.String, "group": isGroup.Int64 == 1,
 			"pinned": pinned.Int64 == 1, "ts": ts.Int64, "preview": preview.String,
+			"muted": muted.Int64 == 1, "archived": archived.Int64 == 1,
 		})
 	}
 	return out
+}
+
+// setChatFlag updates one boolean column on a chat row. The column name is
+// never user input — callers pass a literal — so it's safe to interpolate,
+// which sqlite requires since identifiers can't be bound as parameters.
+func (h *histStore) setChatFlag(jid, col string, on bool) {
+	if h == nil || h.db == nil {
+		return
+	}
+	switch col {
+	case "pinned", "muted", "archived": // allow-list, belt and braces
+	default:
+		return
+	}
+	h.db.Exec(`UPDATE chats SET `+col+`=? WHERE jid=?`, boolToInt(on), jid)
+}
+
+// chatFlags reads back the stored pin/mute/archive state for one chat.
+func (h *histStore) chatFlags(jid string) (pinned, muted, archived bool) {
+	if h == nil || h.db == nil {
+		return
+	}
+	var p, m, a sql.NullInt64
+	h.db.QueryRow(`SELECT COALESCE(pinned,0),COALESCE(muted,0),COALESCE(archived,0)
+		FROM chats WHERE jid=?`, jid).Scan(&p, &m, &a)
+	return p.Int64 == 1, m.Int64 == 1, a.Int64 == 1
+}
+
+// lastMessage returns the newest stored message for a chat. WhatsApp's archive
+// and delete-chat app-state patches carry a "message range" anchored on it.
+func (h *histStore) lastMessage(chat string) (msgid string, ts int64, fromMe bool, sender string) {
+	if h == nil || h.db == nil {
+		return
+	}
+	var id, snd sql.NullString
+	var t, fm sql.NullInt64
+	h.db.QueryRow(`SELECT msgid,ts,fromme,sender FROM messages WHERE chat=?
+		ORDER BY ts DESC LIMIT 1`, chat).Scan(&id, &t, &fm, &snd)
+	return id.String, t.Int64, fm.Int64 == 1, snd.String
+}
+
+// dropChat removes a chat and its messages from our own store. Used after a
+// delete is accepted by WhatsApp, so the app's list matches the account.
+func (h *histStore) dropChat(jid string) {
+	if h == nil || h.db == nil {
+		return
+	}
+	h.db.Exec(`DELETE FROM messages WHERE chat=?`, jid)
+	h.db.Exec(`DELETE FROM chats WHERE jid=?`, jid)
+}
+
+// localContactName returns the nickname the user saved for a JID, or "".
+func (h *histStore) localContactName(jid string) string {
+	if h == nil || h.db == nil {
+		return ""
+	}
+	var name string
+	h.db.QueryRow(`SELECT name FROM local_contacts WHERE jid=? AND name<>''`, jid).Scan(&name)
+	return name
+}
+
+// setLocalContact saves (or, with an empty name, clears) a nickname.
+func (h *histStore) setLocalContact(jid, name string, ts int64) {
+	if h == nil || h.db == nil || jid == "" {
+		return
+	}
+	if name == "" {
+		h.db.Exec(`DELETE FROM local_contacts WHERE jid=?`, jid)
+		return
+	}
+	h.db.Exec(`INSERT INTO local_contacts (jid,name,ts) VALUES (?,?,?)
+		ON CONFLICT(jid) DO UPDATE SET name=excluded.name, ts=excluded.ts`, jid, name, ts)
+}
+
+// renameChatAndMessages applies a newly saved nickname to already-stored rows,
+// so saving a contact updates the chat list and past messages immediately
+// instead of only affecting new traffic.
+func (h *histStore) renameChatAndMessages(jid, name string) {
+	if h == nil || h.db == nil || jid == "" || name == "" {
+		return
+	}
+	h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, name, jid)
+	h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND fromme=0`, name, jid)
+	h.db.Exec(`UPDATE messages SET quoted_name=? WHERE quoted_name<>'' AND sender=?`, name, jid)
+}
+
+// BackfillQuotedNames re-resolves quoted-message authors that were stored as
+// raw numbers. The reply quote bar keeps its own copy of the author name, so
+// it needs its own backfill — the sender-name pass doesn't reach it.
+func (h *histStore) BackfillQuotedNames(resolve func(string) string) int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	rows, err := h.db.Query(`SELECT DISTINCT quoted_name FROM messages
+		WHERE quoted_name<>'' AND quoted_name GLOB '[0-9]*'`)
+	if err != nil {
+		return 0
+	}
+	var raw []string
+	for rows.Next() {
+		var q string
+		if rows.Scan(&q) == nil {
+			raw = append(raw, q)
+		}
+	}
+	rows.Close()
+	fixed := 0
+	for _, num := range raw {
+		name := resolve(num)
+		if name == "" || isNumeric(name) {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE messages SET quoted_name=? WHERE quoted_name=?`, name, num)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			fixed += int(n)
+		}
+	}
+	return fixed
 }
 
 // history returns messages for a chat, oldest->newest, up to limit, with an
