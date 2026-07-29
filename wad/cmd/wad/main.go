@@ -45,11 +45,19 @@ func main() {
 	callMgr := calls.NewManager(calls.Noop{}, hub)
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 
+	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
+	// the current resolver, then exits: merge duplicate @lid chats into their
+	// phone JID, then re-resolve chat and sender names that are still raw
+	// numbers. Safe to re-run — each pass only touches rows still unresolved.
 	if os.Getenv("WAD_MIGRATE_LIDS") == "1" {
-		if err := waCli.Connect(ctx); err != nil { log.Fatalf("connect for migration: %v", err) }
+		if err := waCli.Connect(ctx); err != nil {
+			log.Fatalf("connect for migration: %v", err)
+		}
 		time.Sleep(3 * time.Second) // let the LID store settle
 		seen, merged, unmapped := waCli.RunLIDMigration()
-		log.Printf("LID migration done: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
+		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
+		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())
+		log.Printf("LID migration: %d message sender names backfilled", waCli.BackfillSenderNamesNow())
 		return
 	}
 
@@ -89,7 +97,6 @@ func main() {
 }
 
 func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *calls.Manager, hub *ws.Hub) {
-	log.Printf("FRAME-DEBUG received: %q", e.T)
 	switch e.T {
 	case ws.TSend:
 		var d ws.SendData
@@ -147,11 +154,7 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		}
 
 	case ws.TGetChats:
-		{
-			cl := waCli.ListChats()
-			log.Printf("CHATLIST-DEBUG: ListChats returned %d chats, pushing", len(cl))
-			hub.PushT(ws.TChatList, cl)
-		}
+		hub.PushT(ws.TChatList, waCli.ListChats())
 
 	case ws.TGetHistory:
 		var d struct {

@@ -209,6 +209,15 @@ func (h *histStore) resolveLIDName(lid string) string {
 	return name
 }
 
+// resolvePN returns the phone JID we learned for a LID, "" if we never saw one.
+// This is the last-resort arm of canonicalJID, behind whatsmeow's own tables.
+func (h *histStore) resolvePN(lid string) string {
+	if h == nil || h.db == nil { return "" }
+	var pn string
+	h.db.QueryRow(`SELECT pn FROM lid_identity WHERE lid=? AND pn<>''`, lid).Scan(&pn)
+	return pn
+}
+
 // BackfillSenderNames rewrites messages whose sendername is a raw number, using
 // the resolver (which consults the learned table). Returns rows fixed.
 func (h *histStore) BackfillSenderNames(resolve func(sender string) string) int {
@@ -223,6 +232,27 @@ func (h *histStore) BackfillSenderNames(resolve func(sender string) string) int 
 		name := resolve(sn)
 		if name=="" { continue }
 		res,_ := h.db.Exec(`UPDATE messages SET sendername=? WHERE sender=? AND (sendername GLOB '[0-9]*' OR sendername='')`, name, sn)
+		if res!=nil { n,_:=res.RowsAffected(); fixed+=int(n) }
+	}
+	return fixed
+}
+
+// BackfillChatNames rewrites chats whose stored name is missing or is just a
+// raw number, using the resolver. Returns the number of chats renamed.
+func (h *histStore) BackfillChatNames(resolve func(jid string) string) int {
+	if h == nil || h.db == nil { return 0 }
+	// GLOB '[0-9]*' catches names that start with a digit — i.e. bare numbers,
+	// which is exactly what an unresolved LID/phone JID leaves behind.
+	rows, err := h.db.Query(`SELECT jid FROM chats WHERE name IS NULL OR name='' OR name GLOB '[0-9]*'`)
+	if err != nil { return 0 }
+	var jids []string
+	for rows.Next() { var j string; if rows.Scan(&j)==nil { jids=append(jids,j) } }
+	rows.Close()
+	fixed := 0
+	for _, j := range jids {
+		name := resolve(j)
+		if name=="" || isNumeric(name) { continue }
+		res,_ := h.db.Exec(`UPDATE chats SET name=? WHERE jid=?`, name, j)
 		if res!=nil { n,_:=res.RowsAffected(); fixed+=int(n) }
 	}
 	return fixed

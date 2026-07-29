@@ -58,6 +58,10 @@ type Client struct {
 
 	// hist is our own persistence layer for messages/chats (survives restarts).
 	hist *histStore
+
+	// sess reads whatsmeow's session db directly for LID<->phone mappings and
+	// contact names. nil if it couldn't be opened — callers must cope.
+	sess *sessionStore
 }
 
 // New opens (or creates) the session store and builds a whatsmeow client.
@@ -84,6 +88,16 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		hist = nil
 	}
 
+	// Read-only view of whatsmeow's own tables, for LID/name resolution. Opened
+	// after sqlstore.New so the file and its migrations already exist.
+	sess, serr := openSessionStore(dbPath)
+	if serr != nil {
+		log.Printf("wa: direct LID resolver disabled (%v) — names will fall back to GetPNForLID", serr)
+		sess = nil
+	} else {
+		sess.logState()
+	}
+
 	c := &Client{
 		WA:         waCli,
 		hub:        hub,
@@ -93,6 +107,7 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		replyCtx:   make(map[string]replyContext),
 		avatars:    make(map[string]avatarEntry),
 		hist:       hist,
+		sess:       sess,
 	}
 	waCli.AddEventHandler(c.handleEvent)
 	return c, nil
@@ -364,16 +379,6 @@ func (c *Client) DownloadMedia(ctx context.Context, id string) ([]byte, error) {
 	return c.downloadMedia(ctx, id)
 }
 
-// senderName resolves who sent a message to a human name. Order matters:
-//   1. PushName on the event — it's already there, no lookup, and crucially it
-//      works even when the sender arrives as an @lid address (modern WhatsApp
-//      uses LID addressing and store lookups by LID are unreliable).
-//   2. contact store by sender JID (covers cases with no push name on the msg).
-//   3. fall back to the bare user part of the JID.
-// canonicalJID resolves a LID (@lid) address to its real phone-number JID so a
-// person doesn't appear as two separate chats (one @lid, one @s.whatsapp.net).
-// If the arg isn't a LID, or the mapping is unknown, it's returned unchanged —
-// whatsmeow's GetPNForLID can return empty for LIDs it hasn't mapped yet.
 func isNumeric(s string) bool {
 	if s == "" {
 		return false
@@ -386,37 +391,94 @@ func isNumeric(s string) bool {
 	return true
 }
 
+// canonicalJID resolves a LID (@lid) address to its real phone-number JID so a
+// person doesn't appear as two separate chats (one @lid, one @s.whatsapp.net).
+// Device/agent parts are stripped: the same person on two of their devices is
+// still one chat.
+//
+// Resolution order, widest source first:
+//  1. whatsmeow_lid_map read directly — the complete mapping table.
+//  2. GetPNForLID — whatsmeow's in-memory view, which can know a pairing that
+//     hasn't been written to the table yet.
+//  3. the learned-LID table we build from observed traffic.
+//
+// If nothing knows the LID it's returned unchanged, and the caller displays a
+// raw number rather than losing the message.
 func (c *Client) canonicalJID(jid types.JID) types.JID {
 	if jid.Server != types.HiddenUserServer { // not a @lid
-		return jid
+		return jid.ToNonAD()
 	}
-	pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid)
-	if err != nil || pn.IsEmpty() {
-		return jid // no mapping available — leave as-is
+
+	if pn := c.sess.pnForLID(jid.User); pn != "" {
+		return types.JID{User: pn, Server: types.DefaultUserServer}
 	}
-	return pn
+
+	if pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD()); err == nil && !pn.IsEmpty() {
+		return pn.ToNonAD()
+	}
+
+	if pn := c.hist.resolvePN(jid.ToNonAD().String()); pn != "" {
+		if parsed, err := types.ParseJID(pn); err == nil && !parsed.IsEmpty() {
+			return parsed.ToNonAD()
+		}
+	}
+
+	return jid.ToNonAD() // no mapping available — leave as-is
 }
 
+// displayName resolves any user JID to a human name, given an optional push
+// name that rode along on an event. Returns "" when nothing beats the number.
+//
+// Order: the name you saved in your address book wins over a name the other
+// person set for themselves. That ordering only became safe once the direct
+// whatsmeow_contacts lookup started checking the phone<->LID counterpart — a
+// LID-addressed sender used to miss the saved name entirely, which is why the
+// event push name used to be consulted first.
+func (c *Client) displayName(jid types.JID, pushName string) string {
+	// 1. address book, via the direct tables (checks the LID counterpart too).
+	if n := c.sess.contactName(jid); n != "" {
+		return n
+	}
+	// 2. push name riding on the event, if we were given one.
+	if pushName != "" {
+		return pushName
+	}
+	// 3. whatsmeow's contact store, under the canonical JID and the raw one
+	//    (identical for a non-LID JID, so only try the second when it differs).
+	candidates := []types.JID{c.canonicalJID(jid)}
+	if raw := jid.ToNonAD(); raw != candidates[0] {
+		candidates = append(candidates, raw)
+	}
+	for _, j := range candidates {
+		if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), j); err == nil {
+			if contact.FullName != "" {
+				return contact.FullName
+			}
+			if contact.PushName != "" {
+				return contact.PushName
+			}
+			if contact.BusinessName != "" {
+				return contact.BusinessName
+			}
+		}
+	}
+	// 4. names we learned from observed traffic, keyed by the raw LID.
+	if n := c.hist.resolveLIDName(jid.ToNonAD().String()); n != "" {
+		return n
+	}
+	return ""
+}
+
+// senderName resolves who sent a message to a human name, falling back to the
+// bare number when nobody knows them.
 func (c *Client) senderName(v *events.Message) string {
 	if v.Info.IsFromMe {
 		return "You"
 	}
-	if pn := v.Info.PushName; pn != "" {
-		return pn
-	}
-	sender := c.canonicalJID(v.Info.Sender)
-	if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), sender); err == nil {
-		if contact.FullName != "" {
-			return contact.FullName
-		}
-		if contact.PushName != "" {
-			return contact.PushName
-		}
-	}
-	if n := c.hist.resolveLIDName(v.Info.Sender.String()); n != "" {
+	if n := c.displayName(v.Info.Sender, v.Info.PushName); n != "" {
 		return n
 	}
-	return sender.User
+	return c.canonicalJID(v.Info.Sender).User
 }
 
 // chatName resolves a chat JID to a display name. For groups it's the group
@@ -446,17 +508,15 @@ func (c *Client) chatName(chat types.JID, isGroup bool) string {
 		return name
 	}
 
-	// 1:1 chat: resolve the contact.
-	if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), chat); err == nil {
-		if contact.FullName != "" {
-			return contact.FullName
-		}
-		if contact.PushName != "" {
-			return contact.PushName
-		}
+	// 1:1 chat: resolve the contact through the same path as message senders,
+	// so a DM header shows the saved name instead of a raw LID number.
+	if n := c.displayName(chat, ""); n != "" {
+		return n
 	}
-	// last resort: strip the server suffix for a cleaner display
-	s := chat.String()
+	// last resort: strip the server suffix for a cleaner display. Prefer the
+	// canonical (phone) form so an unresolved LID at least shows the number the
+	// user might recognise, when the map knows it.
+	s := c.canonicalJID(chat).String()
 	if i := strings.IndexByte(s, '@'); i > 0 {
 		return s[:i]
 	}
@@ -484,24 +544,24 @@ func (c *Client) resolveMentions(text string, ci *waE2E.ContextInfo) string {
 		if name == "" {
 			continue
 		}
-		// the text contains "@<user>" where user is the number part
-		text = strings.ReplaceAll(text, "@"+jid.User, "@"+name)
+		// The text contains "@<user>" where user is the number part — but which
+		// number depends on how the sender's client addressed the mention, so
+		// try both the LID and the phone form.
+		for _, user := range []string{jid.User, c.canonicalJID(jid).User} {
+			if user == "" {
+				continue
+			}
+			text = strings.ReplaceAll(text, "@"+user, "@"+name)
+		}
 	}
 	return text
 }
 
-// displayNameForJID resolves a single JID to a name (contact full name, then
-// push name), returning "" if nothing better than the number is known.
+// displayNameForJID resolves a single JID to a name, returning "" if nothing
+// better than the number is known. Used for @mentions and quoted-message
+// authors, which arrive as bare JIDs with no push name attached.
 func (c *Client) displayNameForJID(jid types.JID) string {
-	if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), jid); err == nil {
-		if contact.FullName != "" {
-			return contact.FullName
-		}
-		if contact.PushName != "" {
-			return contact.PushName
-		}
-	}
-	return ""
+	return c.displayName(jid, "")
 }
 
 // DeleteMessage revokes (deletes for everyone) one of the user's own messages.
@@ -548,27 +608,50 @@ func (c *Client) isPinned(chat types.JID) bool {
 	return settings.Pinned
 }
 
-// ListChats returns the persisted chat list for the app's getchats.
+// RunLIDMigration rewrites already-stored @lid chats to their phone JID and
+// merges the duplicates, using the full resolution path (direct table first),
+// so it catches mappings the old GetPNForLID-only pass left behind.
 func (c *Client) RunLIDMigration() (int, int, int) {
 	return c.hist.MigrateLIDs(func(lid string) (string, bool) {
 		jid, err := types.ParseJID(lid)
 		if err != nil {
 			return "", false
 		}
-		pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid)
-		if err != nil || pn.IsEmpty() {
-			return "", false
+		canon := c.canonicalJID(jid)
+		if canon.Server == types.HiddenUserServer || canon.IsEmpty() {
+			return "", false // still unmapped
 		}
-		return pn.String(), true
+		return canon.String(), true
 	})
 }
 
+// BackfillSenderNamesNow rewrites stored messages whose sender name is a raw
+// number, using the same resolver live messages now use.
 func (c *Client) BackfillSenderNamesNow() int {
 	return c.hist.BackfillSenderNames(func(sender string) string {
-		return c.hist.resolveLIDName(sender)
+		jid, err := types.ParseJID(sender)
+		if err != nil {
+			return ""
+		}
+		return c.displayName(jid, "")
 	})
 }
 
+// BackfillChatNamesNow rewrites stored chats whose name is a raw number (or
+// empty) now that DM names resolve through the address book. Groups are left
+// alone — their names come from GetGroupInfo, not the LID map. Returns the
+// number of chats renamed.
+func (c *Client) BackfillChatNamesNow() int {
+	return c.hist.BackfillChatNames(func(chatJID string) string {
+		jid, err := types.ParseJID(chatJID)
+		if err != nil || jid.Server == types.GroupServer {
+			return ""
+		}
+		return c.displayName(jid, "")
+	})
+}
+
+// ListChats returns the persisted chat list for the app's getchats.
 func (c *Client) ListChats() []map[string]any {
 	return c.hist.listChats()
 }
