@@ -350,3 +350,24 @@ func TestNilSessionStoreIsSafe(t *testing.T) {
 	s.logState()
 	s.close()
 }
+
+// tildeUnsaved implements WhatsApp's convention for distinguishing "a person I
+// saved as X" from "a person calling themselves X".
+func TestTildeUnsaved(t *testing.T) {
+	cases := []struct {
+		name  string
+		saved bool
+		want  string
+	}{
+		{"bulgayrian", true, "bulgayrian"},                   // user's own name for them
+		{"Sarp Doruk Gerenli", false, "~Sarp Doruk Gerenli"}, // their own name
+		{"~Already Marked", false, "~Already Marked"},        // no double tilde
+		{"", false, ""}, // nothing to mark
+		{"", true, ""},
+	}
+	for _, c := range cases {
+		if got := tildeUnsaved(c.name, c.saved); got != c.want {
+			t.Errorf("tildeUnsaved(%q, %v) = %q, want %q", c.name, c.saved, got, c.want)
+		}
+	}
+}

@@ -93,6 +93,12 @@ func main() {
 		rc, rm, rq := waCli.RefreshNamesNow()
 		log.Printf("LID migration: refreshed %d chat titles, %d sender names, %d quoted names "+
 			"to saved/address-book names", rc, rm, rq)
+		// Mentions are baked into the stored message body at receive time, so
+		// ones that failed to resolve then are frozen as raw ids until now.
+		log.Printf("LID migration: %d messages had @mentions resolved", waCli.ResolveStoredMentions())
+		// Previews embed the sender's name, so they must be recomputed last —
+		// after every name pass above has settled.
+		log.Printf("LID migration: %d chat previews rebuilt", waCli.RebuildPreviewsNow())
 		return
 	}
 

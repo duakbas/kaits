@@ -320,6 +320,116 @@ func TestMessageByIDMissesAreReported(t *testing.T) {
 	}
 }
 
+// Mentions are resolved once at receive time and the result is stored, so any
+// that failed then are frozen as raw ids in the message body.
+func TestRewriteMessageTextResolvesStoredMentions(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	putMsg(h, chat, "m1", "x@s.whatsapp.net", "X",
+		"So @230399326330975 @117432995844197 we're not playing right?", 100, false)
+	putMsg(h, chat, "m2", "x@s.whatsapp.net", "X", "no mentions here", 101, false)
+
+	n := h.rewriteMessageText(mentionPattern, func(digits string) string {
+		switch digits {
+		case "230399326330975":
+			return "@Deniz"
+		case "117432995844197":
+			return "@~Sarp"
+		}
+		return ""
+	})
+	if n != 1 {
+		t.Errorf("rewrote %d messages, want 1", n)
+	}
+
+	got := map[string]string{}
+	for _, m := range h.history(chat, 0, 10) {
+		got[m.MsgID] = m.Text
+	}
+	want := "So @Deniz @~Sarp we're not playing right?"
+	if got["m1"] != want {
+		t.Errorf("text = %q, want %q", got["m1"], want)
+	}
+	if got["m2"] != "no mentions here" {
+		t.Errorf("unrelated message changed to %q", got["m2"])
+	}
+}
+
+// An unresolvable mention must be left exactly as it was, not blanked.
+func TestRewriteMessageTextLeavesUnknownMentions(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	original := "hey @999888777666555 you there"
+	putMsg(h, chat, "m1", "x@s.whatsapp.net", "X", original, 100, false)
+
+	if n := h.rewriteMessageText(mentionPattern, func(string) string { return "" }); n != 0 {
+		t.Errorf("rewrote %d messages, want 0", n)
+	}
+	if got := h.history(chat, 0, 10)[0].Text; got != original {
+		t.Errorf("text = %q, want it untouched", got)
+	}
+}
+
+// Short digit runs in ordinary prose (years, prices) must not be treated as
+// mentions.
+func TestMentionPatternIgnoresShortNumbers(t *testing.T) {
+	for _, s := range []string{"costs @50", "in @2026", "@12345"} {
+		if mentionPattern.MatchString(s) {
+			t.Errorf("%q should not match the mention pattern", s)
+		}
+	}
+	if !mentionPattern.MatchString("@123456") {
+		t.Error("six digits should match")
+	}
+}
+
+// Chat previews embed the sender's name, so a name repair on the messages table
+// leaves the chat list still showing the old (often numeric) name.
+func TestRebuildPreviewsUsesCurrentSenderNames(t *testing.T) {
+	h := newHist(t)
+	group := "g@g.us"
+	dm := "dm@s.whatsapp.net"
+
+	// Stored while the sender was still an unresolved number.
+	putMsg(h, group, "m1", "x@s.whatsapp.net", "101194261385405", "hi", 100, false)
+	putMsg(h, dm, "m2", dm, "Alex", "yo", 101, false)
+	// The name pass has since fixed the message row.
+	h.db.Exec(`UPDATE messages SET sendername='~Ahmet' WHERE msgid='m1'`)
+	h.db.Exec(`UPDATE chats SET is_group=1 WHERE jid=?`, group)
+
+	if n := h.rebuildPreviews(); n < 1 {
+		t.Fatalf("rebuilt %d previews, want at least 1", n)
+	}
+
+	prev := map[string]any{}
+	for _, c := range h.listChats() {
+		prev[c["jid"].(string)] = c["preview"]
+	}
+	if prev[group] != "~Ahmet: hi" {
+		t.Errorf("group preview = %v, want %q", prev[group], "~Ahmet: hi")
+	}
+	// A 1:1 preview carries no sender prefix.
+	if prev[dm] != "yo" {
+		t.Errorf("dm preview = %v, want %q", prev[dm], "yo")
+	}
+}
+
+func TestRebuildPreviewsLabelsMediaByKind(t *testing.T) {
+	h := newHist(t)
+	group := "g@g.us"
+	h.putMessage(ws.MsgData{
+		MsgID: "m1", ChatJID: group, SenderJID: "x@s.whatsapp.net",
+		SenderName: "~Ahmet", IsGroup: true, Timestamp: 100, Kind: "sticker",
+		ChatName: "Group",
+	})
+	h.db.Exec(`UPDATE chats SET is_group=1 WHERE jid=?`, group)
+
+	h.rebuildPreviews()
+	if got := h.listChats()[0]["preview"]; got != "~Ahmet: [sticker]" {
+		t.Errorf("preview = %v, want %q", got, "~Ahmet: [sticker]")
+	}
+}
+
 func TestRenameChatAndMessagesAppliesSavedName(t *testing.T) {
 	h := newHist(t)
 	chat := "41791234567@s.whatsapp.net"

@@ -272,6 +272,14 @@ header .status.closed { color: var(--danger); }
   color: var(--muted);
 }
 
+/* forwarded marker inside a bubble */
+.fwd-label {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
 /* ---- contact / group info screen ---- */
 #profile-body { padding: 10px 8px 8px; text-align: center; }
 .profile-avatar {

@@ -75,6 +75,7 @@ type MsgData struct {
 	QuotedID   string `json:"quoted,omitempty"`
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to
 	QuotedName string `json:"quotedname,omitempty"` // who sent the quoted message
+	Forwarded  bool   `json:"forwarded,omitempty"`  // carries WhatsApp's forwarded marker
 }
 
 // SendData is an outgoing message from the app.

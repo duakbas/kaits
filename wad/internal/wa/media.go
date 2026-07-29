@@ -67,9 +67,9 @@ func (s *mediaStore) get(id string) (whatsmeow.DownloadableMessage, bool) {
 
 // AvatarResult is a cached avatar lookup: either image bytes or a "none" mark.
 type avatarEntry struct {
-	data  []byte
-	mime  string
-	none  bool // true = looked up, no photo (don't retry constantly)
+	data []byte
+	mime string
+	none bool // true = looked up, no photo (don't retry constantly)
 }
 
 // AvatarFor resolves and fetches a JID's profile picture, caching the result
@@ -144,4 +144,3 @@ func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
 	}
 	return c.WA.Download(ctx, dl)
 }
-

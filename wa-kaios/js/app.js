@@ -639,6 +639,14 @@
       if (isGroup && !m.fromme && m.sendername) {
         b.style.borderLeft = "2px solid " + colorFor(m.sendername);
       }
+      // WhatsApp's forwarded marker, above any quote bar — same order the
+      // official clients use.
+      if (m.forwarded) {
+        var fwd = document.createElement("div");
+        fwd.className = "fwd-label";
+        fwd.textContent = "↪ Forwarded";
+        b.appendChild(fwd);
+      }
       // if this message quotes another, show a small quote bar first
       if (m.quotedtext) {
         var q = document.createElement("div");

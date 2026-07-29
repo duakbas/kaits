@@ -3,6 +3,7 @@ package wa
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 
 	"wad/internal/ws"
 
@@ -77,6 +78,7 @@ func openHistStore(path string) (*histStore, error) {
 	for _, col := range []string{"muted", "archived"} {
 		db.Exec(`ALTER TABLE chats ADD COLUMN ` + col + ` INTEGER DEFAULT 0`)
 	}
+	db.Exec(`ALTER TABLE messages ADD COLUMN forwarded INTEGER DEFAULT 0`)
 	return &histStore{db: db}, nil
 }
 
@@ -93,10 +95,11 @@ func (h *histStore) putMessage(d ws.MsgData) {
 	}
 	_, err := h.db.Exec(`
 		INSERT OR REPLACE INTO messages
-		(msgid, chat, sender, sendername, fromme, ts, kind, text, media, mime, quoted_id, quoted_text, quoted_name)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(msgid, chat, sender, sendername, fromme, ts, kind, text, media, mime, quoted_id, quoted_text, quoted_name, forwarded)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.MsgID, d.ChatJID, d.SenderJID, d.SenderName, boolToInt(d.FromMe), d.Timestamp,
-		d.Kind, d.Text, d.MediaURL, d.Mime, d.QuotedID, d.QuotedText, d.QuotedName)
+		d.Kind, d.Text, d.MediaURL, d.Mime, d.QuotedID, d.QuotedText, d.QuotedName,
+		boolToInt(d.Forwarded))
 	if err != nil {
 		return
 	}
@@ -296,7 +299,7 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	if limit <= 0 {
 		limit = 40
 	}
-	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name
+	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name,COALESCE(forwarded,0)
 	      FROM messages WHERE chat=?`
 	args := []any{chat}
 	if beforeTS > 0 {
@@ -315,13 +318,14 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	var tmp []ws.MsgData
 	for rows.Next() {
 		var d ws.MsgData
-		var fromme, ts sql.NullInt64
+		var fromme, ts, fwd sql.NullInt64
 		var sender, sname, text, media, mime, qid, qtext, qname, kind sql.NullString
 		if err := rows.Scan(&d.MsgID, &d.ChatJID, &sender, &sname, &fromme,
 			&ts, &kind, &text, &media, &mime,
-			&qid, &qtext, &qname); err != nil {
+			&qid, &qtext, &qname, &fwd); err != nil {
 			continue
 		}
+		d.Forwarded = fwd.Int64 == 1
 		d.SenderJID = sender.String
 		d.SenderName = sname.String
 		d.Kind = kind.String
@@ -547,6 +551,120 @@ func (h *histStore) RefreshNames(resolve func(jid string) string) (int, int, int
 		}
 	}
 	return chatsFixed, msgsFixed, quotesFixed
+}
+
+// rewriteMessageText runs a regexp replacement over every stored message body
+// that matches, using resolve to turn each captured group into a replacement.
+// resolve returning "" leaves that occurrence alone. Returns rows changed.
+func (h *histStore) rewriteMessageText(re *regexp.Regexp, resolve func(string) string) int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	rows, err := h.db.Query(`SELECT chat, msgid, text FROM messages
+		WHERE text LIKE '%@%' AND text<>''`)
+	if err != nil {
+		return 0
+	}
+	type row struct{ chat, msgid, text string }
+	var pending []row
+	for rows.Next() {
+		var c, m string
+		var t sql.NullString
+		if rows.Scan(&c, &m, &t) == nil && t.String != "" {
+			pending = append(pending, row{c, m, t.String})
+		}
+	}
+	rows.Close()
+
+	fixed := 0
+	// Cache resolutions: the same handful of people get mentioned repeatedly,
+	// and each miss would otherwise re-query the contact tables per message.
+	seen := map[string]string{}
+	for _, r := range pending {
+		out := re.ReplaceAllStringFunc(r.text, func(match string) string {
+			digits := re.FindStringSubmatch(match)[1]
+			rep, known := seen[digits]
+			if !known {
+				rep = resolve(digits)
+				seen[digits] = rep
+			}
+			if rep == "" {
+				return match
+			}
+			return rep
+		})
+		if out == r.text {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE messages SET text=? WHERE chat=? AND msgid=?`,
+			out, r.chat, r.msgid)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			fixed += int(n)
+		}
+	}
+	return fixed
+}
+
+// rebuildPreviews regenerates every chat's list preview from its newest stored
+// message.
+//
+// Previews are denormalized (the "Name: body" string is written at insert time),
+// so a name repair that fixes the messages table leaves the chat list still
+// showing whatever it said before — including bare LID numbers. Returns rows
+// changed.
+func (h *histStore) rebuildPreviews() int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	rows, err := h.db.Query(`
+		SELECT c.jid, COALESCE(c.is_group,0), COALESCE(c.preview,''),
+		       m.sendername, m.fromme, m.kind, m.text
+		FROM chats c
+		JOIN messages m ON m.chat = c.jid
+		WHERE m.ts = (SELECT MAX(ts) FROM messages WHERE chat = c.jid)`)
+	if err != nil {
+		return 0
+	}
+	type row struct {
+		jid, oldPreview, sender, kind, text string
+		isGroup, fromMe                     bool
+	}
+	var pending []row
+	for rows.Next() {
+		var jid, oldPrev string
+		var grp, fromMe sql.NullInt64
+		var sname, kind, text sql.NullString
+		if rows.Scan(&jid, &grp, &oldPrev, &sname, &fromMe, &kind, &text) != nil {
+			continue
+		}
+		pending = append(pending, row{
+			jid: jid, oldPreview: oldPrev, sender: sname.String,
+			kind: kind.String, text: text.String,
+			isGroup: grp.Int64 == 1, fromMe: fromMe.Int64 == 1,
+		})
+	}
+	rows.Close()
+
+	fixed := 0
+	for _, r := range pending {
+		body := r.text
+		if r.kind != "text" {
+			body = "[" + r.kind + "]"
+		}
+		if r.isGroup && !r.fromMe && r.sender != "" {
+			body = r.sender + ": " + body
+		}
+		if body == r.oldPreview {
+			continue
+		}
+		res, _ := h.db.Exec(`UPDATE chats SET preview=? WHERE jid=?`, body, r.jid)
+		if res != nil {
+			n, _ := res.RowsAffected()
+			fixed += int(n)
+		}
+	}
+	return fixed
 }
 
 // MigrateLIDs rewrites @lid chats/messages to their phone JID (via resolver)

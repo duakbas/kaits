@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -278,6 +280,9 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 	}
 
 	// If this message is itself a reply, surface a preview of what it quotes.
+	if ci := extractContextInfo(m); ci != nil {
+		d.Forwarded = ci.GetIsForwarded() || ci.GetForwardingScore() > 0
+	}
 	if ci := extractContextInfo(m); ci != nil && ci.GetStanzaID() != "" {
 		d.QuotedID = ci.GetStanzaID()
 		d.QuotedText = quotedPreview(ci.GetQuotedMessage())
@@ -439,18 +444,35 @@ func (c *Client) canonicalJID(jid types.JID) types.JID {
 // LID-addressed sender used to miss the saved name entirely, which is why the
 // event push name used to be consulted first.
 func (c *Client) displayName(jid types.JID, pushName string) string {
+	n, _ := c.displayNameSourced(jid, pushName)
+	return n
+}
+
+// displayNameSourced is displayName plus where the name came from. saved=true
+// means the user chose this name (a nickname here, or an address-book entry);
+// saved=false means it's the name the contact chose for themselves.
+//
+// Callers use that to mark unsaved people the way WhatsApp does, with a leading
+// "~", so "a person I know as X" and "a person calling themselves X" don't look
+// identical.
+func (c *Client) displayNameSourced(jid types.JID, pushName string) (string, bool) {
 	// 0. a nickname the user saved in this app beats everything — they chose it
 	//    most recently and most deliberately.
 	if n := c.hist.localContactName(c.canonicalJID(jid).String()); n != "" {
-		return n
+		return n, true
 	}
-	// 1. address book, via the direct tables (checks the LID counterpart too).
-	if n := c.sess.contactName(jid); n != "" {
-		return n
+	// 1. the address book proper — a name the user set, so still authoritative.
+	if n := c.sess.addressBookName(jid); n != "" {
+		return n, true
 	}
+	// --- below here the contact named themselves; nothing is user-chosen ---
 	// 2. push name riding on the event, if we were given one.
 	if pushName != "" {
-		return pushName
+		return pushName, false
+	}
+	// 2b. push/business name from the contact tables, under either address.
+	if n := c.sess.contactName(jid); n != "" {
+		return n, false
 	}
 	// 3. whatsmeow's contact store, under the canonical JID and the raw one
 	//    (identical for a non-LID JID, so only try the second when it differs).
@@ -460,32 +482,45 @@ func (c *Client) displayName(jid types.JID, pushName string) string {
 	}
 	for _, j := range candidates {
 		if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), j); err == nil {
+			// FullName here is user-set, same tier as the address book.
 			if contact.FullName != "" {
-				return contact.FullName
+				return contact.FullName, true
 			}
 			if contact.PushName != "" {
-				return contact.PushName
+				return contact.PushName, false
 			}
 			if contact.BusinessName != "" {
-				return contact.BusinessName
+				return contact.BusinessName, false
 			}
 		}
 	}
 	// 4. names we learned from observed traffic, keyed by the raw LID.
 	if n := c.hist.resolveLIDName(jid.ToNonAD().String()); n != "" {
-		return n
+		return n, false
 	}
-	return ""
+	return "", false
 }
 
-// senderName resolves who sent a message to a human name, falling back to the
-// bare number when nobody knows them.
+// tildeUnsaved marks a name the contact chose for themselves with a leading "~",
+// the way WhatsApp does, so it can't be mistaken for a name the user set.
+func tildeUnsaved(name string, saved bool) string {
+	if name == "" || saved || strings.HasPrefix(name, "~") {
+		return name
+	}
+	return "~" + name
+}
+
+// senderName resolves who sent a message to a human name.
+//
+// Falls back to the phone number rather than the raw LID — a LID is an internal
+// id that means nothing to the user. Names the contact set for themselves are
+// prefixed "~".
 func (c *Client) senderName(v *events.Message) string {
 	if v.Info.IsFromMe {
 		return "You"
 	}
-	if n := c.displayName(v.Info.Sender, v.Info.PushName); n != "" {
-		return n
+	if n, saved := c.displayNameSourced(v.Info.Sender, v.Info.PushName); n != "" {
+		return tildeUnsaved(n, saved)
 	}
 	return c.canonicalJID(v.Info.Sender).User
 }
@@ -549,14 +584,22 @@ func (c *Client) resolveMentions(text string, ci *waE2E.ContextInfo) string {
 		if err != nil {
 			continue
 		}
-		name := c.displayNameForJID(jid)
+		canon := c.canonicalJID(jid)
+		name, saved := c.displayNameSourced(jid, "")
+		name = tildeUnsaved(name, saved)
 		if name == "" {
-			continue
+			// Nobody knows them. Still better to show a phone number than a raw
+			// LID, which is an opaque internal id — but only if the LID actually
+			// maps to one, otherwise leave the text alone.
+			if canon.Server != types.DefaultUserServer || canon.User == jid.User {
+				continue
+			}
+			name = "+" + canon.User
 		}
 		// The text contains "@<user>" where user is the number part — but which
 		// number depends on how the sender's client addressed the mention, so
 		// try both the LID and the phone form.
-		for _, user := range []string{jid.User, c.canonicalJID(jid).User} {
+		for _, user := range []string{jid.User, canon.User} {
 			if user == "" {
 				continue
 			}
@@ -564,6 +607,30 @@ func (c *Client) resolveMentions(text string, ci *waE2E.ContextInfo) string {
 		}
 	}
 	return text
+}
+
+// mentionPattern matches an unresolved "@<digits>" mention left in stored text.
+// Six digits minimum so it can't chew through short numbers in ordinary prose.
+var mentionPattern = regexp.MustCompile(`@(\d{6,})`)
+
+// ResolveStoredMentions rewrites "@<number>" mentions still sitting in stored
+// message bodies.
+//
+// Mentions are resolved once, when the message arrives, and the result is what
+// gets stored — so every mention that failed to resolve back then is frozen as a
+// raw id. The original ContextInfo (and its list of mentioned JIDs) is long
+// gone, so this works from the digits in the text: try them as a LID, then as a
+// phone number. Returns the number of messages rewritten.
+func (c *Client) ResolveStoredMentions() int {
+	return c.hist.rewriteMessageText(mentionPattern, func(digits string) string {
+		for _, server := range []string{types.HiddenUserServer, types.DefaultUserServer} {
+			jid := types.JID{User: digits, Server: server}
+			if n, saved := c.displayNameSourced(jid, ""); n != "" {
+				return "@" + tildeUnsaved(n, saved)
+			}
+		}
+		return "" // unknown — leave the original text untouched
+	})
 }
 
 // displayNameForJID resolves a single JID to a name, returning "" if nothing
@@ -597,8 +664,16 @@ func (c *Client) ForwardMessage(ctx context.Context, srcMsgID, destChatJID strin
 	c.replyMu.Unlock()
 	if cached && rc.msg != nil {
 		// Best case: the original protobuf, so media forwards by reference
-		// without re-uploading.
-		resp, err := c.WA.SendMessage(ctx, dest, rc.msg)
+		// without re-uploading. Clone before stamping — rc.msg is the cached
+		// original and other callers (replies, a second forward) still read it.
+		msg := proto.Clone(rc.msg).(*waE2E.Message)
+		// Carry the hop count forward so a chain keeps counting up, which is
+		// what drives WhatsApp's "forwarded many times" treatment.
+		score := uint32(1)
+		if ci := extractContextInfo(rc.msg); ci != nil && ci.GetForwardingScore() > 0 {
+			score = ci.GetForwardingScore() + 1
+		}
+		resp, err := c.WA.SendMessage(ctx, dest, markForwarded(msg, score))
 		if err != nil {
 			return "", err
 		}
@@ -616,7 +691,7 @@ func (c *Client) ForwardMessage(ctx context.Context, srcMsgID, destChatJID strin
 		return "", fmt.Errorf("can only forward %s from this session — reopen the chat "+
 			"and try while the message is fresh", kind)
 	}
-	resp, err := c.WA.SendMessage(ctx, dest, textMsg(text))
+	resp, err := c.WA.SendMessage(ctx, dest, markForwarded(textMsg(text), 1))
 	if err != nil {
 		return "", err
 	}
@@ -660,9 +735,14 @@ func (c *Client) BackfillSenderNamesNow() int {
 		if err != nil {
 			return ""
 		}
-		return c.displayName(jid, "")
+		return tildeUnsaved(c.displayNameSourced(jid, ""))
 	})
 }
+
+// RebuildPreviewsNow regenerates chat-list previews from the newest stored
+// message in each chat. Previews embed the sender's name, so they keep showing
+// old (or numeric) names until they're recomputed.
+func (c *Client) RebuildPreviewsNow() int { return c.hist.rebuildPreviews() }
 
 // BackfillChatNamesNow rewrites stored chats whose name is a raw number (or
 // empty) now that DM names resolve through the address book. Groups are left
@@ -674,7 +754,7 @@ func (c *Client) BackfillChatNamesNow() int {
 		if err != nil || jid.Server == types.GroupServer {
 			return ""
 		}
-		return c.displayName(jid, "")
+		return tildeUnsaved(c.displayNameSourced(jid, ""))
 	})
 }
 
@@ -980,8 +1060,8 @@ func (c *Client) BackfillQuotedNamesNow() int {
 	return c.hist.BackfillQuotedNames(func(num string) string {
 		// Stored quoted names are bare user ids; try both address forms.
 		for _, server := range []string{types.HiddenUserServer, types.DefaultUserServer} {
-			if n := c.displayName(types.JID{User: num, Server: server}, ""); n != "" {
-				return n
+			if n, saved := c.displayNameSourced(types.JID{User: num, Server: server}, ""); n != "" {
+				return tildeUnsaved(n, saved)
 			}
 		}
 		return ""
