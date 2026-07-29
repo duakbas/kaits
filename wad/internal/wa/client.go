@@ -801,6 +801,7 @@ func (c *Client) ResyncContacts(ctx context.Context) error {
 const (
 	lidBatchSize    = 20
 	lidBatchPause   = 2 * time.Second
+	lidMaxPause     = 15 * time.Second
 	lidRetryBackoff = 30 * time.Second
 	lidMaxRetries   = 3
 )
@@ -811,8 +812,17 @@ func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned, faile
 		return 0, 0, 0
 	}
 	before := c.sess.lidMapCount()
-	log.Printf("wa: %d contacts have no LID mapping; this takes about %s",
-		len(targets), (time.Duration(len(targets)/lidBatchSize+1) * lidBatchPause).Round(time.Second))
+	// No time estimate here on purpose: the honest answer depends entirely on
+	// how often WhatsApp throttles, which isn't knowable up front. Progress is
+	// logged as it goes instead.
+	log.Printf("wa: %d contacts have no LID mapping; working through them "+
+		"(slow by design — WhatsApp throttles this endpoint)", len(targets))
+
+	// Pause between batches, widened whenever we get throttled. In practice the
+	// limit allows a burst and then clamps, so a fixed short delay just walks
+	// into a 429 every few batches and spends most of its time in backoff;
+	// stretching the gap after each hit settles near the sustainable rate.
+	pause := lidBatchPause
 
 	for start := 0; start < len(targets); start += lidBatchSize {
 		end := start + lidBatchSize
@@ -841,7 +851,12 @@ func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned, faile
 				break
 			}
 			wait := lidRetryBackoff * time.Duration(attempt+1)
-			log.Printf("wa: rate-limited at contact %d/%d, waiting %s", start, len(targets), wait)
+			// Back off the steady-state pace too, not just this retry.
+			if pause < lidMaxPause {
+				pause += 3 * time.Second
+			}
+			log.Printf("wa: rate-limited at contact %d/%d, waiting %s (pacing now %s between batches)",
+				start, len(targets), wait, pause)
 			if !sleepCtx(ctx, wait) {
 				break
 			}
@@ -854,7 +869,7 @@ func (c *Client) ResyncLIDMappings(ctx context.Context) (queried, learned, faile
 		if ctx.Err() != nil {
 			break
 		}
-		if !sleepCtx(ctx, lidBatchPause) {
+		if !sleepCtx(ctx, pause) {
 			break
 		}
 	}
