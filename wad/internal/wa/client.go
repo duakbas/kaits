@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -122,6 +123,49 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 	return c, nil
 }
 
+// announcePresence tells WhatsApp this device is here.
+//
+// Without it a linked device connects passively: it receives fine, but the
+// server never marks it active, so the phone's "Linked devices" screen keeps
+// showing an old "last active" and other users see "-" where our push name
+// should be. Sending "available" also enables active receipts, which is what
+// makes the device look genuinely live rather than merely attached.
+//
+// The trade-off is real, so it's controllable via WAD_PRESENCE:
+//
+//	available   (default) appear online, send read receipts
+//	unavailable register the push name but stay invisible
+//	off         send nothing — the device will look idle
+//
+// Best-effort: a failure here costs visibility, not function, so it's logged
+// rather than propagated.
+func (c *Client) announcePresence() {
+	mode := os.Getenv("WAD_PRESENCE")
+	if mode == "off" {
+		return
+	}
+	state := types.PresenceAvailable
+	if mode == "unavailable" {
+		state = types.PresenceUnavailable
+	}
+
+	// SendPresence refuses without a push name, and the attribute it sends IS
+	// the push name — so an empty one is worth saying out loud.
+	if c.WA.Store.PushName == "" {
+		log.Printf("wa: no push name in the session store; skipping presence " +
+			"(contacts may see \"-\" and this device will look idle)")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := c.WA.SendPresence(ctx, state); err != nil {
+		log.Printf("wa: could not announce presence (%v) — this device may show as inactive", err)
+		return
+	}
+	log.Printf("wa: presence sent as %q (WAD_PRESENCE=off to stay quiet)", state)
+}
+
 // SetCallHook lets the calls package receive raw call events.
 func (c *Client) SetCallHook(fn func(evt any)) { c.onCall = fn }
 
@@ -170,6 +214,11 @@ func (c *Client) handleEvent(evt any) {
 	switch v := evt.(type) {
 
 	case *events.Connected:
+		// Announce presence, or WhatsApp treats this device as idle: "Linked
+		// devices" shows a stale "last active", and contacts see "-" instead of
+		// our push name. Has to happen on every Connected, not once at startup,
+		// because a reconnect resets it.
+		c.announcePresence()
 		c.hub.PushT(ws.TReady, map[string]any{"ok": true})
 
 	case *events.Message:

@@ -188,6 +188,32 @@ may simply decline to serve history that old. If the count doesn't move, that's
 what happened — re-running later is harmless. Requests are paced, because this
 is exactly the kind of chatter that gets an unofficial client throttled.
 
+## "Last active 2 days ago" on the phone
+
+A linked device that just connects is passive: it receives everything, but the
+server never marks it active. The phone's "Linked devices" screen keeps showing
+a stale *last active*, and other users see `-` where your push name should be.
+
+Presence is what fixes that, and the daemon now sends it on every connect. The
+log line to look for:
+
+```
+wa: presence sent as "available"
+```
+
+`available` also means you appear **online to your contacts** while the daemon
+runs, and read receipts get sent. If that's not wanted:
+
+| `WAD_PRESENCE` | effect |
+|---|---|
+| unset / `available` | appear online, send read receipts, device shows active |
+| `unavailable` | register the push name but stay invisible |
+| `off` | send nothing; the device will keep looking idle |
+
+Note that this only lasts while the daemon is connected. One-shot modes
+(`WAD_MIGRATE_LIDS`, `WAD_REFETCH_MEDIA`) connect, work, and exit, so they won't
+keep the device looking live.
+
 ## What happens while the daemon is off
 
 The daemon only receives messages while it's running. WhatsApp buffers for an
@@ -223,3 +249,4 @@ ongoing: nothing is missing until something newer arrives to reveal it.
 | `WAD_RESYNC` | unset | `1` = full contact resync, then the repair, then exit |
 | `WAD_REFETCH_MEDIA` | unset | `1` = ask the phone to re-send history so old attachments become downloadable |
 | `WAD_REFETCH_MAX` | `40` | max history requests one refetch run may send |
+| `WAD_PRESENCE` | `available` | `unavailable` = invisible, `off` = send no presence |
