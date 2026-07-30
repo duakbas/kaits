@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -104,6 +105,49 @@ func main() {
 		// Previews embed the sender's name, so they must be recomputed last —
 		// after every name pass above has settled.
 		log.Printf("LID migration: %d chat previews rebuilt", waCli.RebuildPreviewsNow())
+		return
+	}
+
+	// WAD_REFETCH_MEDIA=1 asks the phone to re-send history for chats whose
+	// attachments have no stored keys, so old photos become viewable again.
+	// Answers arrive asynchronously as HistorySync events, so this stays
+	// connected for a while after the requests go out rather than exiting
+	// immediately.
+	if os.Getenv("WAD_REFETCH_MEDIA") == "1" {
+		if err := waCli.Connect(ctx); err != nil {
+			log.Fatalf("connect for media refetch: %v", err)
+		}
+		time.Sleep(5 * time.Second) // let the session settle
+		before, missing := waCli.MediaKeyStats()
+		log.Printf("media refetch: %d attachments have keys, %d don't", before, missing)
+
+		maxReq := 40
+		if v := os.Getenv("WAD_REFETCH_MAX"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				maxReq = n
+			}
+		}
+		sent, chats := waCli.RefetchMediaKeys(ctx, maxReq)
+		log.Printf("media refetch: sent %d history requests across %d chats", sent, chats)
+
+		if sent > 0 {
+			// The phone replies whenever it feels like it. Hold the connection
+			// open so the HistorySync handler can store what comes back.
+			wait := 90 * time.Second
+			log.Printf("media refetch: waiting %s for responses (Ctrl-C to stop early)…", wait)
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+			}
+			after, stillMissing := waCli.MediaKeyStats()
+			log.Printf("media refetch: now %d attachments have keys (+%d), %d still missing",
+				after, after-before, stillMissing)
+			if after == before {
+				log.Printf("media refetch: nothing came back — the phone may be offline, " +
+					"or may refuse to serve history this old")
+			}
+		}
+		waCli.WA.Disconnect()
 		return
 	}
 

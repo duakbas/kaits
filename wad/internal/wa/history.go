@@ -277,6 +277,54 @@ func (h *histStore) mediaRefFor(msgid string) (mediaRef, bool) {
 	return r, true
 }
 
+// mediaGap is one stored attachment we can't currently download, because its
+// keys were never captured.
+type mediaGap struct {
+	Chat   string
+	MsgID  string
+	TS     int64
+	FromMe bool
+}
+
+// mediaMessagesWithoutKeys lists attachments that have no stored keys, newest
+// first. These are the messages an on-demand history re-fetch needs to cover.
+func (h *histStore) mediaMessagesWithoutKeys() []mediaGap {
+	if h == nil || h.db == nil {
+		return nil
+	}
+	rows, err := h.db.Query(`
+		SELECT m.chat, m.msgid, m.ts, m.fromme FROM messages m
+		WHERE m.kind IN ('image','video','audio','gif','sticker','doc')
+		  AND NOT EXISTS (SELECT 1 FROM media_keys k WHERE k.msgid = m.msgid)
+		ORDER BY m.ts DESC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []mediaGap
+	for rows.Next() {
+		var g mediaGap
+		var fm sql.NullInt64
+		var ts sql.NullInt64
+		if rows.Scan(&g.Chat, &g.MsgID, &ts, &fm) != nil {
+			continue
+		}
+		g.TS, g.FromMe = ts.Int64, fm.Int64 == 1
+		out = append(out, g)
+	}
+	return out
+}
+
+// countStoredMediaKeys is how many attachments are currently downloadable.
+func (h *histStore) countStoredMediaKeys() int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	var n int
+	h.db.QueryRow(`SELECT COUNT(*) FROM media_keys`).Scan(&n)
+	return n
+}
+
 // mimeForMessage returns a stored message's mime type, for serving media after
 // the in-memory table is gone.
 func (h *histStore) mimeForMessage(msgid string) string {

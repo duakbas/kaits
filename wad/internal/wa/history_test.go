@@ -641,3 +641,70 @@ func TestMimeForMessageFallsBackToMessageRow(t *testing.T) {
 		t.Errorf("unknown id mime = %q, want empty", got)
 	}
 }
+
+// Only attachments with no stored keys need re-fetching; ones that already have
+// keys, and plain text messages, must not be reported as gaps.
+func TestMediaMessagesWithoutKeys(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	// Two attachments, one text message.
+	h.putMessage(ws.MsgData{MsgID: "IMG_OLD", ChatJID: chat, Timestamp: 100,
+		Kind: "image", MediaURL: "/media/IMG_OLD"})
+	h.putMessage(ws.MsgData{MsgID: "IMG_NEW", ChatJID: chat, Timestamp: 200,
+		Kind: "image", MediaURL: "/media/IMG_NEW"})
+	putMsg(h, chat, "TXT", "x@s.whatsapp.net", "X", "hello", 150, false)
+	// Only the newer one has keys.
+	h.putMediaRef("IMG_NEW", mediaRef{directPath: "/p", mediaType: "WhatsApp Image Keys"})
+
+	gaps := h.mediaMessagesWithoutKeys()
+	if len(gaps) != 1 {
+		t.Fatalf("gaps = %d (%+v), want 1", len(gaps), gaps)
+	}
+	if gaps[0].MsgID != "IMG_OLD" {
+		t.Errorf("gap msgid = %q, want IMG_OLD", gaps[0].MsgID)
+	}
+	if gaps[0].Chat != chat || gaps[0].TS != 100 {
+		t.Errorf("gap = %+v, want chat %s ts 100", gaps[0], chat)
+	}
+
+	if got := h.countStoredMediaKeys(); got != 1 {
+		t.Errorf("countStoredMediaKeys = %d, want 1", got)
+	}
+}
+
+// Gaps must come back newest-first, since the refetch walks history backwards.
+func TestMediaMessagesWithoutKeysOrderedNewestFirst(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	for i, ts := range []int64{100, 300, 200} {
+		h.putMessage(ws.MsgData{
+			MsgID: string(rune('A' + i)), ChatJID: chat, Timestamp: ts, Kind: "image",
+		})
+	}
+	gaps := h.mediaMessagesWithoutKeys()
+	if len(gaps) != 3 {
+		t.Fatalf("gaps = %d, want 3", len(gaps))
+	}
+	for i := 1; i < len(gaps); i++ {
+		if gaps[i-1].TS < gaps[i].TS {
+			t.Errorf("gaps not newest-first: %v", gaps)
+			break
+		}
+	}
+}
+
+// Every media kind the app renders must be recognised as a possible gap,
+// otherwise those attachments would silently never be recovered.
+func TestMediaMessagesWithoutKeysCoversAllKinds(t *testing.T) {
+	h := newHist(t)
+	kinds := []string{"image", "video", "audio", "gif", "sticker", "doc"}
+	for i, k := range kinds {
+		h.putMessage(ws.MsgData{
+			MsgID: "M" + k, ChatJID: "c@s.whatsapp.net",
+			Timestamp: int64(100 + i), Kind: k,
+		})
+	}
+	if got := len(h.mediaMessagesWithoutKeys()); got != len(kinds) {
+		t.Errorf("gaps = %d, want %d (one per media kind)", got, len(kinds))
+	}
+}

@@ -163,6 +163,31 @@ address book syncs one way, from a phone *into* the account:
    the `contacts` permission for this. Neither API exists in a desktop browser,
    so that action is hidden during development and only the nickname applies.
 
+## Old photos that won't load
+
+An attachment can only be decrypted with keys that ride on the original message
+(direct path, media key, two hashes). Those are stored per message now, so media
+received from here on stays viewable across restarts. Messages stored *before*
+that have no keys, and no repair pass can invent them — their photos are
+un-fetchable from what's on disk.
+
+They can be asked for again. WhatsApp lets a linked device request history on
+demand, and the reply carries full message data, so the keys get captured as a
+side effect:
+
+```
+WAD_REFETCH_MEDIA=1 go run ./cmd/wad
+```
+
+It reports how many attachments lack keys, asks the phone for the history around
+them, waits ~90s for replies, then reports how many keys it gained.
+`WAD_REFETCH_MAX=n` bounds the number of requests (default 40).
+
+This depends on the primary phone cooperating: **it has to be online**, and it
+may simply decline to serve history that old. If the count doesn't move, that's
+what happened — re-running later is harmless. Requests are paced, because this
+is exactly the kind of chatter that gets an unofficial client throttled.
+
 ## Env vars
 
 | var | default | meaning |
@@ -172,3 +197,5 @@ address book syncs one way, from a phone *into* the account:
 | `WAD_DB`    | `wa-session.db` | session store path |
 | `WAD_MIGRATE_LIDS` | unset | `1` = run the one-shot LID/name repair, then exit |
 | `WAD_RESYNC` | unset | `1` = full contact resync, then the repair, then exit |
+| `WAD_REFETCH_MEDIA` | unset | `1` = ask the phone to re-send history so old attachments become downloadable |
+| `WAD_REFETCH_MAX` | `40` | max history requests one refetch run may send |
