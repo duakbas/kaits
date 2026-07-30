@@ -66,6 +66,11 @@ type Client struct {
 	// sess reads whatsmeow's session db directly for LID<->phone mappings and
 	// contact names. nil if it couldn't be opened — callers must cope.
 	sess *sessionStore
+
+	// gapTried remembers which chats we've already asked to backfill this run,
+	// so a long-quiet chat doesn't trigger a request on every message.
+	gapTried map[string]bool
+	gapMu    sync.Mutex
 }
 
 // New opens (or creates) the session store and builds a whatsmeow client.
@@ -317,6 +322,13 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 			c.hist.learnLID(rawLID, "", pn)
 		}
 	}
+	// A live message far newer than the last one we stored for this chat means
+	// we were offline for longer than WhatsApp buffers. Ask for the difference
+	// before storing, so the comparison is against what we had, not this message.
+	if live {
+		c.maybeFillGap(chat, v.Info.ID, v.Info.IsFromMe, d.Timestamp)
+	}
+
 	c.hist.putMessage(d)
 
 	// Only notify the app for live messages; history-sync is pull-based.

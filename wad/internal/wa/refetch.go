@@ -121,3 +121,78 @@ func (c *Client) RefetchMediaKeys(ctx context.Context, maxRequests int) (sent, c
 func (c *Client) MediaKeyStats() (withKeys, without int) {
 	return c.hist.countStoredMediaKeys(), len(c.hist.mediaMessagesWithoutKeys())
 }
+
+// historyGapThreshold is how big a jump in a chat's timeline has to be before we
+// suspect we missed messages rather than the chat simply being quiet. Hours, not
+// minutes: people don't message constantly, and a false positive costs a request
+// to the phone.
+const historyGapThreshold = 6 * time.Hour
+
+// maybeFillGap notices that a live message is much newer than the last one we
+// stored for its chat, and asks the phone for what fell in between.
+//
+// Why this is needed: the daemon only receives messages while it's running.
+// WhatsApp buffers for an offline linked device and replays on reconnect, which
+// covers short outages — but that buffer expires, and anything past it is simply
+// never delivered to this device. Our history then has a hole that nothing
+// notices, because the next message stores fine.
+//
+// On-demand history only reads BACKWARDS from an anchor, so a gap can't be
+// filled until something newer than it arrives. That makes the first message
+// after an outage the trigger: anchor on it and the request covers the hole.
+//
+// Best-effort and quiet. Once per chat per run, so a chat that's simply been
+// quiet for a week doesn't generate a request per message.
+func (c *Client) maybeFillGap(chat types.JID, msgID string, fromMe bool, ts int64) {
+	if c.hist == nil || msgID == "" || ts == 0 {
+		return
+	}
+	key := chat.String()
+
+	c.gapMu.Lock()
+	if c.gapTried == nil {
+		c.gapTried = make(map[string]bool)
+	}
+	if c.gapTried[key] {
+		c.gapMu.Unlock()
+		return
+	}
+	c.gapMu.Unlock()
+
+	_, lastTS, _, _ := c.hist.lastMessage(key)
+	// No stored history means a brand-new chat, not a gap — nothing to fill.
+	if lastTS == 0 {
+		return
+	}
+	gap := time.Duration(ts-lastTS) * time.Second
+	if gap < historyGapThreshold {
+		return
+	}
+
+	c.gapMu.Lock()
+	c.gapTried[key] = true
+	c.gapMu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		info := &types.MessageInfo{
+			ID:        msgID,
+			Timestamp: time.Unix(ts, 0),
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				IsFromMe: fromMe,
+				IsGroup:  chat.Server == types.GroupServer,
+			},
+		}
+		req := c.WA.BuildHistorySyncRequest(info, refetchBatch)
+		if req == nil {
+			return
+		}
+		log.Printf("wa: %s has a %s gap since the last stored message; requesting the missing history",
+			key, gap.Round(time.Hour))
+		if _, err := c.WA.SendPeerMessage(ctx, req); err != nil {
+			log.Printf("wa: gap-fill request for %s failed: %v", key, err)
+		}
+	}()
+}

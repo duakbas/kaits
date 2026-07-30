@@ -188,6 +188,30 @@ may simply decline to serve history that old. If the count doesn't move, that's
 what happened — re-running later is harmless. Requests are paced, because this
 is exactly the kind of chatter that gets an unofficial client throttled.
 
+## What happens while the daemon is off
+
+The daemon only receives messages while it's running. WhatsApp buffers for an
+offline linked device and replays on reconnect, so short outages — closing the
+laptop, restarting the daemon — cost nothing.
+
+That buffer expires, though. Past it, messages are never delivered to this
+device at all, and the hole is invisible: the next message that arrives stores
+normally, so nothing looks wrong until you scroll.
+
+On-demand history only reads *backwards* from an anchor, so a gap can't be
+filled until something newer than it exists. The daemon uses that: when a live
+message lands more than 6 hours after the last one stored for its chat, it asks
+the phone for the messages in between. Once per chat per run, so a chat that has
+simply been quiet doesn't generate requests. You'll see it in the log:
+
+```
+wa: <chat> has a 3d gap since the last stored message; requesting the missing history
+```
+
+This is best-effort for the same reasons as the media refetch — it needs the
+phone online and willing. It also can't help with an outage that is still
+ongoing: nothing is missing until something newer arrives to reveal it.
+
 ## Env vars
 
 | var | default | meaning |
