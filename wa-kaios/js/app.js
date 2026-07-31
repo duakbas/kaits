@@ -14,6 +14,10 @@
   // thread interaction state
   var selectMode = false; // true when a bubble is focused (vs the composer)
   var selectIdx = -1;     // index into the current thread's messages
+  var selectMsgID = null; // ...and which message that is, so it survives paging
+  var loadingOlder = false;   // an older-history request is in flight
+  var pendingOlderFor = null; // which chat that request was for
+  var prependAnchor = null;   // scroll geometry captured before older msgs land
   var replyingTo = null;  // {msgid, name, text} when composing a reply
   var privateReply = false; // reply goes to the sender's DM, not this chat
   var menuOpen = false;   // action menu overlay visible
@@ -278,6 +282,11 @@
     // Clear optimistically; the daemon confirms with a chatupdate once the read
     // receipt has actually gone out.
     c.unread = 0;
+    // Drop any paging state belonging to the chat we just left, or a reply
+    // still in flight for it would keep this chat from loading older pages.
+    loadingOlder = false;
+    pendingOlderFor = null;
+    prependAnchor = null;
     elThreadTitle.textContent = c.name || jid;
     show(elThread);
     clearReply();
@@ -297,6 +306,7 @@
   function enterComposeMode() {
     selectMode = false;
     selectIdx = -1;
+    selectMsgID = null;
     renderThread(); // clear any bubble highlight
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
@@ -314,7 +324,7 @@
     if (!msgs.length) return;
     elInput.blur();
     selectMode = true;
-    selectIdx = msgs.length - 1; // start at the newest message
+    setSelect(msgs.length - 1); // start at the newest message
     renderThread();
     Nav.setScreen({
       onUp: function () { moveSelect(-1); },
@@ -330,10 +340,47 @@
   function moveSelect(delta) {
     var msgs = threads[currentJID] || [];
     var next = selectIdx + delta;
-    if (next < 0) { selectIdx = 0; renderThread(); return; }
+    if (next < 0) {
+      // At the oldest loaded message. Pull an older page instead of
+      // dead-ending here — the scroll listener never fires for D-pad
+      // navigation, so without this, moving up simply stops.
+      setSelect(0);
+      requestOlderHistory();
+      renderThread();
+      return;
+    }
     if (next >= msgs.length) { enterComposeMode(); return; } // down off the end
-    selectIdx = next;
+    setSelect(next);
     renderThread();
+  }
+
+  // setSelect moves the selection and remembers WHICH message it is, not just
+  // where it sat. Loading older history prepends to the array, shifting every
+  // index — anchoring on the id is what stops the selection silently jumping to
+  // a different message when a page loads.
+  function setSelect(idx) {
+    var msgs = threads[currentJID] || [];
+    selectIdx = idx;
+    selectMsgID = (idx >= 0 && idx < msgs.length) ? msgs[idx].msgid : null;
+  }
+
+  // requestOlderHistory asks for the page before the oldest message we hold.
+  // Returns true if a request went out. Guards against overlapping requests and
+  // against asking forever once the chat's history is exhausted.
+  function requestOlderHistory() {
+    if (loadingOlder || !currentJID) return false;
+    var arr = threads[currentJID] || [];
+    if (!arr.length || arr.noMoreHistory) return false;
+    var oldestTS = arr[0].ts || 0;
+    if (!oldestTS) return false;
+    loadingOlder = true;
+    pendingOlderFor = currentJID;
+    prependAnchor = {
+      height: elThreadMsgs.scrollHeight,
+      top: elThreadMsgs.scrollTop
+    };
+    W.send(W.T.GETHISTORY, { jid: currentJID, before: oldestTS, limit: 40 });
+    return true;
   }
 
   // ---------- action menu ----------
@@ -401,7 +448,7 @@
     // the user's selection out from under them on cancel — so restore it.
     var keep = selectIdx;
     enterSelectMode();
-    selectIdx = keep;
+    setSelect(keep);
     renderThread();
   }
 
@@ -625,11 +672,12 @@
     return "";
   }
 
-  // keepSelection re-finds a message's index after the thread array shifts.
+  // keepSelection re-finds a message's index after the thread array shifts, and
+  // re-anchors the id with it so a later history page can find it again.
   function keepSelection(m) {
     var msgs = threads[currentJID] || [];
     for (var i = 0; i < msgs.length; i++) {
-      if (msgs[i].msgid === m.msgid) return i;
+      if (msgs[i].msgid === m.msgid) { setSelect(i); return i; }
     }
     return selectIdx;
   }
@@ -696,7 +744,7 @@
     var back = function () {
       elChatMenu.hidden = true;
       enterSelectMode();
-      selectIdx = keep;
+      setSelect(keep);
       renderThread();
     };
     var keep = selectIdx;
@@ -1470,7 +1518,37 @@
     // sort oldest->newest by timestamp
     arr.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
     arr.loadedHistory = true;
-    if (currentJID === d.jid && !menuOpen) renderThread();
+
+    // Clear the in-flight flag on the reply itself rather than a timer — a slow
+    // reply used to unblock early and let a second request pile on, while a
+    // fast one left the flag set for the rest of the 300ms.
+    var wasOlderRequest = (pendingOlderFor === d.jid);
+    if (wasOlderRequest) {
+      pendingOlderFor = null;
+      loadingOlder = false;
+      // Nothing came back: this chat's history is exhausted, so stop asking on
+      // every subsequent keypress at the top.
+      if (added === 0) arr.noMoreHistory = true;
+    }
+
+    // The array grew at the FRONT, so every index shifted. Re-anchor the
+    // selection on the message it was actually pointing at.
+    if (currentJID === d.jid && selectMode && selectMsgID) {
+      for (var j = 0; j < arr.length; j++) {
+        if (arr[j].msgid === selectMsgID) { selectIdx = j; break; }
+      }
+    }
+
+    if (currentJID === d.jid && !menuOpen) {
+      renderThread();
+      // Keep the viewport over the same content after a prepend, or the reader
+      // gets thrown to a random point in the newly inserted page.
+      if (wasOlderRequest && added > 0 && prependAnchor && !selectMode) {
+        elThreadMsgs.scrollTop = prependAnchor.top +
+          (elThreadMsgs.scrollHeight - prependAnchor.height);
+      }
+    }
+    prependAnchor = null;
     console.log("history:", d.jid, "+", added, "messages");
   });
 
@@ -1588,23 +1666,13 @@
   // softkey presses don't register as composing.
   elInput.addEventListener("input", noteTyping);
 
-  // scroll to top of a thread -> load an older page of history
-  var loadingOlder = false;
+  // Scrolling to the top of a thread loads an older page. D-pad navigation goes
+  // through moveSelect instead, which calls the same helper — scrollIntoView
+  // doesn't reliably fire this listener, which is why selecting upwards used to
+  // stop dead while dragging the scrollbar worked.
   elThreadMsgs.addEventListener("scroll", function () {
-    if (elThreadMsgs.scrollTop > 8 || loadingOlder || !currentJID) return;
-    var arr = threads[currentJID] || [];
-    if (!arr.length) return;
-    var oldestTS = arr[0].ts || 0;
-    if (!oldestTS) return;
-    loadingOlder = true;
-    var prevHeight = elThreadMsgs.scrollHeight;
-    W.send(W.T.GETHISTORY, { jid: currentJID, before: oldestTS, limit: 40 });
-    // keep scroll position stable after older messages prepend
-    setTimeout(function () {
-      var newHeight = elThreadMsgs.scrollHeight;
-      elThreadMsgs.scrollTop += (newHeight - prevHeight);
-      loadingOlder = false;
-    }, 300);
+    if (elThreadMsgs.scrollTop > 8) return;
+    requestOlderHistory();
   });
   enterListScreen();
   W.connect();
