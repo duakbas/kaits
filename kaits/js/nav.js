@@ -60,7 +60,21 @@
     return tag === "input" || tag === "textarea" || a.isContentEditable;
   }
 
+  // Every key the page receives, newest last. On the phone there is no console,
+  // so this is the only way to tell "the key never arrived" from "the key
+  // arrived and nothing handled it" — which look identical and have completely
+  // different causes.
+  var recent = [];
+  function note(key, handled) {
+    recent.push((handled ? "" : "!") + key);
+    if (recent.length > 6) recent.shift();
+    if (window.CONFIG && window.CONFIG.DEBUG_KEYS && window.Nav && Nav.onKeyLog) {
+      Nav.onKeyLog(recent.join(" "));
+    }
+  }
+
   document.addEventListener("keydown", function (e) {
+    note(e.key, true);
     switch (e.key) {
       // A screen's own onUp/onDown wins, EXCEPT when it returns false — that's
       // the handler saying "not mine, do the normal thing". Without that escape
@@ -118,8 +132,10 @@
         // Which key names a given phone actually emits is the sort of thing
         // only the device can tell you. Set DEBUG_KEYS in config.js and press
         // the key to find out, instead of guessing at a keymap.
+        recent[recent.length - 1] = "!" + e.key;   // mark it unhandled
         if (window.CONFIG && window.CONFIG.DEBUG_KEYS) {
           console.log("nav: unhandled key", JSON.stringify(e.key), "code", e.code);
+          if (window.Nav && Nav.onKeyLog) Nav.onKeyLog(recent.join(" "));
         }
     }
   });
@@ -141,12 +157,15 @@
     ];
     map.forEach(function (pair) {
       var el = document.getElementById(pair[0]);
-      if (el) el.addEventListener("click", pair[1]);
+      if (el && el.addEventListener) el.addEventListener("click", pair[1]);
     });
   }
   wireSoftkeyClicks();
 
   window.Nav = {
+    // Set by the app to display the key log; "!" marks a key nothing handled.
+    onKeyLog: null,
+    recentKeys: function () { return recent.join(" "); },
     setScreen: function (handlers) {
       screen = {
         onUp: null, onDown: null, onLeft: null, onRight: null,

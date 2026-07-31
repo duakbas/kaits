@@ -20,7 +20,7 @@ window.CONFIG = {
   // Log every key the app doesn't already handle. Hardware key names differ
   // between KaiOS devices and builds, so when a button does nothing on your
   // phone, turn this on and read the console rather than guessing.
-  DEBUG_KEYS: false,
+  DEBUG_KEYS: true,
 
   // Buzz when a message arrives in the chat you already have open. Off by
   // default: you're looking straight at it, so the buzz tells you nothing the

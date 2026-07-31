@@ -65,6 +65,15 @@
   var elSetupPreview = document.getElementById("setup-preview");
   var elFocusSink = document.getElementById("focus-sink");
   var elSetupDiag = document.getElementById("setup-diag");
+  var elKeyLog = document.getElementById("keylog");
+
+  // With DEBUG_KEYS on, show every key the page sees. "!" means nothing
+  // handled it. Nothing appearing at all means the key never reached us.
+  if (window.CONFIG && CONFIG.DEBUG_KEYS && elKeyLog) {
+    elKeyLog.hidden = false;
+    Nav.onKeyLog = function (text) { elKeyLog.textContent = text; };
+    elKeyLog.textContent = "keys: (press one)";
+  }
   var elSearchInput = document.getElementById("search-input");
   var elSearchResults = document.getElementById("search-results");
 
