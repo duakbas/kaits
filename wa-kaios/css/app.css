@@ -537,3 +537,6 @@ header .status.closed { color: var(--danger); }
   border-bottom: 1px solid var(--line);
 }
 .archived-entry.focused { background: var(--accent-dim); color: var(--text); }
+
+/* an unsent draft, shown in place of the chat preview */
+.chat-prev.draft { color: var(--danger); font-style: italic; }

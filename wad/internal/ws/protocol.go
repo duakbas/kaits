@@ -40,6 +40,7 @@ const (
 	TStatus       = "status"       // {chat, msgid, status} delivery state of a message we sent
 	TTyping       = "typing"       // both ways: {chat, sender, sendername, state} composing/paused
 	TSearchResult = "searchresult" // reply to "search": [{msgid,chat,chatname,text,ts}]
+	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
 )
 
 // ---- app -> daemon ----
@@ -63,6 +64,7 @@ const (
 	TSearch       = "search"       // {q, chat?, limit?} search stored messages
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
+	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
 )
 
 // MsgData is an inbound message pushed to the app.

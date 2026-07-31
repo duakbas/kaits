@@ -78,6 +78,44 @@ func replyTextMsg(body, quotedID string, sender types.JID, quoted *waE2E.Message
 	}
 }
 
+// editedMessageFrom pulls an edit out of whichever shape it arrived in.
+//
+// WhatsApp wraps an edit in a ProtocolMessage of type MESSAGE_EDIT, which may
+// itself sit inside an EditedMessage envelope depending on the sending client.
+// Returns the id of the message being corrected and its new text.
+func editedMessageFrom(m *waE2E.Message) (string, string, bool) {
+	pm := m.GetProtocolMessage()
+	if pm == nil && m.GetEditedMessage() != nil {
+		pm = m.GetEditedMessage().GetMessage().GetProtocolMessage()
+	}
+	if pm == nil || pm.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT {
+		return "", "", false
+	}
+	key := pm.GetKey()
+	if key == nil || key.GetID() == "" {
+		return "", "", false
+	}
+	edited := pm.GetEditedMessage()
+	if edited == nil {
+		return "", "", false
+	}
+	body := edited.GetConversation()
+	if body == "" {
+		body = edited.GetExtendedTextMessage().GetText()
+	}
+	if body == "" {
+		// Media captions can be edited too.
+		body = edited.GetImageMessage().GetCaption()
+		if body == "" {
+			body = edited.GetVideoMessage().GetCaption()
+		}
+	}
+	if body == "" {
+		return "", "", false
+	}
+	return key.GetID(), body, true
+}
+
 // unsupportedLabel names a message type the app can't render yet, so it can be
 // shown as a placeholder instead of vanishing. Returns "" for message types that
 // legitimately have nothing to display — protocol housekeeping the user never

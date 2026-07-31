@@ -1013,3 +1013,49 @@ func TestShortenEndpointHidesTheToken(t *testing.T) {
 		t.Errorf("shortened form should keep the host for diagnosis: %q", got)
 	}
 }
+
+// An edit must rewrite the stored body in place, and must not invent a row for
+// a message we never had — a bodiless message in the thread would be worse than
+// ignoring an edit for something outside our history.
+func TestEditMessageText(t *testing.T) {
+	h := newHist(t)
+	chat := "c@s.whatsapp.net"
+	putMsg(h, chat, "m1", chat, "Alex", "helo wrold", 100, false)
+
+	if !h.editMessageText(chat, "m1", "hello world") {
+		t.Fatal("edit of a known message should apply")
+	}
+	if got := h.history(chat, 0, 10)[0].Text; got != "hello world" {
+		t.Errorf("text = %q, want the edited body", got)
+	}
+	// The preview quotes the message, so it must follow.
+	if got := h.listChats()[0]["preview"]; got != "hello world" {
+		t.Errorf("preview = %v, want it updated too", got)
+	}
+
+	if h.editMessageText(chat, "nosuch", "whatever") {
+		t.Error("edit of an unknown message should report no change")
+	}
+	if len(h.history(chat, 0, 10)) != 1 {
+		t.Error("an unknown edit must not create a message")
+	}
+}
+
+// "Delete for me" removes our copy and its reactions, and touches nothing else.
+func TestDeleteMessageLocalOnly(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	putMsg(h, chat, "m1", "x@s.whatsapp.net", "X", "keep", 100, false)
+	putMsg(h, chat, "m2", "x@s.whatsapp.net", "X", "remove", 101, false)
+	h.putReaction(chat, "m2", "a@s.whatsapp.net", "Alex", "👍", 110)
+
+	h.deleteMessage(chat, "m2")
+
+	msgs := h.history(chat, 0, 10)
+	if len(msgs) != 1 || msgs[0].MsgID != "m1" {
+		t.Errorf("after delete, messages = %+v, want only m1", msgs)
+	}
+	if len(h.reactionsForMessage(chat, "m2")) != 0 {
+		t.Error("the deleted message's reactions should go with it")
+	}
+}

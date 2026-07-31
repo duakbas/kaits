@@ -240,16 +240,31 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 	case ws.TCallAnswer, ws.TCallReject, ws.TCallHangup, ws.TCallSignalA:
 		cm.HandleAppFrame(ctx, e)
 
+	case ws.TEdit:
+		var d struct {
+			Chat  string `json:"chat"`
+			MsgID string `json:"msgid"`
+			Text  string `json:"text"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badedit", "msg": err.Error()})
+			return
+		}
+		if err := waCli.EditMessage(ctx, d.Chat, d.MsgID, d.Text); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "edit", "msg": err.Error()})
+		}
+
 	case ws.TDelete:
 		var d struct {
 			Chat  string `json:"chat"`
 			MsgID string `json:"msgid"`
+			Scope string `json:"scope"`
 		}
 		if err := json.Unmarshal(e.Data, &d); err != nil {
 			hub.PushT(ws.TError, map[string]string{"code": "baddelete", "msg": err.Error()})
 			return
 		}
-		if err := waCli.DeleteMessage(ctx, d.Chat, d.MsgID); err != nil {
+		if err := waCli.DeleteMessage(ctx, d.Chat, d.MsgID, d.Scope); err != nil {
 			hub.PushT(ws.TError, map[string]string{"code": "delete", "msg": err.Error()})
 			return
 		}

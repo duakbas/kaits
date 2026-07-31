@@ -15,14 +15,14 @@
     ERROR: "error",
     PROFILE: "profile", CHATUPDATE: "chatupdate",
     REACTION: "reaction", STATUS: "status", TYPING: "typing",
-    SEARCHRESULT: "searchresult",
+    SEARCHRESULT: "searchresult", EDITED: "edited",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
     SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
-    PUSHSUB: "pushsub",
+    PUSHSUB: "pushsub", EDIT: "edit",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };
@@ -110,7 +110,7 @@
   // dropped as before.
   var QUEUEABLE = {
     send: true, delete: true, forward: true, chataction: true,
-    savecontact: true, sendreaction: true, markread: true
+    savecontact: true, sendreaction: true, markread: true, edit: true
   };
   var outbox = [];
   var OUTBOX_MAX = 50;

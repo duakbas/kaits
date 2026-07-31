@@ -134,7 +134,10 @@
       prev.className = "chat-prev";
       var typed = typingLabel(c.jid);
       if (typed) { prev.className += " typing"; prev.textContent = typed; }
-      else prev.textContent = c.preview || "";
+      else if (drafts[c.jid]) {
+        prev.className += " draft";
+        prev.textContent = "Draft: " + drafts[c.jid];
+      } else prev.textContent = c.preview || "";
       col.appendChild(name);
       col.appendChild(prev);
 
@@ -223,6 +226,7 @@
   }
 
   function enterListScreen() {
+    stashDraft();
     stopTyping();
     currentJID = null;
     show(elList);
@@ -370,7 +374,7 @@
     // subscription resets on reconnect — so ask each time the chat opens.
     if (!(chats[jid] && chats[jid].group)) W.send(W.T.WATCH, { jid: jid });
     renderThread();
-    elInput.value = "";
+    restoreDraft(jid);
     enterComposeMode();
   }
 
@@ -528,13 +532,25 @@
     }
     if (fromOther) items.push({ action: "profile", label: "View profile" });
     items.push({ action: "forward", label: "Forward" });
-    if (m.fromme) items.push({ action: "delete", label: "Delete" });
+    if (m.fromme) {
+      // WhatsApp only accepts an edit for about 15 minutes after sending, so
+      // offering it on a week-old message would just produce an error.
+      if (m.kind === "text" && !m.deleted && withinEditWindow(m)) {
+        items.push({ action: "edit", label: "Edit" });
+      }
+      items.push({ action: "delete-all", label: "Delete for everyone", danger: true });
+    } else if (isGroup) {
+      // Revoking someone else's message is an admin power; the daemon checks
+      // and reports back rather than us guessing.
+      items.push({ action: "delete-all", label: "Delete for everyone", danger: true });
+    }
+    items.push({ action: "delete-me", label: "Delete for me", danger: true });
     items.push({ action: "copy", label: "Copy text" });
 
     elActionList.innerHTML = "";
     items.forEach(function (it) {
       var row = document.createElement("div");
-      row.className = "menu-item" + (it.action === "delete" ? " danger" : "");
+      row.className = "menu-item" + (it.danger ? " danger" : "");
       row.setAttribute("data-nav", "");
       row.setAttribute("data-action", it.action);
       row.textContent = it.label;
@@ -576,20 +592,44 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
-    } else if (action === "delete") {
-      // Only own messages can be deleted for everyone.
-      if (!m.fromme) {
-        console.warn("can only delete your own messages");
-        closeActionMenu();
-        return;
-      }
-      W.send(W.T.DELETE, { chat: currentJID, msgid: m.msgid });
-      // optimistic: mark locally as deleted
-      m.deleted = true;
+    } else if (action === "delete-all") {
       menuOpen = false;
       elMenu.hidden = true;
-      renderThread();
-      enterComposeMode();
+      confirmPrompt("Delete for everyone?",
+        m.fromme ? "Removes it for everyone in this chat."
+                 : "Only group admins can do this; WhatsApp will refuse otherwise.",
+        function () {
+          W.send(W.T.DELETE, { chat: currentJID, msgid: m.msgid, scope: "everyone" });
+          m.deleted = true;
+          forceRerender();
+          renderThread();
+          enterComposeMode();
+        },
+        function () { enterComposeMode(); });
+    } else if (action === "delete-me") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      confirmPrompt("Delete for me?",
+        "Removes it from this app only. Everyone else keeps it, and WhatsApp " +
+        "on your phone is unaffected.",
+        function () {
+          W.send(W.T.DELETE, { chat: currentJID, msgid: m.msgid, scope: "me" });
+          removeLocalMessage(currentJID, m.msgid);
+          enterComposeMode();
+        },
+        function () { enterComposeMode(); });
+    } else if (action === "edit") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      textPrompt("Edit message", m.text || "",
+        "WhatsApp only allows edits for about 15 minutes after sending.",
+        function (val) {
+          if (val && val !== m.text) {
+            W.send(W.T.EDIT, { chat: currentJID, msgid: m.msgid, text: val });
+          }
+          enterComposeMode();
+        },
+        function () { enterComposeMode(); });
     } else if (action === "forward") {
       menuOpen = false;
       elMenu.hidden = true;
@@ -649,6 +689,40 @@
       var back = currentJID;
       openProfileForMessage(m, function () { openThread(back); });
     }
+  }
+
+  // ---------- drafts ----------
+  // Losing a half-typed message when you leave a chat is bad anywhere; with T9
+  // it's brutal. Drafts are kept per chat and survive a refresh via
+  // localStorage, guarded because it may be missing or full on KaiOS.
+  var drafts = {};
+  var DRAFT_KEY = "wa_drafts";
+
+  function loadDrafts() {
+    try {
+      var raw = localStorage.getItem(DRAFT_KEY);
+      if (raw) drafts = JSON.parse(raw) || {};
+    } catch (e) { drafts = {}; }
+  }
+  function saveDrafts() {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch (e) {}
+  }
+  loadDrafts();
+
+  function stashDraft() {
+    if (!currentJID) return;
+    var v = elInput.value;
+    if (v && v.trim()) drafts[currentJID] = v;
+    else delete drafts[currentJID];
+    saveDrafts();
+  }
+
+  function restoreDraft(jid) {
+    elInput.value = drafts[jid] || "";
+  }
+
+  function clearDraft(jid) {
+    if (drafts[jid]) { delete drafts[jid]; saveDrafts(); }
   }
 
   // ---------- typing indicators ----------
@@ -888,6 +962,27 @@
       onSoftLeft: back, onBack: back, onEnter: back, onSoftRight: back
     });
     Nav.setSoftkeys("Close", "", "OK");
+  }
+
+  // WhatsApp's edit window is about 15 minutes; a little slack avoids offering
+  // an edit that will certainly be rejected by the time it arrives.
+  var EDIT_WINDOW = 14 * 60;
+  function withinEditWindow(m) {
+    if (!m.ts) return false;
+    return (Math.floor(Date.now() / 1000) - m.ts) < EDIT_WINDOW;
+  }
+
+  // forceRerender invalidates the incremental-render cache, so the next render
+  // rebuilds instead of appending. Needed whenever an EXISTING bubble changed.
+  function forceRerender() { renderedIds = []; renderedFor = null; }
+
+  function removeLocalMessage(chat, msgid) {
+    var arr = threads[chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === msgid) { arr.splice(i, 1); break; }
+    }
+    forceRerender();
+    if (currentJID === chat) renderThread();
   }
 
   // shortName trims a display name to something that fits a 240px menu row.
@@ -1149,6 +1244,140 @@
     window.open(url, "_blank");
   }
 
+  // What the DOM currently shows, so an update can tell "three new messages at
+  // the end" from "everything changed".
+  var renderedFor = null;
+  var renderedIds = [];
+
+  // canAppendOnly is true when the rendered list is a prefix of the current one
+  // and nothing about the existing entries changed — i.e. messages were only
+  // added at the end. Selection changes, edits, deletions and older pages all
+  // fail this and take the full rebuild.
+  function canAppendOnly(msgs) {
+    if (selectMode) return false;              // the highlight moves between bubbles
+    if (renderedFor !== currentJID) return false;
+    if (!renderedIds.length) return false;
+    if (msgs.length <= renderedIds.length) return false;
+    for (var i = 0; i < renderedIds.length; i++) {
+      if (msgs[i].msgid !== renderedIds[i]) return false;
+    }
+    return true;
+  }
+
+  // appendNewBubbles draws only the tail. Deliberately reuses buildBubble so
+  // there is one definition of what a message looks like.
+  function appendNewBubbles(msgs, isGroup, wasNearBottom) {
+    var lastTS = 0, lastSender = null;
+    if (renderedIds.length) {
+      var prev = msgs[renderedIds.length - 1];
+      lastTS = prev.ts || 0;
+      lastSender = prev.fromme ? null : prev.sendername;
+    }
+    for (var i = renderedIds.length; i < msgs.length; i++) {
+      lastSender = buildBubble(msgs[i], i, isGroup, lastTS, lastSender);
+      lastTS = msgs[i].ts || lastTS;
+      renderedIds.push(msgs[i].msgid);
+    }
+    if (wasNearBottom) elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
+  }
+
+  // buildBubble draws one message (plus any date separator, sender label and
+  // reaction row it needs) and returns the sender to carry into the next one.
+  // Shared by the full rebuild and the append-only path so a bubble is defined
+  // in exactly one place.
+  function buildBubble(m, idx, isGroup, lastTS, lastSender) {
+      // Date separator whenever the day changes (and before the first message).
+    if (m.ts && !sameDay(lastTS, m.ts)) {
+      var sep = document.createElement("div");
+      sep.className = "day-sep";
+      sep.textContent = dayLabel(m.ts);
+      elThreadMsgs.appendChild(sep);
+      lastSender = null; // re-label the sender after a break in the day
+    }
+    // In groups, label each incoming message with its sender — but only when
+    // the sender changes, so runs from one person aren't repetitive.
+    if (isGroup && !m.fromme && m.sendername && m.sendername !== lastSender) {
+      var who = document.createElement("div");
+      who.className = "sender";
+      who.textContent = m.sendername;
+      who.style.color = colorFor(m.sendername);
+      elThreadMsgs.appendChild(who);
+    }
+    var b = document.createElement("div");
+    b.className = "bubble " + (m.fromme ? "me" : "them");
+    // mark the selected bubble in select mode
+    if (selectMode && idx === selectIdx) b.className += " selected";
+    // tint incoming group bubbles' left border with the sender color
+    if (isGroup && !m.fromme && m.sendername) {
+      b.style.borderLeft = "2px solid " + colorFor(m.sendername);
+    }
+    // WhatsApp's forwarded marker, above any quote bar — same order the
+    // official clients use.
+    if (m.forwarded) {
+      var fwd = document.createElement("div");
+      fwd.className = "fwd-label";
+      fwd.textContent = "↪ Forwarded";
+      b.appendChild(fwd);
+    }
+    // if this message quotes another, show a small quote bar first
+    if (m.quotedtext) {
+      var q = document.createElement("div");
+      q.className = "quote";
+      var qn = document.createElement("div");
+      qn.className = "quote-name";
+      qn.textContent = m.quotedname || "";
+      var qt = document.createElement("div");
+      qt.className = "quote-text";
+      qt.textContent = truncate(m.quotedtext, 60);
+      q.appendChild(qn);
+      q.appendChild(qt);
+      b.appendChild(q);
+    }
+    if (m.deleted) {
+      b.className += " deleted-msg";
+      var del = document.createElement("span");
+      del.textContent = "🚫 deleted";
+      b.appendChild(del);
+    } else if (m.kind === "text") {
+      var body = document.createElement("span");
+      body.textContent = m.text;
+      b.appendChild(body);
+    } else {
+      renderMediaBubble(b, m);
+    }
+
+    // Time, and for our own messages the delivery ticks, on one trailing line.
+    var meta = document.createElement("div");
+    meta.className = "meta";
+    var t = document.createElement("span");
+    t.textContent = (m.edited ? "edited · " : "") + timeOf(m.ts);
+    meta.appendChild(t);
+    if (m.fromme && !m.deleted) {
+      var tick = tickFor(m.status);
+      var tk = document.createElement("span");
+      tk.className = tick.cls;
+      tk.textContent = tick.mark;
+      meta.appendChild(tk);
+    }
+    b.appendChild(meta);
+    b.setAttribute("data-msgid", m.msgid);
+    elThreadMsgs.appendChild(b);
+    // Reactions hang below the bubble, grouped by emoji with a count.
+    var groups = groupReactions(m.reactions);
+    if (groups.length) {
+      var row = document.createElement("div");
+      row.className = "reactions " + (m.fromme ? "me" : "them");
+      groups.forEach(function (g) {
+        var chip = document.createElement("span");
+        chip.className = "reaction-chip";
+        chip.textContent = g.emoji + (g.people.length > 1 ? " " + g.people.length : "");
+        row.appendChild(chip);
+      });
+      elThreadMsgs.appendChild(row);
+    }
+    return m.fromme ? null : m.sendername;
+  }
+
   function renderThread() {
     var msgs = threads[currentJID] || [];
     var isGroup = chats[currentJID] && chats[currentJID].group;
@@ -1157,103 +1386,23 @@
     var wasNearBottom = forceScrollBottom || (elThreadMsgs.scrollHeight - elThreadMsgs.scrollTop
       - elThreadMsgs.clientHeight) < 60;
     forceScrollBottom = false;
+    // Rebuilding every bubble on every message is O(thread) per message, which
+    // is fine in Chrome and ruinous on Gecko 48 once a thread is long. When the
+    // only change is messages appended at the end — the common case by far — we
+    // append those instead and leave the rest of the DOM alone.
+    if (canAppendOnly(msgs)) {
+      appendNewBubbles(msgs, isGroup, wasNearBottom);
+      return;
+    }
+    renderedFor = currentJID;
+    renderedIds = [];
     elThreadMsgs.innerHTML = "";
     var lastSender = null;
     var lastTS = 0;
     msgs.forEach(function (m, idx) {
-      // Date separator whenever the day changes (and before the first message).
-      if (m.ts && !sameDay(lastTS, m.ts)) {
-        var sep = document.createElement("div");
-        sep.className = "day-sep";
-        sep.textContent = dayLabel(m.ts);
-        elThreadMsgs.appendChild(sep);
-        lastSender = null; // re-label the sender after a break in the day
-      }
+      lastSender = buildBubble(m, idx, isGroup, lastTS, lastSender);
       if (m.ts) lastTS = m.ts;
-
-      // In groups, label each incoming message with its sender — but only when
-      // the sender changes, so runs from one person aren't repetitive.
-      if (isGroup && !m.fromme && m.sendername && m.sendername !== lastSender) {
-        var who = document.createElement("div");
-        who.className = "sender";
-        who.textContent = m.sendername;
-        who.style.color = colorFor(m.sendername);
-        elThreadMsgs.appendChild(who);
-      }
-      lastSender = m.fromme ? null : m.sendername;
-
-      var b = document.createElement("div");
-      b.className = "bubble " + (m.fromme ? "me" : "them");
-      // mark the selected bubble in select mode
-      if (selectMode && idx === selectIdx) b.className += " selected";
-      // tint incoming group bubbles' left border with the sender color
-      if (isGroup && !m.fromme && m.sendername) {
-        b.style.borderLeft = "2px solid " + colorFor(m.sendername);
-      }
-      // WhatsApp's forwarded marker, above any quote bar — same order the
-      // official clients use.
-      if (m.forwarded) {
-        var fwd = document.createElement("div");
-        fwd.className = "fwd-label";
-        fwd.textContent = "↪ Forwarded";
-        b.appendChild(fwd);
-      }
-      // if this message quotes another, show a small quote bar first
-      if (m.quotedtext) {
-        var q = document.createElement("div");
-        q.className = "quote";
-        var qn = document.createElement("div");
-        qn.className = "quote-name";
-        qn.textContent = m.quotedname || "";
-        var qt = document.createElement("div");
-        qt.className = "quote-text";
-        qt.textContent = truncate(m.quotedtext, 60);
-        q.appendChild(qn);
-        q.appendChild(qt);
-        b.appendChild(q);
-      }
-      if (m.deleted) {
-        b.className += " deleted-msg";
-        var del = document.createElement("span");
-        del.textContent = "🚫 deleted";
-        b.appendChild(del);
-      } else if (m.kind === "text") {
-        var body = document.createElement("span");
-        body.textContent = m.text;
-        b.appendChild(body);
-      } else {
-        renderMediaBubble(b, m);
-      }
-
-      // Time, and for our own messages the delivery ticks, on one trailing line.
-      var meta = document.createElement("div");
-      meta.className = "meta";
-      var t = document.createElement("span");
-      t.textContent = timeOf(m.ts);
-      meta.appendChild(t);
-      if (m.fromme && !m.deleted) {
-        var tick = tickFor(m.status);
-        var tk = document.createElement("span");
-        tk.className = tick.cls;
-        tk.textContent = tick.mark;
-        meta.appendChild(tk);
-      }
-      b.appendChild(meta);
-      elThreadMsgs.appendChild(b);
-
-      // Reactions hang below the bubble, grouped by emoji with a count.
-      var groups = groupReactions(m.reactions);
-      if (groups.length) {
-        var row = document.createElement("div");
-        row.className = "reactions " + (m.fromme ? "me" : "them");
-        groups.forEach(function (g) {
-          var chip = document.createElement("span");
-          chip.className = "reaction-chip";
-          chip.textContent = g.emoji + (g.people.length > 1 ? " " + g.people.length : "");
-          row.appendChild(chip);
-        });
-        elThreadMsgs.appendChild(row);
-      }
+      renderedIds.push(m.msgid);
     });
     // in select mode, scroll the selected bubble into view; else stick to bottom
     if (selectMode) {
@@ -1289,6 +1438,7 @@
       toast("Sent privately");
     }
     elInput.value = "";
+    clearDraft(currentJID);
     stopTyping();
     clearReply();
   }
@@ -1945,6 +2095,22 @@
     setTyping(d.chat, d.sender, d.sendername, d.state === "composing");
   });
 
+  W.on(W.T.EDITED, function (d) {
+    if (!d || !d.chat || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) {
+        arr[i].text = d.text;
+        arr[i].edited = true;
+        break;
+      }
+    }
+    // An existing bubble changed, so the append-only path can't be used.
+    forceRerender();
+    if (currentJID === d.chat && !menuOpen) renderThread();
+    else if (!elList.hidden) renderChatList();
+  });
+
   W.on(W.T.REACTION, function (d) {
     if (!d || !d.chat || !d.msgid) return;
     var arr = threads[d.chat] || [];
@@ -2057,6 +2223,7 @@
   // Typing signal comes off real input events, not keydown, so D-pad and
   // softkey presses don't register as composing.
   elInput.addEventListener("input", noteTyping);
+  elInput.addEventListener("input", stashDraft);
   elSearchInput.addEventListener("input", scheduleSearch);
 
   // Scrolling to the top of a thread loads an older page. D-pad navigation goes

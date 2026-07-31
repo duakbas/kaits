@@ -368,6 +368,38 @@ func (h *histStore) lastMessage(chat string) (msgid string, ts int64, fromMe boo
 	return id.String, t.Int64, fm.Int64 == 1, snd.String
 }
 
+// editMessageText rewrites a stored message's body. Returns false when we never
+// had the original — an edit for a message outside our history is nothing to
+// apply, and inventing a row for it would put a bodiless message in the thread.
+func (h *histStore) editMessageText(chat, msgid, body string) bool {
+	if h == nil || h.db == nil || msgid == "" {
+		return false
+	}
+	res, err := h.db.Exec(`UPDATE messages SET text=? WHERE chat=? AND msgid=?`,
+		body, chat, msgid)
+	if err != nil || res == nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false
+	}
+	// The chat-list preview quotes the message, so it goes stale otherwise.
+	h.db.Exec(`UPDATE chats SET preview=? WHERE jid=? AND last_ts=
+		(SELECT MAX(ts) FROM messages WHERE chat=?)`, body, chat, chat)
+	return true
+}
+
+// deleteMessage removes one message from our own store only. Used for "delete
+// for me", which WhatsApp has no synced equivalent of.
+func (h *histStore) deleteMessage(chat, msgid string) {
+	if h == nil || h.db == nil {
+		return
+	}
+	h.db.Exec(`DELETE FROM messages WHERE chat=? AND msgid=?`, chat, msgid)
+	h.db.Exec(`DELETE FROM reactions WHERE chat=? AND msgid=?`, chat, msgid)
+}
+
 // messageByID finds a stored message by id, across chats.
 //
 // This is the durable counterpart to the in-memory replyCtx cache: that only
