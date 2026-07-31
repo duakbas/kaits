@@ -13,6 +13,14 @@
       <span id="status" class="status closed">○</span>
     </header>
 
+    <!-- In-app notification bar. Overlays the top of whatever screen is up
+         rather than sitting in the flex column, so showing it never reflows
+         the thread underneath. -->
+    <div id="notif-bar" hidden>
+      <div id="notif-title"></div>
+      <div id="notif-body"></div>
+    </div>
+
     <!-- chat list -->
     <div id="chatlist" class="screen"></div>
 

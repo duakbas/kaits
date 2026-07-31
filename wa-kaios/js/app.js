@@ -33,6 +33,9 @@
   var elThreadTitle = document.getElementById("thread-title");
   var elInput = document.getElementById("composer");
   var elAttach = document.getElementById("attach-btn");
+  var elNotifBar = document.getElementById("notif-bar");
+  var elNotifTitle = document.getElementById("notif-title");
+  var elNotifBody = document.getElementById("notif-body");
   var elReplyBar = document.getElementById("reply-bar");
   var elReplyBarText = document.getElementById("reply-bar-text");
   var elMenu = document.getElementById("action-menu");
@@ -230,6 +233,9 @@
     stashDraft();
     stopTyping();
     currentJID = null;
+    // The list shows every unread chat with a badge, so a saved notification
+    // has nothing left to tell you.
+    clearNotif();
     show(elList);
     Nav.setScreen({
       list: elList,
@@ -351,6 +357,10 @@
   //             Back, returns to compose.
   function openThread(jid) {
     currentJID = jid;
+    // Opening the chat that pinged you consumes the notification; opening some
+    // other chat leaves it waiting, because it's still unread news.
+    if (pendingNotif && pendingNotif.jid === jid) clearNotif();
+    else hideNotifBar();
     var c = chats[jid] || { jid: jid, name: jid };
     // Clear optimistically; the daemon confirms with a chatupdate once the read
     // receipt has actually gone out.
@@ -388,11 +398,14 @@
       onUp: enterSelectMode,          // arrow up starts selecting messages
       onLeft: openAttachMenu,         // attachments live off Left from the composer
       onBack: enterListScreen,
-      onSoftLeft: enterListScreen,    // "Back"
+      // Left softkey is "check notification" when one is waiting, plain "Back"
+      // otherwise. The red hardware key goes back either way, which is what
+      // freed this one up.
+      onSoftLeft: checkNotif,
       onSoftRight: sendCurrent,       // "Send"
       onEnter: sendCurrent
     });
-    Nav.setSoftkeys("Back", "📎 Left", "Send");
+    Nav.setSoftkeys(notifSoftLabel(), "📎 Left", "Send");
     setTimeout(function () { elInput.focus(); }, 0);
   }
 
@@ -2013,6 +2026,103 @@
         renderThread();
       }
     } else if (!elList.hidden) renderChatList();
+
+    alertForMessage(m, c);
+  }
+
+  // ---------- in-app notifications ----------
+  //
+  // A push notification is for when the app ISN'T open. When it is, the OS
+  // bubble is the wrong tool — it covers the screen you're using to say
+  // something the app could show you in a strip. So:
+  //
+  //   on the chat list  — buzz only. The list is already the notification: the
+  //                       row jumps to the top with a green unread badge.
+  //   anywhere else     — a thin bar at the top, plus the buzz, because you
+  //                       can't see the list from inside a chat.
+  //   in the chat it    — see VIBRATE_IN_OPEN_CHAT. The message appears in
+  //   came from           front of you, so buzzing is arguably just noise.
+  //
+  // The bar holds for NOTIF_HOLD_MS or until another chat interrupts it,
+  // whichever comes first. The notification itself outlives the bar: the left
+  // softkey stays bound to it so a strip you missed is still reachable.
+  var NOTIF_HOLD_MS = 4000;
+  var pendingNotif = null;   // {jid, title, body} — survives the bar hiding
+  var notifTimer = null;
+
+  function buzz() {
+    if (navigator.vibrate) {
+      try { navigator.vibrate(120); } catch (e) { /* not permitted; ignore */ }
+    }
+  }
+
+  // alertForMessage decides what a newly arrived message does to the UI.
+  function alertForMessage(m, c) {
+    if (m.fromme) return;
+    if (c && c.muted) return;   // a mute means silence, not a smaller icon
+
+    if (currentJID === m.chat) {
+      // You are reading this very chat.
+      if (window.CONFIG && CONFIG.VIBRATE_IN_OPEN_CHAT) buzz();
+      return;
+    }
+
+    buzz();
+    if (!elList.hidden) return; // on the list; the badge says it better
+
+    pendingNotif = {
+      jid: m.chat,
+      title: (c && c.name) || m.chatname || m.chat,
+      body: (c && c.preview) || ""
+    };
+    showNotifBar();
+    refreshNotifSoftkey();
+  }
+
+  function showNotifBar() {
+    if (!pendingNotif) return;
+    elNotifTitle.textContent = pendingNotif.title;
+    elNotifBody.textContent = pendingNotif.body;
+    elNotifBar.hidden = false;
+    if (notifTimer) clearTimeout(notifTimer);
+    notifTimer = setTimeout(hideNotifBar, NOTIF_HOLD_MS);
+  }
+
+  function hideNotifBar() {
+    if (notifTimer) { clearTimeout(notifTimer); notifTimer = null; }
+    elNotifBar.hidden = true;
+  }
+
+  // clearNotif drops the bar AND the pending notification, for when it stops
+  // being news: you opened that chat, or went back to the list where you can
+  // see everything anyway.
+  function clearNotif() {
+    hideNotifBar();
+    pendingNotif = null;
+  }
+
+  // The left softkey is free now that the red key handles Back, so it becomes
+  // "go to the chat that just messaged you" — and falls back to Back when
+  // there's nothing waiting, since a dead softkey is worse than a plain one.
+  function notifSoftLabel() {
+    if (!pendingNotif) return "Back";
+    return "🔔 " + truncate(pendingNotif.title, 8);
+  }
+
+  function checkNotif() {
+    if (!pendingNotif) { enterListScreen(); return; }
+    var jid = pendingNotif.jid;
+    clearNotif();
+    openThread(jid);
+  }
+
+  // Repaint the softkey when a notification arrives or is consumed — but only
+  // while plain compose mode is what's on screen, so we never stomp on the
+  // labels a menu or select mode has set.
+  function refreshNotifSoftkey() {
+    if (elThread.hidden || selectMode || menuOpen) return;
+    if (!elChatMenu.hidden || !elMenu.hidden) return;
+    Nav.setSoftkeys(notifSoftLabel(), "📎 Left", "Send");
   }
 
   // ---------- wire up events ----------

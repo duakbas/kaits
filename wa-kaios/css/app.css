@@ -56,6 +56,37 @@ header .status.open { color: var(--accent); }
 header .status.connecting { color: #d9a441; }
 header .status.closed { color: var(--danger); }
 
+/* In-app notification bar: pinned just under the header, above everything.
+   Deliberately thin — it is a glance, not a screen, and the thread behind it
+   stays readable. */
+#notif-bar {
+  position: absolute;
+  top: 26px;                  /* header height */
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 3px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+#notif-bar[hidden] { display: none; }
+#notif-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#notif-body {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* screens fill the middle and scroll internally */
 .screen {
   flex: 1 1 auto;
