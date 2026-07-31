@@ -40,6 +40,11 @@ mkdir -p "$STAGE"
 
 cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" "$STAGE/"
 
+# Stamp the build version into the package so the running app can say which
+# build it is. Without this, "did the update land?" is unanswerable from the
+# phone, and you end up testing a fix against the old code.
+printf '\nwindow.KAITS_VERSION = "%s";\n' "$VERSION" >> "$STAGE/js/config.js"
+
 # Version is the only field that changes per build, so patch it rather than
 # keeping a second copy of the manifest that can drift from the real one.
 sed 's|"version": "[^"]*"|"version": "'"$VERSION"'"|' "$HERE/manifest.webapp" > "$STAGE/manifest.webapp"

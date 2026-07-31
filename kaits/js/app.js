@@ -2640,6 +2640,7 @@
         canVibrate: !!navigator.vibrate
       };
     },
+    version: versionLabel,
     testBanner: function (title, body) {
       pendingNotif = { jid: currentJID || "test@s.whatsapp.net",
                        title: title || "Test chat", body: body || "A message" };
@@ -2656,6 +2657,8 @@
   // it on the phone, and offer a way back in when the address moves.
   function enterSetupScreen(returnTo) {
     var cur = Settings.current();
+    document.querySelector("#setup .setup-head").textContent =
+      "Connect to your daemon — " + versionLabel();
     elSetupHost.value = cur.host || "";
     elSetupToken.value = cur.token || "";
     updateSetupPreview();
@@ -2690,6 +2693,12 @@
     });
     Nav.setSoftkeys(returnTo ? "Cancel" : "", "SAVE", "Save");
     focusField(0);
+  }
+
+  // The running build's version, stamped in at package time. Answers "did the
+  // update actually land" without guessing from behaviour.
+  function versionLabel() {
+    return window.KAITS_VERSION ? "Kaits " + window.KAITS_VERSION : "Kaits (dev)";
   }
 
   function updateSetupPreview() {
