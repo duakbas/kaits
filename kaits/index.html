@@ -23,7 +23,7 @@
 
     <!-- First-run setup: where the daemon is. Shown instead of the chat list
          until it's been answered, and reachable later from the list. -->
-    <div id="setup" class="screen" hidden>
+    <div id="setup" class="screen" tabindex="-1" hidden>
       <div class="setup-head">Connect to your daemon</div>
       <div class="setup-label">Server address</div>
       <input id="setup-host" type="text" placeholder="192.168.1.200">
@@ -41,10 +41,10 @@
     </div>
 
     <!-- chat list -->
-    <div id="chatlist" class="screen"></div>
+    <div id="chatlist" class="screen" tabindex="-1"></div>
 
     <!-- thread -->
-    <div id="thread" class="screen" hidden>
+    <div id="thread" class="screen" tabindex="-1" hidden>
       <!-- Avatar, name, and a second line for typing/presence — the same shape
            the official client uses, and the presence line is information we
            already receive but previously crammed into the name with a dash. -->
@@ -70,7 +70,7 @@
     </div>
 
     <!-- contact / group info -->
-    <div id="profile" class="screen" hidden>
+    <div id="profile" class="screen" tabindex="-1" hidden>
       <div id="profile-body"></div>
     </div>
 
@@ -96,7 +96,7 @@
     </div>
 
     <!-- search -->
-    <div id="search" class="screen" hidden>
+    <div id="search" class="screen" tabindex="-1" hidden>
       <input id="search-input" type="text" placeholder="Search messages…">
       <div id="search-results"></div>
     </div>
@@ -111,7 +111,7 @@
     </div>
 
     <!-- incoming call -->
-    <div id="call" class="screen" hidden>
+    <div id="call" class="screen" tabindex="-1" hidden>
       <div class="label">Incoming call</div>
       <div class="ring">📞</div>
       <div id="call-name"></div>

@@ -689,3 +689,8 @@ header .status.closed { color: var(--danger); }
   overflow: hidden;
 }
 #keylog[hidden] { display: none; }
+
+/* Screens are focusable so focus has somewhere sensible to go when it leaves a
+   text field (see releaseInput). Never show an outline for it — it's a
+   plumbing concern, not something the user chose. */
+.screen:focus { outline: none; }
