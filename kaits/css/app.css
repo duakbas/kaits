@@ -56,6 +56,37 @@ header .status.open { color: var(--accent); }
 header .status.connecting { color: #d9a441; }
 header .status.closed { color: var(--danger); }
 
+/* In-app notification bar: pinned just under the header, above everything.
+   Deliberately thin — it is a glance, not a screen, and the thread behind it
+   stays readable. */
+#notif-bar {
+  position: absolute;
+  top: 26px;                  /* header height */
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 3px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+#notif-bar[hidden] { display: none; }
+#notif-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#notif-body {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* screens fill the middle and scroll internally */
 .screen {
   flex: 1 1 auto;
@@ -133,15 +164,41 @@ header .status.closed { color: var(--danger); }
 #thread { display: flex; flex-direction: column; }
 #thread-title {
   flex: 0 0 auto;
-  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+}
+#thread-avatar {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  font-size: 10px;
+  margin-right: 6px;
+}
+/* min-width:0 is what lets the text actually ellipsize inside a flex row —
+   without it the child refuses to shrink below its content width. */
+#thread-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#thread-name {
   font-weight: 700;
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#thread-sub {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#thread-sub.typing { color: var(--accent); }
 #thread-msgs {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -423,11 +480,23 @@ header .status.closed { color: var(--danger); }
   font-size: 12px;
 }
 
-#composer {
+#composer-row {
   flex: 0 0 auto;
-  width: 100%;
-  border: none;
+  display: flex;
+  align-items: center;
   border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+#attach-btn {
+  flex: 0 0 auto;
+  padding: 6px 4px 6px 6px;
+  font-size: 14px;
+  opacity: 0.75;
+}
+#composer {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
   background: var(--panel);
   color: var(--text);
   font-size: 13px;
@@ -540,3 +609,42 @@ header .status.closed { color: var(--danger); }
 
 /* an unsent draft, shown in place of the chat preview */
 .chat-prev.draft { color: var(--danger); font-style: italic; }
+
+/* ---- first-run setup ---- */
+#setup { padding: 8px; }
+.setup-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.setup-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+#setup input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 6px;
+  outline: none;
+  -moz-user-select: text;
+  user-select: text;
+}
+#setup input.focused { border-color: var(--accent); }
+.setup-preview {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: 8px;
+  word-break: break-all;
+}
+.setup-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 8px;
+  line-height: 1.35;
+}

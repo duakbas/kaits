@@ -1,0 +1,37 @@
+{
+  "version": "1.0.0",
+  "name": "Push Test",
+  "description": "Does a Web Push wake a KaiOS app from standby?",
+  "type": "web",
+  "launch_path": "/pushtest/index.html",
+  "icons": {
+    "56": "/icons/icon-56.png",
+    "112": "/icons/icon-112.png"
+  },
+  "developer": {
+    "name": "you"
+  },
+  "permissions": {
+    "push": {
+      "description": "Wake this app when the test rings it"
+    },
+    "serviceworker": {
+      "description": "Receive the push while the app is closed"
+    },
+    "desktop-notification": {
+      "description": "Show that the push arrived"
+    }
+  },
+  "messages": [
+    { "serviceworker-notification": "/pushtest/index.html" }
+  ],
+  "locales": {
+    "en-US": {
+      "name": "Push Test",
+      "subtitle": "Web Push wake-up test",
+      "description": "Does a Web Push wake a KaiOS app from standby?"
+    }
+  },
+  "default_locale": "en-US",
+  "cursor": false
+}

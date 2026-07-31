@@ -59,7 +59,7 @@ self.addEventListener("push", function (ev) {
 // show something generic, because the push already told us a message exists and
 // silence would be worse than vague.
 function showSummaryNotification() {
-  var fallback = { title: "WhatsApp", body: "New message" };
+  var fallback = { title: "Kaits", body: "New message" };
 
   if (!CONFIG || !CONFIG.DAEMON_WS) {
     return notify(fallback, "wa-generic");
@@ -91,7 +91,7 @@ function showSummaryNotification() {
 }
 
 function notify(s, tag, data) {
-  return self.registration.showNotification(s.title || "WhatsApp", {
+  return self.registration.showNotification(s.title || "Kaits", {
     body: s.body || "New message",
     icon: "/icons/icon-112.png",
     tag: tag || "wa-generic",

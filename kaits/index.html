@@ -3,28 +3,66 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=240, initial-scale=1, user-scalable=no">
-  <title>WhatsApp</title>
+  <title>Kaits</title>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
   <div id="app">
     <header>
-      <span>WhatsApp</span>
+      <span>Kaits</span>
       <span id="status" class="status closed">○</span>
     </header>
+
+    <!-- In-app notification bar. Overlays the top of whatever screen is up
+         rather than sitting in the flex column, so showing it never reflows
+         the thread underneath. -->
+    <div id="notif-bar" hidden>
+      <div id="notif-title"></div>
+      <div id="notif-body"></div>
+    </div>
+
+    <!-- First-run setup: where the daemon is. Shown instead of the chat list
+         until it's been answered, and reachable later from the list. -->
+    <div id="setup" class="screen" hidden>
+      <div class="setup-head">Connect to your daemon</div>
+      <div class="setup-label">Server address</div>
+      <input id="setup-host" type="text" placeholder="192.168.1.200">
+      <div class="setup-label">Token</div>
+      <input id="setup-token" type="text" placeholder="WAD_TOKEN">
+      <div class="setup-preview" id="setup-preview"></div>
+      <div class="setup-hint">
+        Your computer's address on this network, and the token you started
+        wad with. Port 8080 is assumed if you don't give one.
+      </div>
+    </div>
 
     <!-- chat list -->
     <div id="chatlist" class="screen"></div>
 
     <!-- thread -->
     <div id="thread" class="screen" hidden>
-      <div id="thread-title"></div>
+      <!-- Avatar, name, and a second line for typing/presence — the same shape
+           the official client uses, and the presence line is information we
+           already receive but previously crammed into the name with a dash. -->
+      <div id="thread-title">
+        <div id="thread-avatar" class="avatar"></div>
+        <div id="thread-head-text">
+          <div id="thread-name"></div>
+          <div id="thread-sub"></div>
+        </div>
+      </div>
       <div id="thread-msgs"></div>
       <div id="reply-bar" hidden>
         <div id="reply-bar-text"></div>
         <span id="reply-bar-x">✕</span>
       </div>
-      <input id="composer" type="text" placeholder="Type a message…">
+      <!-- The paperclip is a visible home for attachments. There's no touch on
+           KaiOS, so it doubles as a hint that Left opens the attach menu; it is
+           still clickable, which is what makes it usable in a desktop browser. -->
+      <div id="composer-row">
+        <span id="attach-btn" title="Attach (press Left)">📎</span>
+        <input id="composer" type="text" placeholder="Type a message…">
+      </div>
     </div>
 
     <!-- contact / group info -->
@@ -93,6 +131,7 @@
 
   <!-- load order matters: config -> wire -> nav -> app -->
   <script src="js/config.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/wire.js"></script>
   <script src="js/nav.js"></script>
   <script src="js/app.js"></script>

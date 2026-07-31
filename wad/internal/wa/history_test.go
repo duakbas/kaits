@@ -1059,3 +1059,84 @@ func TestDeleteMessageLocalOnly(t *testing.T) {
 		t.Error("the deleted message's reactions should go with it")
 	}
 }
+
+// A message's display name is resolved from the sender JID when it's read, not
+// taken from whatever was written into the row when it arrived. That's what
+// makes saving a contact fix their entire history at once, and it's why the
+// old repair passes existed — rows carried a stale snapshot that nothing
+// updated.
+func TestSenderNamesResolveAtReadTime(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+	chat := "1234@s.whatsapp.net"
+	sender := "9999@s.whatsapp.net"
+
+	// Stored with a name from before the resolver knew any better.
+	putMsg(h, chat, "m1", sender, "999999999", "hello", 100, false)
+
+	// Nothing resolves, so this is a stranger: the number gets the same tilde
+	// an unsaved person with a push name would get.
+	got := c.resolveSenderNames(h.history(chat, 0, 10))
+	if len(got) != 1 {
+		t.Fatalf("history returned %d messages, want 1", len(got))
+	}
+	if got[0].SenderName != "~999999999" {
+		t.Errorf("unknown sender = %q, want %q", got[0].SenderName, "~999999999")
+	}
+
+	// Save a contact — the message was written long before this happened.
+	h.setLocalContact(sender, "Bulgayrian", 1)
+
+	got = c.resolveSenderNames(h.history(chat, 0, 10))
+	if got[0].SenderName != "Bulgayrian" {
+		t.Errorf("after saving = %q, want %q — the stored row was never rewritten",
+			got[0].SenderName, "Bulgayrian")
+	}
+
+	// The row itself is untouched: resolution happens on the way out.
+	raw := h.history(chat, 0, 10)
+	if raw[0].SenderName != "999999999" {
+		t.Errorf("stored row = %q, want it left alone at %q",
+			raw[0].SenderName, "999999999")
+	}
+}
+
+// Our own messages aren't relabelled — "fromme" has no sender to resolve.
+func TestOwnMessagesKeepTheirName(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+	chat := "1234@s.whatsapp.net"
+	putMsg(h, chat, "m1", "", "You", "hi", 100, true)
+
+	got := c.resolveSenderNames(h.history(chat, 0, 10))
+	if got[0].SenderName != "You" {
+		t.Errorf("own message = %q, want %q", got[0].SenderName, "You")
+	}
+}
+
+// A real name that isn't in your contacts keeps its tilde; a name you saved
+// doesn't get one; and a number nobody could name gets one too.
+func TestUnknownSenderLabelling(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+
+	cases := []struct {
+		name   string
+		jid    string
+		stored string
+		want   string
+	}{
+		{"bare number gets a tilde", "9999@s.whatsapp.net", "9999", "~9999"},
+		{"a real push name is left as stored", "8888@s.whatsapp.net", "Sarp", "Sarp"},
+		{"no stored name falls back to the number", "7777@s.whatsapp.net", "", "~7777"},
+		{"a LID with no mapping has no number to show", "5555@lid", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := c.unknownSenderLabel(tc.jid, tc.stored); got != tc.want {
+				t.Errorf("unknownSenderLabel(%q, %q) = %q, want %q",
+					tc.jid, tc.stored, got, tc.want)
+			}
+		})
+	}
+}

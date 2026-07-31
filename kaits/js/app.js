@@ -31,7 +31,14 @@
   var elThread = document.getElementById("thread");
   var elThreadMsgs = document.getElementById("thread-msgs");
   var elThreadTitle = document.getElementById("thread-title");
+  var elThreadAvatar = document.getElementById("thread-avatar");
+  var elThreadName = document.getElementById("thread-name");
+  var elThreadSub = document.getElementById("thread-sub");
   var elInput = document.getElementById("composer");
+  var elAttach = document.getElementById("attach-btn");
+  var elNotifBar = document.getElementById("notif-bar");
+  var elNotifTitle = document.getElementById("notif-title");
+  var elNotifBody = document.getElementById("notif-body");
   var elReplyBar = document.getElementById("reply-bar");
   var elReplyBarText = document.getElementById("reply-bar-text");
   var elMenu = document.getElementById("action-menu");
@@ -153,6 +160,18 @@
       }
       elList.appendChild(row);
     });
+
+    // Settings sits at the very bottom, past every chat. A LAN address changes
+    // with DHCP, so there has to be a way back to it — but it's needed once in
+    // a blue moon, so it costs nothing to reach it by pressing Down a lot.
+    var cog = document.createElement("div");
+    cog.className = "chat-row archived-entry";
+    cog.setAttribute("data-nav", "");
+    cog.setAttribute("data-settings", "1");
+    cog.textContent = "⚙  Settings";
+    cog.onclick = function () { enterSetupScreen(enterListScreen); };
+    elList.appendChild(cog);
+
     scheduleAvatarLoad();
   }
 
@@ -229,6 +248,9 @@
     stashDraft();
     stopTyping();
     currentJID = null;
+    // The list shows every unread chat with a badge, so a saved notification
+    // has nothing left to tell you.
+    clearNotif();
     show(elList);
     Nav.setScreen({
       list: elList,
@@ -242,14 +264,15 @@
           renderChatList();
           Nav.refreshFocus();
           e.preventDefault();
-          return;
+          return true;
         }
-        return undefined; // fall through to Nav's own movement
+        return false; // not handled: let Nav move focus up as usual
       },
       onEnter: function (e, el) {
         if (!el) return;
         if (el.getAttribute("data-archived")) { openArchived(); return; }
         if (el.getAttribute("data-archived-back")) { closeArchived(); return; }
+        if (el.getAttribute("data-settings")) { enterSetupScreen(enterListScreen); return; }
         openThread(el.getAttribute("data-jid"));
       },
       onSoftLeft: enterSearchScreen,
@@ -273,11 +296,32 @@
   // to the phone and every other linked device. Delete is not undoable, so it
   // asks for confirmation first.
   var chatMenuJID = null;
+  var chatMenuReturn = null;  // where Cancel goes: the list, or back into a chat
 
-  function openChatMenu(jid) {
+  // openThreadOptions is the "•••" softkey inside a chat: the same pin / mute /
+  // archive / info / delete menu the list offers, but returning to the chat
+  // instead of dumping you back on the list.
+  function openThreadOptions() {
+    if (!currentJID) return;
+    openChatMenu(currentJID, returnToThread);
+  }
+
+  // returnToThread, not enterComposeMode: "Contact info" swaps to the profile
+  // screen, and show() hides every other screen, so coming back has to put the
+  // thread on screen again — not merely re-bind the keys.
+  function returnToThread() {
+    if (!currentJID) { enterListScreen(); return; }
+    show(elThread);
+    enterComposeMode();
+  }
+
+  // returnTo is where Cancel and a completed action go back to. Defaults to the
+  // chat list, which is where this menu was originally only ever opened from.
+  function openChatMenu(jid, returnTo) {
     if (!jid) return;
     var c = chats[jid] || { jid: jid };
     chatMenuJID = jid;
+    chatMenuReturn = returnTo || enterListScreen;
     elChatMenuTitle.textContent = c.name || jid;
     elChatMenuList.innerHTML = "";
     [
@@ -311,24 +355,29 @@
   function closeChatMenu() {
     elChatMenu.hidden = true;
     chatMenuJID = null;
-    enterListScreen();
+    var back = chatMenuReturn || enterListScreen;
+    chatMenuReturn = null;
+    back();
   }
 
   function runChatAction(action) {
     var jid = chatMenuJID;
     if (!jid) { closeChatMenu(); return; }
     var c = chats[jid] || {};
+    var back = chatMenuReturn || enterListScreen;
     if (action === "info") {
       elChatMenu.hidden = true;
-      openProfile(jid, enterListScreen);
+      openProfile(jid, back);
       return;
     }
     if (action === "delete") {
       elChatMenu.hidden = true;
+      // Deleting always lands on the list: going "back" into a chat that no
+      // longer exists would be nonsense.
       confirmPrompt("Delete chat?",
         "Deletes it on WhatsApp and every linked device. Cannot be undone.",
         function () { W.send(W.T.CHATACTION, { chat: jid, action: "delete" }); enterListScreen(); },
-        function () { openChatMenu(jid); });
+        function () { openChatMenu(jid, back); });
       return;
     }
     // pin / mute / archive: flip the current state, and echo it locally so the
@@ -350,6 +399,10 @@
   //             Back, returns to compose.
   function openThread(jid) {
     currentJID = jid;
+    // Opening the chat that pinged you consumes the notification; opening some
+    // other chat leaves it waiting, because it's still unread news.
+    if (pendingNotif && pendingNotif.jid === jid) clearNotif();
+    else hideNotifBar();
     var c = chats[jid] || { jid: jid, name: jid };
     // Clear optimistically; the daemon confirms with a chatupdate once the read
     // receipt has actually gone out.
@@ -359,7 +412,7 @@
     loadingOlder = false;
     pendingOlderFor = null;
     prependAnchor = null;
-    elThreadTitle.textContent = c.name || jid;
+    setThreadHeader(jid, c.name || jid);
     show(elThread);
     clearReply();
     forceScrollBottom = true;
@@ -382,16 +435,23 @@
     selectMode = false;
     selectIdx = -1;
     selectMsgID = null;
-    renderThread(); // clear any bubble highlight
+    clearSelection(); // just drop the highlight; no need to rebuild the thread
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
       onLeft: openAttachMenu,         // attachments live off Left from the composer
       onBack: enterListScreen,
-      onSoftLeft: enterListScreen,    // "Back"
-      onSoftRight: sendCurrent,       // "Send"
+      // Left softkey is "check notification" when one is waiting, plain "Back"
+      // otherwise. The red hardware key goes back either way, which is what
+      // freed this one up.
+      onSoftLeft: checkNotif,
+      // Right softkey is the options menu, matching the platform convention:
+      // the CENTRE key advertises what Enter does, and the right one is "•••".
+      // Send moved to the centre label accordingly — Enter already sent, so the
+      // old right-softkey Send was the odd one out.
+      onSoftRight: openThreadOptions,
       onEnter: sendCurrent
     });
-    Nav.setSoftkeys("Back", "", "Send");
+    Nav.setSoftkeys(notifSoftLabel(), "SEND", "•••");
     setTimeout(function () { elInput.focus(); }, 0);
   }
 
@@ -401,7 +461,7 @@
     elInput.blur();
     selectMode = true;
     setSelect(msgs.length - 1); // start at the newest message
-    renderThread();
+    paintSelection();
     Nav.setScreen({
       onUp: function () { moveSelect(-1); },
       onDown: function () { moveSelect(1); },
@@ -410,7 +470,9 @@
       onSoftRight: openActionMenu,    // "Actions"
       onBack: enterComposeMode
     });
-    Nav.setSoftkeys("Cancel", "", "Actions");
+    // Centre advertises the Enter action here too; "•••" does the same thing,
+    // so the options key means the same in both thread modes.
+    Nav.setSoftkeys("Cancel", "ACTIONS", "•••");
   }
 
   function moveSelect(delta) {
@@ -422,12 +484,51 @@
       // navigation, so without this, moving up simply stops.
       setSelect(0);
       requestOlderHistory();
-      renderThread();
+      paintSelection();
       return;
     }
     if (next >= msgs.length) { enterComposeMode(); return; } // down off the end
     setSelect(next);
-    renderThread();
+    paintSelection();
+  }
+
+  // paintSelection moves the highlight by editing two class lists.
+  //
+  // This used to call renderThread(), which threw away every bubble and built
+  // them all again for a single D-pad press. On Gecko 48 with a long thread
+  // that is slow on its own, but the visible damage came from innerHTML = ""
+  // resetting scrollTop to 0: the view snapped to the top of the chat and then
+  // scrollIntoView dragged it back. The further into the present you were, the
+  // longer that round trip, which is why it got worse the closer you got to
+  // today's messages.
+  //
+  // Falls back to a full render only if the target bubble isn't on screen —
+  // which shouldn't happen, since the selection can only point at a message
+  // that was rendered.
+  function paintSelection() {
+    var prev = elThreadMsgs.querySelector(".bubble.selected");
+    var next = selectMsgID
+      ? elThreadMsgs.querySelector('.bubble[data-msgid="' + cssEscape(selectMsgID) + '"]')
+      : null;
+    if (selectMsgID && !next) { renderThread(); return; }
+    if (prev === next) { if (next) next.scrollIntoView({ block: "nearest" }); return; }
+    if (prev) prev.className = prev.className.replace(/ ?\bselected\b/, "");
+    if (next) {
+      next.className += " selected";
+      next.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // clearSelection drops the highlight without touching anything else.
+  function clearSelection() {
+    var prev = elThreadMsgs.querySelector(".bubble.selected");
+    if (prev) prev.className = prev.className.replace(/ ?\bselected\b/, "");
+  }
+
+  // WhatsApp message ids are [A-Z0-9] hex-ish, but ours also include local
+  // echo ids we generate, so quote anything that would break the selector.
+  function cssEscape(s) {
+    return String(s).replace(/["\\]/g, "\\$&");
   }
 
   // setSelect moves the selection and remembers WHICH message it is, not just
@@ -458,6 +559,8 @@
     W.send(W.T.GETHISTORY, { jid: currentJID, before: oldestTS, limit: 40 });
     return true;
   }
+
+  if (elAttach) elAttach.onclick = function () { openAttachMenu(); };
 
   // openAttachMenu offers the attachment kinds. Reuses the chat-menu overlay
   // rather than adding another screen.
@@ -759,13 +862,34 @@
   }
 
   function refreshTypingUI(chat) {
-    if (currentJID === chat) {
-      // Typing outranks presence: it's the more immediate fact.
-      var label = typingLabel(chat) || presenceLabel(chat);
-      var c = chats[chat] || {};
-      elThreadTitle.textContent = label ? (c.name || chat) + " — " + label : (c.name || chat);
-    }
+    if (currentJID === chat) setThreadSub(chat);
     if (!elList.hidden) renderChatList();
+  }
+
+  // setThreadSub writes the second header line. Typing outranks presence: it's
+  // the more immediate fact, and it gets the accent colour so a live "typing…"
+  // reads differently from a stale "last seen".
+  function setThreadSub(chat) {
+    var typed = typingLabel(chat);
+    elThreadSub.className = typed ? "typing" : "";
+    elThreadSub.textContent = typed || presenceLabel(chat);
+  }
+
+  // setThreadHeader fills the avatar and name when a chat opens. The avatar
+  // goes through the same lazy queue as the list rows, so it obeys the same
+  // rate limit — profile-picture requests are what tripped WhatsApp before.
+  function setThreadHeader(jid, name) {
+    elThreadName.textContent = name;
+    elThreadAvatar.textContent = initialsFor(name);
+    elThreadAvatar.style.background = colorFor(name);
+    // Reset the lazy-load bookkeeping, or switching chats keeps the previous
+    // contact's photo.
+    var old = elThreadAvatar.querySelector("img");
+    if (old) elThreadAvatar.removeChild(old);
+    elThreadAvatar.removeAttribute("data-avatar-done");
+    elThreadAvatar.setAttribute("data-avatar-jid", jid);
+    enqueueAvatar(elThreadAvatar);
+    setThreadSub(jid);
   }
 
   // presenceLabel renders "online" or "last seen ...". A zero lastseen means
@@ -1254,7 +1378,10 @@
   // added at the end. Selection changes, edits, deletions and older pages all
   // fail this and take the full rebuild.
   function canAppendOnly(msgs) {
-    if (selectMode) return false;              // the highlight moves between bubbles
+    // Select mode used to force a full rebuild here, because moving the
+    // highlight went through renderThread(). paintSelection() edits the two
+    // class lists directly now, so a message arriving while you're reading
+    // history only needs its own bubble appended.
     if (renderedFor !== currentJID) return false;
     if (!renderedIds.length) return false;
     if (msgs.length <= renderedIds.length) return false;
@@ -1278,7 +1405,9 @@
       lastTS = msgs[i].ts || lastTS;
       renderedIds.push(msgs[i].msgid);
     }
-    if (wasNearBottom) elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
+    // Don't chase the bottom while a bubble is selected — that would yank the
+    // reader away from the message they're standing on.
+    if (wasNearBottom && !selectMode) elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
   }
 
   // buildBubble draws one message (plus any date separator, sender label and
@@ -1966,6 +2095,250 @@
         renderThread();
       }
     } else if (!elList.hidden) renderChatList();
+
+    alertForMessage(m, c);
+  }
+
+  // ---------- in-app notifications ----------
+  //
+  // A push notification is for when the app ISN'T open. When it is, the OS
+  // bubble is the wrong tool — it covers the screen you're using to say
+  // something the app could show you in a strip. So:
+  //
+  //   on the chat list  — buzz only. The list is already the notification: the
+  //                       row jumps to the top with a green unread badge.
+  //   anywhere else     — a thin bar at the top, plus the buzz, because you
+  //                       can't see the list from inside a chat.
+  //   in the chat it    — see VIBRATE_IN_OPEN_CHAT. The message appears in
+  //   came from           front of you, so buzzing is arguably just noise.
+  //
+  // The bar holds for NOTIF_HOLD_MS or until another chat interrupts it,
+  // whichever comes first. The notification itself outlives the bar: the left
+  // softkey stays bound to it so a strip you missed is still reachable.
+  var NOTIF_HOLD_MS = 4000;
+  var pendingNotif = null;   // {jid, title, body} — survives the bar hiding
+  var notifTimer = null;
+
+  // ---- alerting: beep, buzz, or both, following the phone's own profile ----
+  //
+  // A phone already knows whether its owner wants noise: that's what the ringer
+  // profile is for. Rather than inventing a second setting the user has to keep
+  // in sync, ask the device via mozSettings and follow it. Two keys matter —
+  // audio.volume.notification (0 means silenced) and vibration.enabled.
+  //
+  // Everything here degrades to the config values, because mozSettings is
+  // absent in a desktop browser and MAY be refused on the phone: the Settings
+  // API is permission-gated and a plain hosted app might not be granted it.
+  // That's unverified on real hardware, so nothing depends on it working.
+  var phoneProfile = { sound: null, vibrate: null }; // null = phone didn't say
+
+  function readPhoneProfile() {
+    var ms = navigator.mozSettings;
+    if (!ms || !ms.createLock) return;
+    try {
+      var lock = ms.createLock();
+      var vol = lock.get("audio.volume.notification");
+      vol.onsuccess = function () {
+        var v = vol.result["audio.volume.notification"];
+        if (typeof v === "number") phoneProfile.sound = v > 0;
+      };
+      var vib = lock.get("vibration.enabled");
+      vib.onsuccess = function () {
+        var v = vib.result["vibration.enabled"];
+        if (typeof v === "boolean") phoneProfile.vibrate = v;
+      };
+      // Follow the profile as it changes, so flipping the phone to silent
+      // takes effect without restarting the app.
+      if (ms.addObserver) {
+        ms.addObserver("audio.volume.notification", function (e) {
+          if (typeof e.settingValue === "number") phoneProfile.sound = e.settingValue > 0;
+        });
+        ms.addObserver("vibration.enabled", function (e) {
+          if (typeof e.settingValue === "boolean") phoneProfile.vibrate = e.settingValue;
+        });
+      }
+    } catch (e) { /* not permitted — the config values stand */ }
+  }
+  readPhoneProfile();
+
+  // mode is "auto" | "always" | "never"; phoneSays is true/false/null.
+  // "auto" follows the phone when it answers, and otherwise uses fallback —
+  // which is why the default fallback for sound is OFF and for vibration is ON.
+  // A missed buzz is a smaller problem than a dev build beeping in a meeting.
+  function wants(mode, phoneSays, fallback) {
+    if (mode === "always") return true;
+    if (mode === "never") return false;
+    return phoneSays === null ? fallback : phoneSays;
+  }
+
+  // appHidden is true when the app isn't the visible thing on screen — phone
+  // shut, another app in front, screen off. Gecko 48 has document.hidden; the
+  // fallback assumes visible, which errs toward the in-app bar rather than
+  // firing an OS notification at someone staring at the chat.
+  function appHidden() {
+    if (typeof document.hidden === "boolean") return document.hidden;
+    if (typeof document.mozHidden === "boolean") return document.mozHidden;
+    return false;
+  }
+
+  // osNotify raises a real system notification through the service worker.
+  //
+  // Tagged per chat and renotify:true, matching sw.js — a second message in the
+  // same conversation updates that bubble and buzzes again, instead of stacking
+  // a new one. The jid rides in data so sw.js's notificationclick handler opens
+  // the right chat.
+  function osNotify(title, body, jid) {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.ready) return;
+    navigator.serviceWorker.ready.then(function (reg) {
+      if (!reg || !reg.showNotification) return;
+      reg.showNotification(title || "Message", {
+        body: body || "",
+        icon: "/icons/icon-112.png",
+        tag: "wa-" + jid,
+        renotify: true,
+        data: { jid: jid }
+      });
+    }).catch(function () { /* no worker; the buzz is all we have */ });
+  }
+
+  function buzz() {
+    var cfg = window.CONFIG || {};
+    if (wants(cfg.NOTIFY_VIBRATE || "auto", phoneProfile.vibrate, true) &&
+        navigator.vibrate) {
+      try { navigator.vibrate(120); } catch (e) { /* not permitted; ignore */ }
+    }
+    if (wants(cfg.NOTIFY_SOUND || "auto", phoneProfile.sound, false)) {
+      beep();
+    }
+  }
+
+  // beep plays a short two-tone chirp, synthesised rather than shipped as an
+  // audio file — no asset to load, no decoder to depend on, and it stays
+  // audible on a small speaker.
+  //
+  // The context is built on first use: creating one at startup keeps the audio
+  // hardware awake for a notification that may never come.
+  var audioCtx = null;
+
+  function beep() {
+    try {
+      if (!audioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        // Ask for the notification channel so the phone's own notification
+        // volume (and silent mode) governs this, instead of media volume.
+        // Privileged on Firefox OS, so it may be ignored — hence try/catch and
+        // no reliance on it.
+        try { audioCtx.mozAudioChannelType = "notification"; } catch (e) { /* fine */ }
+      }
+      // Desktop browsers start a context created without a user gesture in the
+      // "suspended" state, which makes the beep silently do nothing.
+      if (audioCtx.state === "suspended" && audioCtx.resume) audioCtx.resume();
+      chirp(audioCtx.currentTime);
+      chirp(audioCtx.currentTime + 0.13);
+    } catch (e) { /* no audio available; the vibration carries it */ }
+  }
+
+  function chirp(at) {
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    // Ramp instead of switching on and off: an abrupt gain change is a click.
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.25, at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.09);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(at);
+    osc.stop(at + 0.1);
+  }
+
+  // alertForMessage decides what a newly arrived message does to the UI.
+  function alertForMessage(m, c) {
+    if (m.fromme) return;
+    if (c && c.muted) return;   // a mute means silence, not a smaller icon
+
+    if (currentJID === m.chat) {
+      // You are reading this very chat.
+      if (window.CONFIG && CONFIG.VIBRATE_IN_OPEN_CHAT) buzz();
+      return;
+    }
+
+    // App backgrounded — the phone shut, or another app in front. An in-app bar
+    // is invisible here, so raise a real OS notification instead.
+    //
+    // This needs no push service. A service worker may call showNotification()
+    // for any reason, and the message arrived over the WebSocket we already
+    // hold. KaiOS's push servers currently accept pushes and discard them, so
+    // for now this is the ONLY route to a notification on this platform — and
+    // it works exactly as long as the app stays running.
+    if (appHidden()) {
+      osNotify(
+        (c && c.name) || m.chatname || m.chat,
+        (c && c.preview) || "",
+        m.chat
+      );
+      return;
+    }
+
+    buzz();
+    if (!elList.hidden) return; // on the list; the badge says it better
+
+    pendingNotif = {
+      jid: m.chat,
+      title: (c && c.name) || m.chatname || m.chat,
+      body: (c && c.preview) || ""
+    };
+    showNotifBar();
+    refreshNotifSoftkey();
+  }
+
+  function showNotifBar() {
+    if (!pendingNotif) return;
+    elNotifTitle.textContent = pendingNotif.title;
+    elNotifBody.textContent = pendingNotif.body;
+    elNotifBar.hidden = false;
+    if (notifTimer) clearTimeout(notifTimer);
+    notifTimer = setTimeout(hideNotifBar, NOTIF_HOLD_MS);
+  }
+
+  function hideNotifBar() {
+    if (notifTimer) { clearTimeout(notifTimer); notifTimer = null; }
+    elNotifBar.hidden = true;
+  }
+
+  // clearNotif drops the bar AND the pending notification, for when it stops
+  // being news: you opened that chat, or went back to the list where you can
+  // see everything anyway.
+  function clearNotif() {
+    hideNotifBar();
+    pendingNotif = null;
+  }
+
+  // The left softkey is free now that the red key handles Back, so it becomes
+  // "go to the chat that just messaged you" — and falls back to Back when
+  // there's nothing waiting, since a dead softkey is worse than a plain one.
+  function notifSoftLabel() {
+    if (!pendingNotif) return "Back";
+    return "🔔 " + truncate(pendingNotif.title, 8);
+  }
+
+  function checkNotif() {
+    if (!pendingNotif) { enterListScreen(); return; }
+    var jid = pendingNotif.jid;
+    clearNotif();
+    openThread(jid);
+  }
+
+  // Repaint the softkey when a notification arrives or is consumed — but only
+  // while plain compose mode is what's on screen, so we never stomp on the
+  // labels a menu or select mode has set.
+  function refreshNotifSoftkey() {
+    if (elThread.hidden || selectMode || menuOpen) return;
+    if (!elChatMenu.hidden || !elMenu.hidden) return;
+    Nav.setSoftkeys(notifSoftLabel(), "SEND", "•••");
   }
 
   // ---------- wire up events ----------
@@ -2240,9 +2613,90 @@
       if (!jid) return;
       if (!chats[jid]) chats[jid] = { jid: jid, name: jid };
       openThread(jid);
+    },
+    // Dev hooks. Alerting is the one part that can't be checked by reading the
+    // code — whether the phone answers mozSettings, whether the beep is audible
+    // over a speaker — so make it triggerable on demand.
+    testAlert: function () { buzz(); },
+    testBeep: function () { beep(); },
+    alertProfile: function () {
+      return {
+        phoneSays: phoneProfile,
+        mozSettings: !!navigator.mozSettings,
+        canVibrate: !!navigator.vibrate
+      };
+    },
+    testBanner: function (title, body) {
+      pendingNotif = { jid: currentJID || "test@s.whatsapp.net",
+                       title: title || "Test chat", body: body || "A message" };
+      showNotifBar();
+      refreshNotifSoftkey();
     }
   };
 
-  enterListScreen();
-  W.connect();
+  // ---------- first-run setup ----------
+  //
+  // Where the daemon lives is the one thing the app can't guess and can't ship
+  // baked in: a LAN address changes with DHCP, and a token in the package would
+  // travel inside every zip uploaded to a submission portal. So ask once, store
+  // it on the phone, and offer a way back in when the address moves.
+  var elSetup = document.getElementById("setup");
+  var elSetupHost = document.getElementById("setup-host");
+  var elSetupToken = document.getElementById("setup-token");
+  var elSetupPreview = document.getElementById("setup-preview");
+
+  function enterSetupScreen(returnTo) {
+    var cur = Settings.current();
+    elSetupHost.value = cur.host || "";
+    elSetupToken.value = cur.token || "";
+    updateSetupPreview();
+    show(elSetup);
+
+    var field = 0;                       // 0 = host, 1 = token
+    var fields = [elSetupHost, elSetupToken];
+    function focusField(i) {
+      field = (i + fields.length) % fields.length;
+      fields.forEach(function (f) { f.className = ""; });
+      fields[field].className = "focused";
+      fields[field].focus();
+    }
+
+    function saveAndGo() {
+      var saved = Settings.save(elSetupHost.value, elSetupToken.value);
+      if (!saved) { toast("Enter the server address"); return; }
+      // Reconnect against the new address rather than waiting for a retry —
+      // the old socket is pointed at somewhere that may no longer exist.
+      W.reconnect();
+      enterListScreen();
+    }
+
+    Nav.setScreen({
+      onUp: function () { focusField(field - 1); return true; },
+      onDown: function () { focusField(field + 1); return true; },
+      onEnter: saveAndGo,
+      onSoftRight: saveAndGo,
+      // No way out on first run: without an address there's nothing to show.
+      onSoftLeft: returnTo || null,
+      onBack: returnTo || null
+    });
+    Nav.setSoftkeys(returnTo ? "Cancel" : "", "SAVE", "Save");
+    focusField(0);
+  }
+
+  function updateSetupPreview() {
+    var url = Settings.preview(elSetupHost.value);
+    elSetupPreview.textContent = url ? "→ " + url : "";
+  }
+  elSetupHost.addEventListener("input", updateSetupPreview);
+
+  window.App.setup = function () { enterSetupScreen(enterListScreen); };
+
+  // Boot. An unconfigured app has nowhere to connect, so it asks first and
+  // connects afterwards.
+  if (Settings.configured()) {
+    enterListScreen();
+    W.connect();
+  } else {
+    enterSetupScreen(null);
+  }
 })();

@@ -11,3 +11,10 @@ wa-session*
 # build artifacts
 wad/wad
 .DS_Store
+
+# Push test: a capability URL that can wake the phone.
+endpoint.txt
+pushtest/build/
+__pycache__/
+*.pyc
+kaits/build/

@@ -486,7 +486,7 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) 
 // Search finds messages matching a query, optionally within one chat, and
 // labels each hit with the conversation it came from.
 func (c *Client) Search(query, chat string, limit int) []map[string]any {
-	hits := c.hist.searchMessages(query, chat, limit)
+	hits := c.resolveSenderNames(c.hist.searchMessages(query, chat, limit))
 	jids := make([]string, 0, len(hits))
 	seen := map[string]bool{}
 	for _, h := range hits {
@@ -852,8 +852,12 @@ func (c *Client) canonicalJID(jid types.JID) types.JID {
 		return types.JID{User: pn, Server: types.DefaultUserServer}
 	}
 
-	if pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD()); err == nil && !pn.IsEmpty() {
-		return pn.ToNonAD()
+	// Guarded like every other source here: an absent store should mean no
+	// mapping, not a crash.
+	if c.WA != nil && c.WA.Store != nil && c.WA.Store.LIDs != nil {
+		if pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD()); err == nil && !pn.IsEmpty() {
+			return pn.ToNonAD()
+		}
 	}
 
 	if pn := c.hist.resolvePN(jid.ToNonAD().String()); pn != "" {
@@ -914,7 +918,13 @@ func (c *Client) displayNameSourced(jid types.JID, pushName string) (string, boo
 	if raw := jid.ToNonAD(); raw != candidates[0] {
 		candidates = append(candidates, raw)
 	}
+	// Guarded like the sess and hist lookups above: every other source here
+	// tolerates being absent, and this one used to be the exception that
+	// turned a missing store into a segfault rather than a missing name.
 	for _, j := range candidates {
+		if c.WA == nil || c.WA.Store == nil || c.WA.Store.Contacts == nil {
+			break
+		}
 		if contact, err := c.WA.Store.Contacts.GetContact(context.Background(), j); err == nil {
 			// FullName here is user-set, same tier as the address book.
 			if contact.FullName != "" {
@@ -1289,7 +1299,90 @@ func (c *Client) ListChats() []map[string]any {
 // History returns stored messages for a chat (oldest->newest), paginated by
 // beforeTS (0 = latest page).
 func (c *Client) History(chat string, beforeTS int64, limit int) []ws.MsgData {
-	return c.hist.history(chat, beforeTS, limit)
+	return c.resolveSenderNames(c.hist.history(chat, beforeTS, limit))
+}
+
+// resolveSenderNames re-derives each message's display name from its sender JID
+// on the way out, instead of trusting the name that was written into the row
+// when the message arrived.
+//
+// Storing the resolved name is what made 11,455 rows wrong: they were carrying
+// a snapshot taken before the resolver could map LIDs to phone numbers, and no
+// amount of new messages fixed the old ones. Repair passes existed only to
+// paper over that — RefreshNames, markUnsavedNames, the numeric backfills.
+//
+// Resolving here means saving a contact fixes every message they ever sent,
+// immediately, and a better resolver improves all of history rather than only
+// what arrives next.
+//
+// The stored name is passed through as the push-name fallback, so it acts as a
+// floor: a better source wins, and if nothing resolves we show what we had.
+// Cached per call because a group page is dozens of messages from a handful of
+// people.
+func (c *Client) resolveSenderNames(msgs []ws.MsgData) []ws.MsgData {
+	if c == nil {
+		return msgs
+	}
+	cache := make(map[string]string, 8)
+	for i := range msgs {
+		if msgs[i].FromMe || msgs[i].SenderJID == "" {
+			continue
+		}
+		name, done := cache[msgs[i].SenderJID]
+		if !done {
+			if jid, err := types.ParseJID(msgs[i].SenderJID); err == nil {
+				// The stored name is offered as the push-name fallback, but
+				// only when it's an actual name. A bare number is a
+				// placeholder, and feeding it in gets it tilde-marked as
+				// "what this person calls themselves" — which is how you end
+				// up displaying "~999999999".
+				fallback := msgs[i].SenderName
+				if isNumeric(fallback) {
+					fallback = ""
+				}
+				name = c.displayName(jid, fallback)
+			}
+			cache[msgs[i].SenderJID] = name
+		}
+		if name != "" {
+			msgs[i].SenderName = name
+			continue
+		}
+		// Nothing resolved: every source is exhausted, so this is someone we
+		// genuinely have no name for.
+		msgs[i].SenderName = c.unknownSenderLabel(msgs[i].SenderJID, msgs[i].SenderName)
+	}
+	return msgs
+}
+
+// unknownSenderLabel is what a group shows for someone no name could be found
+// for. The tilde means "not in your contacts" — the same mark an unsaved person
+// with a push name gets — so a bare number reads as a stranger rather than as a
+// name that happens to be digits.
+//
+// Only reached once displayName has tried everything: saved nickname, address
+// book, push name, whatsmeow's contact tables, and names learned from traffic.
+// No network lookup happens here; fetching per message at render time would be
+// both slow and a good way to get rate-limited. WAD_RESYNC=1 is the bulk pass
+// that asks WhatsApp for names we're missing.
+func (c *Client) unknownSenderLabel(senderJID, stored string) string {
+	if isNumeric(stored) {
+		return "~" + stored
+	}
+	if stored != "" {
+		return stored
+	}
+	// No stored name at all. A phone JID's user part is the number and worth
+	// showing; a LID's is an opaque id that tells the reader nothing, so it's
+	// only used when it maps back to a real number.
+	jid, err := types.ParseJID(senderJID)
+	if err != nil {
+		return stored
+	}
+	if canon := c.canonicalJID(jid); canon.Server == types.DefaultUserServer && isNumeric(canon.User) {
+		return "~" + canon.User
+	}
+	return stored
 }
 
 // RequestHistorySync asks the phone to re-send more history (on-demand). This

@@ -62,12 +62,17 @@
 
   document.addEventListener("keydown", function (e) {
     switch (e.key) {
+      // A screen's own onUp/onDown wins, EXCEPT when it returns false — that's
+      // the handler saying "not mine, do the normal thing". Without that escape
+      // hatch a screen that only wants to special-case the top of the list has
+      // to reimplement focus movement, and if it forgets, the list simply stops
+      // moving in that direction.
       case "ArrowUp":
-        if (screen.onUp) return screen.onUp(e);
+        if (screen.onUp && screen.onUp(e) !== false) return;
         if (moveFocus(-1)) e.preventDefault();
         break;
       case "ArrowDown":
-        if (screen.onDown) return screen.onDown(e);
+        if (screen.onDown && screen.onDown(e) !== false) return;
         if (moveFocus(1)) e.preventDefault();
         break;
       case "ArrowLeft":
@@ -99,10 +104,23 @@
         if (isEditing()) break;
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
         break;
+      // On real hardware the red key is the back/exit key, and which name Gecko
+      // gives it varies by device and build — "EndCall" on some, "Escape" or
+      // "GoBack" on others. Accept them all; preventDefault also stops the
+      // system from treating it as "close the app".
       case "EndCall":
       case "Escape":
+      case "GoBack":
+      case "BrowserBack":
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
         break;
+      default:
+        // Which key names a given phone actually emits is the sort of thing
+        // only the device can tell you. Set DEBUG_KEYS in config.js and press
+        // the key to find out, instead of guessing at a keymap.
+        if (window.CONFIG && window.CONFIG.DEBUG_KEYS) {
+          console.log("nav: unhandled key", JSON.stringify(e.key), "code", e.code);
+        }
     }
   });
 

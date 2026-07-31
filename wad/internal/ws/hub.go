@@ -108,9 +108,17 @@ func (h *Hub) adopt(c *websocket.Conn) {
 	h.sendCh = ch
 	h.mu.Unlock()
 
+	// How long the phone stays connected is the number that decides whether
+	// notifications are possible at all on this platform. KaiOS's push service
+	// accepts pushes and discards them, so the only working route is the app
+	// raising notifications itself over this socket — which lasts exactly as
+	// long as KaiOS lets the app keep running with the phone shut. Logging the
+	// session length measures that without any code on the phone.
+	connectedAt := time.Now()
 	log.Printf("ws: phone connected")
 	go h.writeLoop(c, ch)
 	h.readLoop(c)
+	log.Printf("ws: phone disconnected after %s", time.Since(connectedAt).Round(time.Second))
 }
 
 func (h *Hub) readLoop(c *websocket.Conn) {
