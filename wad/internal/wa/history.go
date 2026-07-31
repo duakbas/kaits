@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"wad/internal/ws"
 
@@ -212,6 +213,82 @@ func (h *histStore) listChats() []map[string]any {
 			"muted": muted.Int64 == 1, "archived": archived.Int64 == 1,
 			"unread": unread.Int64,
 		})
+	}
+	return out
+}
+
+// searchMessages finds messages whose text matches a query, newest first.
+//
+// A plain LIKE over the messages table: with tens of thousands of rows this is
+// a scan, but it's a scan of one local sqlite file on a query the user typed
+// deliberately, so it stays well inside "instant". chat scopes it to one
+// conversation; empty searches everywhere.
+func (h *histStore) searchMessages(query, chat string, limit int) []ws.MsgData {
+	out := []ws.MsgData{}
+	if h == nil || h.db == nil || strings.TrimSpace(query) == "" {
+		return out
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	// Escape LIKE's own wildcards so searching for "100%" doesn't match
+	// everything.
+	esc := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(query)
+	pattern := "%" + esc + "%"
+
+	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text
+	      FROM messages
+	      WHERE text LIKE ? ESCAPE '\' AND text<>''`
+	args := []any{pattern}
+	if chat != "" {
+		q += ` AND chat=?`
+		args = append(args, chat)
+	}
+	q += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := h.db.Query(q, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d ws.MsgData
+		var sender, sname, kind, text sql.NullString
+		var fromme, ts sql.NullInt64
+		if rows.Scan(&d.MsgID, &d.ChatJID, &sender, &sname, &fromme, &ts, &kind, &text) != nil {
+			continue
+		}
+		d.SenderJID, d.SenderName = sender.String, sname.String
+		d.Kind, d.Text = kind.String, text.String
+		d.Timestamp, d.FromMe = ts.Int64, fromme.Int64 == 1
+		out = append(out, d)
+	}
+	return out
+}
+
+// chatNamesFor maps chat JIDs to their display names, so search results can be
+// labelled with the conversation they came from.
+func (h *histStore) chatNamesFor(jids []string) map[string]string {
+	out := map[string]string{}
+	if h == nil || h.db == nil || len(jids) == 0 {
+		return out
+	}
+	args := make([]any, len(jids))
+	for i, j := range jids {
+		args[i] = j
+	}
+	rows, err := h.db.Query(`SELECT jid, COALESCE(name,'') FROM chats
+		WHERE jid IN (?`+repeatPlaceholders(len(jids)-1)+`)`, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jid, name string
+		if rows.Scan(&jid, &name) == nil {
+			out[jid] = name
+		}
 	}
 	return out
 }

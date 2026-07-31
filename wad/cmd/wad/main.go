@@ -224,7 +224,17 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
 		}
-		// TODO: kind == "image" -> decode d.MediaB64, upload via whatsmeow
+		if d.Kind == "image" || d.Kind == "video" || d.Kind == "audio" ||
+			d.Kind == "gif" || d.Kind == "doc" {
+			id, err := waCli.SendMedia(ctx, d.ChatJID, d.Kind, d.MediaB64, d.Mime,
+				d.Text, d.FileName, d.QuotedID)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "sendmedia", "msg": err.Error()})
+				return
+			}
+			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
+				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+		}
 
 	case ws.TCallAnswer, ws.TCallReject, ws.TCallHangup, ws.TCallSignalA:
 		cm.HandleAppFrame(ctx, e)
@@ -353,6 +363,32 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		}
 		if err := waCli.SendReaction(ctx, d.Chat, d.MsgID, d.Emoji); err != nil {
 			hub.PushT(ws.TError, map[string]string{"code": "reaction", "msg": err.Error()})
+		}
+
+	case ws.TSearch:
+		var d struct {
+			Q     string `json:"q"`
+			Chat  string `json:"chat"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badsearch", "msg": err.Error()})
+			return
+		}
+		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
+			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
+
+	case ws.TWatch:
+		var d struct {
+			JID string `json:"jid"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			return
+		}
+		// Best-effort: presence is a nicety, and WhatsApp refuses for people
+		// who have it turned off.
+		if err := waCli.WatchPresence(ctx, d.JID); err != nil {
+			log.Printf("watch %s: %v", d.JID, err)
 		}
 
 	case ws.TMarkRead:

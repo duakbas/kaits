@@ -247,10 +247,16 @@ func (c *Client) handleEvent(evt any) {
 		})
 
 	case *events.Presence:
+		// LastSeen is zero when the contact hides it; send 0 rather than a
+		// nonsense 1970 timestamp so the app can tell "hidden" from "ages ago".
+		var lastSeen int64
+		if !v.LastSeen.IsZero() {
+			lastSeen = v.LastSeen.Unix()
+		}
 		c.hub.PushT(ws.TPresence, map[string]any{
-			"jid":         v.From.String(),
+			"jid":         c.canonicalJID(v.From).String(),
 			"unavailable": v.Unavailable,
-			"lastseen":    v.LastSeen.Unix(),
+			"lastseen":    lastSeen,
 		})
 
 	// ---- call events: hand off to the calls package (meowcaller) ----
@@ -425,6 +431,49 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) 
 		return 0, err
 	}
 	return c.hist.markAllRead(chatJID), nil
+}
+
+// Search finds messages matching a query, optionally within one chat, and
+// labels each hit with the conversation it came from.
+func (c *Client) Search(query, chat string, limit int) []map[string]any {
+	hits := c.hist.searchMessages(query, chat, limit)
+	jids := make([]string, 0, len(hits))
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if !seen[h.ChatJID] {
+			seen[h.ChatJID] = true
+			jids = append(jids, h.ChatJID)
+		}
+	}
+	names := c.hist.chatNamesFor(jids)
+
+	out := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, map[string]any{
+			"msgid": h.MsgID, "chat": h.ChatJID, "chatname": names[h.ChatJID],
+			"sendername": h.SenderName, "fromme": h.FromMe,
+			"ts": h.Timestamp, "kind": h.Kind, "text": h.Text,
+		})
+	}
+	return out
+}
+
+// WatchPresence subscribes to someone's online/last-seen updates.
+//
+// WhatsApp only sends presence for users you've explicitly subscribed to, which
+// is why the Presence event handler existed but never fired: nothing ever
+// asked. Subscribing is per-user and resets on reconnect, so the app re-asks
+// each time it opens a chat.
+func (c *Client) WatchPresence(ctx context.Context, chatJID string) error {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	// Groups have no presence, and subscribing to one is an error.
+	if jid.Server != types.DefaultUserServer {
+		return nil
+	}
+	return c.WA.SubscribePresence(ctx, jid)
 }
 
 // UnreadCount is how many incoming messages in a chat are still unread.
