@@ -669,3 +669,7 @@ header .status.closed { color: var(--danger); }
   line-height: 1.5;
   white-space: pre-wrap;
 }
+
+/* The softkey bar is clickable on desktop (see nav.js). No pointer exists on
+   the phone, so this only ever shows up during development. */
+#softkeys span { cursor: pointer; }

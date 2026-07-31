@@ -124,6 +124,28 @@
     }
   });
 
+  // Clicking the on-screen softkey bar does what the hardware key does.
+  //
+  // There is no touch on KaiOS, so this is dead weight on the phone — but on a
+  // desktop it removes a whole class of wasted time: macOS takes F1 and F2 for
+  // brightness, some browsers claim F1 for help, and a softkey that silently
+  // never fires looks exactly like a broken feature.
+  function wireSoftkeyClicks() {
+    var map = [
+      ["sk-left", function (e) { if (screen.onSoftLeft) screen.onSoftLeft(e); }],
+      ["sk-center", function (e) {
+        if (screen.onEnter) screen.onEnter(e, currentFocusEl());
+        else { var el = currentFocusEl(); if (el) el.click(); }
+      }],
+      ["sk-right", function (e) { if (screen.onSoftRight) screen.onSoftRight(e); }]
+    ];
+    map.forEach(function (pair) {
+      var el = document.getElementById(pair[0]);
+      if (el) el.addEventListener("click", pair[1]);
+    });
+  }
+  wireSoftkeyClicks();
+
   window.Nav = {
     setScreen: function (handlers) {
       screen = {
