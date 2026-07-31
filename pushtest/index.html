@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=240, initial-scale=1, user-scalable=no">
+  <title>Push Test</title>
+  <style>
+    body { background: #111; color: #eee; font: 12px sans-serif; margin: 0; padding: 6px; }
+    h1 { font-size: 13px; margin: 0 0 6px; color: #25d366; }
+    #log { white-space: pre-wrap; word-break: break-all; font-size: 11px; line-height: 1.35; }
+    .ok { color: #25d366; }
+    .bad { color: #e05252; }
+    .hint { color: #888; margin-top: 8px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Push Test</h1>
+  <div id="log"></div>
+  <div class="hint">1 = re-subscribe &nbsp; 2 = local notification</div>
+
+<script>
+// The catcher on your computer. The phone can't show you a 200-character
+// endpoint URL in a way you'd ever retype, so it posts it instead.
+// Put your computer's LAN IP here — not localhost, that's the phone itself.
+var CATCHER = "http://192.168.1.10:9999";
+
+var logEl = document.getElementById("log");
+function log(msg, cls) {
+  var d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  logEl.appendChild(d);
+}
+
+function fail(where, e) {
+  log("✗ " + where + ": " + (e && e.message ? e.message : e), "bad");
+}
+
+if (!("serviceWorker" in navigator)) {
+  log("✗ no serviceWorker in this browser", "bad");
+} else if (!("PushManager" in window)) {
+  log("✗ no PushManager in this browser", "bad");
+} else {
+  start();
+}
+
+function start() {
+  log("registering worker…");
+  navigator.serviceWorker.register("sw.js")
+    .then(function (reg) {
+      log("✓ worker registered", "ok");
+      return askPermission().then(function () { return subscribe(reg); });
+    })
+    .catch(function (e) { fail("register", e); });
+}
+
+function askPermission() {
+  if (!window.Notification) { log("✗ no Notification API", "bad"); return Promise.resolve(); }
+  if (Notification.permission === "granted") { log("✓ notifications allowed", "ok"); return Promise.resolve(); }
+  return Notification.requestPermission().then(function (p) {
+    log(p === "granted" ? "✓ notifications allowed" : "✗ notifications denied: " + p,
+        p === "granted" ? "ok" : "bad");
+  });
+}
+
+// Subscribe with NO applicationServerKey. KaiOS permits this; the trade-off is
+// that pushes must then be payload-free, which is exactly what the real app
+// does — the push is a doorbell, the content is fetched separately.
+function subscribe(reg) {
+  return reg.pushManager.getSubscription()
+    .then(function (existing) { return existing || reg.pushManager.subscribe({ userVisibleOnly: true }); })
+    .then(function (sub) {
+      var ep = sub && sub.endpoint;
+      if (!ep) { log("✗ subscribed but no endpoint", "bad"); return; }
+      log("✓ subscribed", "ok");
+      log(ep);
+      return sendToCatcher(ep);
+    })
+    .catch(function (e) {
+      fail("subscribe", e);
+      log("If this is the failure, the answer is: keyless subscribe is not " +
+          "allowed here, and the app needs a VAPID key after all.");
+    });
+}
+
+function sendToCatcher(ep) {
+  if (!CATCHER || CATCHER.indexOf("192.168.1.10") === 0) {
+    log("(set CATCHER to your computer's IP to have this sent automatically)");
+    return;
+  }
+  return fetch(CATCHER + "/endpoint", { method: "POST", body: ep })
+    .then(function () { log("✓ endpoint sent to " + CATCHER, "ok"); })
+    .catch(function (e) { fail("sending endpoint", e); });
+}
+
+// The worker reports each push it receives, so pushes that arrive while the app
+// happens to be open are visible here too.
+navigator.serviceWorker.addEventListener("message", function (ev) {
+  if (ev.data && ev.data.type === "push") {
+    log("✓ PUSH RECEIVED at " + new Date().toLocaleTimeString(), "ok");
+  }
+});
+
+document.addEventListener("keydown", function (e) {
+  if (e.key === "1") {
+    navigator.serviceWorker.getRegistration().then(function (reg) {
+      if (!reg) return;
+      reg.pushManager.getSubscription().then(function (s) {
+        if (s) s.unsubscribe().then(function () { subscribe(reg); });
+        else subscribe(reg);
+      });
+    });
+  } else if (e.key === "2") {
+    navigator.serviceWorker.getRegistration().then(function (reg) {
+      if (reg) reg.showNotification("Push Test", { body: "Local notification, no push involved" });
+    });
+  }
+});
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 {
   "name": "WhatsApp",
   "description": "WhatsApp client (thin) — talks to the wad daemon",
-  "type": "privileged",
+  "type": "web",
   "launch_path": "/index.html",
   "icons": {
     "56": "/icons/icon-56.png",
@@ -14,20 +14,16 @@
     "desktop-notification": {
       "description": "Notify on new messages and calls"
     },
-    "audio-capture": {
-      "description": "Microphone for voice calls"
-    },
     "serviceworker": {
-      "description": "Background wake for push"
+      "description": "Background wake for push (KaiOS 2.5 only; 3.0 drops this)"
     },
     "push": {
       "description": "Wake on new message / incoming call"
-    },
-    "contacts": {
-      "description": "Save a chat's number to the phone's address book",
-      "access": "readcreate"
     }
   },
+  "messages": [
+    { "serviceworker-notification": "/index.html" }
+  ],
   "default_locale": "en",
   "cursor": false
 }
