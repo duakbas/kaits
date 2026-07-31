@@ -2158,6 +2158,36 @@
     return phoneSays === null ? fallback : phoneSays;
   }
 
+  // appHidden is true when the app isn't the visible thing on screen — phone
+  // shut, another app in front, screen off. Gecko 48 has document.hidden; the
+  // fallback assumes visible, which errs toward the in-app bar rather than
+  // firing an OS notification at someone staring at the chat.
+  function appHidden() {
+    if (typeof document.hidden === "boolean") return document.hidden;
+    if (typeof document.mozHidden === "boolean") return document.mozHidden;
+    return false;
+  }
+
+  // osNotify raises a real system notification through the service worker.
+  //
+  // Tagged per chat and renotify:true, matching sw.js — a second message in the
+  // same conversation updates that bubble and buzzes again, instead of stacking
+  // a new one. The jid rides in data so sw.js's notificationclick handler opens
+  // the right chat.
+  function osNotify(title, body, jid) {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.ready) return;
+    navigator.serviceWorker.ready.then(function (reg) {
+      if (!reg || !reg.showNotification) return;
+      reg.showNotification(title || "Message", {
+        body: body || "",
+        icon: "/icons/icon-112.png",
+        tag: "wa-" + jid,
+        renotify: true,
+        data: { jid: jid }
+      });
+    }).catch(function () { /* no worker; the buzz is all we have */ });
+  }
+
   function buzz() {
     var cfg = window.CONFIG || {};
     if (wants(cfg.NOTIFY_VIBRATE || "auto", phoneProfile.vibrate, true) &&
@@ -2220,6 +2250,23 @@
     if (currentJID === m.chat) {
       // You are reading this very chat.
       if (window.CONFIG && CONFIG.VIBRATE_IN_OPEN_CHAT) buzz();
+      return;
+    }
+
+    // App backgrounded — the phone shut, or another app in front. An in-app bar
+    // is invisible here, so raise a real OS notification instead.
+    //
+    // This needs no push service. A service worker may call showNotification()
+    // for any reason, and the message arrived over the WebSocket we already
+    // hold. KaiOS's push servers currently accept pushes and discard them, so
+    // for now this is the ONLY route to a notification on this platform — and
+    // it works exactly as long as the app stays running.
+    if (appHidden()) {
+      osNotify(
+        (c && c.name) || m.chatname || m.chat,
+        (c && c.preview) || "",
+        m.chat
+      );
       return;
     }
 

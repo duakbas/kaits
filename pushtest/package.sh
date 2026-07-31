@@ -16,12 +16,17 @@
 # whole upload-install-open cycle to discover, so this refuses to build without
 # one.
 #
-#   ./pushtest/package.sh 192.168.1.200      -> pushtest/build/pushtest.zip
-#   ./pushtest/package.sh http://host:9999   (full URL also fine)
+# The submission portal rejects a build whose version it has already seen, so
+# every re-upload needs a new one. Second argument, defaulting to 1.0.0.
+#
+#   ./pushtest/package.sh 192.168.1.200            -> pushtest/build/pushtest.zip
+#   ./pushtest/package.sh 192.168.1.200 1.0.1      (bumped, for a re-upload)
+#   ./pushtest/package.sh http://host:9999         (full URL also fine)
 
 set -euo pipefail
 
 CATCHER="${1:-}"
+VERSION="${2:-1.0.0}"
 if [ -z "$CATCHER" ]; then
   echo "usage: $0 <catcher-ip-or-url>"
   echo
@@ -56,9 +61,9 @@ cp "$ROOT/wa-kaios/icons/icon-56.png"  "$STAGE/icons/"
 cp "$ROOT/wa-kaios/icons/icon-112.png" "$STAGE/icons/"
 
 # Same permissions as the hosted manifest, root-relative paths.
-cat > "$STAGE/manifest.webapp" <<'JSON'
+cat > "$STAGE/manifest.webapp" <<JSON
 {
-  "version": "1.0.0",
+  "version": "$VERSION",
   "name": "Push Test",
   "description": "Does a Web Push wake a KaiOS app from standby?",
   "type": "web",
