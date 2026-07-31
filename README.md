@@ -1,10 +1,15 @@
 # Kaits
 
-A self-hosted WhatsApp client for a KaiOS feature phone.
+A self-hosted chat client for a KaiOS feature phone.
 
-Personal project, not a product. It pairs as a WhatsApp **linked device** — the
-same mechanism WhatsApp Web uses — and renders a chat UI sized for a 240×320
-screen driven entirely by a D-pad and two softkeys.
+Personal project, not a product. Two halves: a daemon that owns a messaging
+account and speaks a small JSON protocol, and an app that renders a chat UI
+sized for a 240×320 screen, driven entirely by a D-pad and two softkeys.
+
+The daemon that exists today is `wad`, which connects to WhatsApp as a **linked
+device** — the same mechanism WhatsApp Web uses. Nothing in the app knows that;
+it speaks the protocol and nothing else, so a second daemon for another service
+would need no changes on the phone.
 
 > **Unofficial client.** This talks to WhatsApp through a reverse-engineered
 > library. It goes against WhatsApp's terms of service, it can get the account
@@ -29,8 +34,8 @@ Two halves, talking over one WebSocket:
 persistence. Speaks a small JSON protocol and nothing else.
 
 **`kaits`** — the app. A thin client: it renders UI and speaks that protocol.
-It never touches WhatsApp protocol directly, which is what keeps it small enough
-to run on Gecko 48.
+It never touches a messaging protocol directly, which is what keeps it small
+enough to run on Gecko 48 — and what would let a different daemon reuse it.
 
 The daemon is pure Go (CGO only for SQLite), so it cross-compiles to the phone's
 aarch64 — the eventual goal is running both halves on-device. During development
