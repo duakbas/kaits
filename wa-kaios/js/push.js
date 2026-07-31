@@ -85,6 +85,36 @@
     }
   }
 
+  // Tapping a notification should land in that conversation, not the chat
+  // list. Two routes: a message if the app was already running, or a URL
+  // fragment if the worker had to launch it cold.
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", function (ev) {
+      if (ev.data && ev.data.type === "openchat" && ev.data.jid) {
+        if (window.App && window.App.openChat) window.App.openChat(ev.data.jid);
+      }
+    });
+  }
+
+  function pendingChatFromHash() {
+    var m = /[#&]chat=([^&]+)/.exec(window.location.hash || "");
+    return m ? decodeURIComponent(m[1]) : "";
+  }
+
+  // On a cold launch the chat list has to arrive before we can open anything,
+  // so this waits for the first chatlist rather than firing immediately.
+  var wanted = pendingChatFromHash();
+  if (wanted) {
+    W.on(W.T.CHATLIST, function () {
+      if (!wanted) return;
+      var jid = wanted;
+      wanted = "";
+      // Clear the fragment so a later refresh doesn't reopen it.
+      try { window.location.hash = ""; } catch (e) {}
+      if (window.App && window.App.openChat) window.App.openChat(jid);
+    });
+  }
+
   // Register only once the socket is up, so the endpoint has somewhere to go.
   // Re-registering on later reconnects is harmless — the daemon upserts, and
   // an unchanged endpoint is a no-op.

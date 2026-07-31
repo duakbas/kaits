@@ -35,19 +35,29 @@ type pushSub struct {
 	Created  int64
 }
 
-// pushMinInterval throttles wake-ups. A burst in a busy group shouldn't mean a
-// POST per message — the app pulls everything once it's awake, so one wake
-// covers them all.
-const pushMinInterval = 20 * time.Second
+// pushCoalesce is a per-CHAT window, not a global one. Every chat that gets a
+// message wakes the phone straight away; only repeats within the same chat
+// inside this window are folded together.
+//
+// It's short on purpose. A global throttle would silently swallow the second
+// and third message of a lively conversation, which is exactly the ping-ping-
+// ping you want to keep. Three seconds only merges messages that arrive nearly
+// together, and since a chat's notification is one bubble that updates in
+// place, the merged ones still show up in its count — you lose a buzz, never a
+// message.
+const pushCoalesce = 3 * time.Second
 
 type pusher struct {
-	mu       sync.Mutex
-	lastSent time.Time
-	client   *http.Client
+	mu     sync.Mutex
+	last   map[string]time.Time // chat JID -> when we last woke the phone for it
+	client *http.Client
 }
 
 func newPusher() *pusher {
-	return &pusher{client: &http.Client{Timeout: 15 * time.Second}}
+	return &pusher{
+		last:   make(map[string]time.Time),
+		client: &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 // AddPushSubscription records an endpoint the phone gave us.
@@ -79,11 +89,20 @@ func (c *Client) notifyPush(d msgSummary) {
 	}
 
 	c.push.mu.Lock()
-	if time.Since(c.push.lastSent) < pushMinInterval {
+	if last, ok := c.push.last[d.Chat]; ok && time.Since(last) < pushCoalesce {
 		c.push.mu.Unlock()
 		return
 	}
-	c.push.lastSent = time.Now()
+	c.push.last[d.Chat] = time.Now()
+	// Keep the map from growing forever in a long-running daemon.
+	if len(c.push.last) > 500 {
+		cutoff := time.Now().Add(-time.Hour)
+		for k, v := range c.push.last {
+			if v.Before(cutoff) {
+				delete(c.push.last, k)
+			}
+		}
+	}
 	c.push.mu.Unlock()
 
 	subs := c.hist.listPushSubs()
@@ -136,44 +155,46 @@ type msgSummary struct {
 }
 
 // SummaryForNotification is what the woken service worker asks for so it can
-// write a meaningful notification. Kept to counts and a name — enough to be
-// useful, nothing the OS needs to store.
+// write meaningful notifications.
+//
+// Returned PER CHAT rather than as one lump, because the phone shows one
+// notification per conversation: group A keeps its own bubble, group B another,
+// each updating in place as more arrives. A single combined summary couldn't
+// express that.
+//
+// The body is the chat's own preview for a single message ("Alex: on my way")
+// and a count once there's more than one — which is what makes a chat collapse
+// into one line only after it becomes a conversation.
 func (c *Client) SummaryForNotification() map[string]any {
 	chats := c.hist.listChats()
-	total, chatsWithUnread := 0, 0
-	newest := ""
-	var newestTS int64
+	out := make([]map[string]any, 0, 8)
+	total := 0
+
 	for _, ch := range chats {
 		n, _ := ch["unread"].(int64)
 		if n <= 0 {
 			continue
 		}
 		if muted, _ := ch["muted"].(bool); muted {
-			continue
+			continue // a mute means the phone stays quiet
 		}
 		total += int(n)
-		chatsWithUnread++
-		if ts, _ := ch["ts"].(int64); ts >= newestTS {
-			newestTS = ts
-			if name, _ := ch["name"].(string); name != "" {
-				newest = name
-			}
+
+		name, _ := ch["name"].(string)
+		jid, _ := ch["jid"].(string)
+		if name == "" {
+			name = jid
 		}
-	}
-	title := "WhatsApp"
-	body := "New message"
-	switch {
-	case total == 0:
-		body = ""
-	case chatsWithUnread == 1 && newest != "":
-		title = newest
-		if total > 1 {
-			body = itoa(total) + " new messages"
+		body, _ := ch["preview"].(string)
+		if n > 1 {
+			body = itoa(int(n)) + " new messages"
 		}
-	case chatsWithUnread > 1:
-		body = itoa(total) + " new messages in " + itoa(chatsWithUnread) + " chats"
+		ts, _ := ch["ts"].(int64)
+		out = append(out, map[string]any{
+			"jid": jid, "title": name, "body": body, "count": n, "ts": ts,
+		})
 	}
-	return map[string]any{"title": title, "body": body, "count": total}
+	return map[string]any{"chats": out, "count": total}
 }
 
 // itoa avoids pulling strconv in for one call site.

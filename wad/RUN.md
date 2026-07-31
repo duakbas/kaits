@@ -282,10 +282,32 @@ Flow:
    shows a notification;
 5. tapping it focuses or launches the app, which connects and syncs.
 
-Wake-ups are throttled to one per 20s — the app pulls everything once awake, so
-a burst in a busy group doesn't need a POST each. Muted chats never wake the
-phone, and neither do your own messages. Endpoints that return 404/410 are
-dropped, since that means the subscription is dead.
+### One notification per conversation
+
+The phone shows a bubble per chat, tagged with the chat's JID. A second message
+in the same conversation **replaces** that bubble rather than stacking a new
+one, and `renotify` makes the replacement buzz — so an updating notification
+still announces itself. A different conversation gets its own bubble.
+
+The body is the chat's own preview while there's one unread ("Alex: on my way"),
+and switches to a count once there's more than one. So a chat collapses to a
+single line only after it becomes a conversation.
+
+Wake-ups are coalesced **per chat**, not globally: every chat that gets a
+message wakes the phone immediately, and only repeats within the same chat
+inside 3 seconds are folded together (`pushCoalesce` in `internal/wa/push.go`).
+Nothing is lost when they are — the chat's bubble shows the higher count either
+way; you just get one buzz instead of two for messages that arrived nearly
+together.
+
+Tapping a notification opens that conversation, whether the app was already
+running (the worker messages it) or had to be launched (the JID rides in the URL
+fragment).
+
+Muted chats never wake the phone, and neither do your own messages. Bubbles for
+chats that are no longer unread — read on another device — are closed on the
+next wake. Endpoints that return 404/410 are dropped, since that means the
+subscription is dead.
 
 **The endpoints are capability URLs**: anyone holding one can wake the device.
 They live in the gitignored history db, and only a shortened form is logged.

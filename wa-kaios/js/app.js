@@ -2067,6 +2067,15 @@
     if (elThreadMsgs.scrollTop > 8) return;
     requestOlderHistory();
   });
+  // A small surface for push.js: tapping a notification should open that chat.
+  window.App = {
+    openChat: function (jid) {
+      if (!jid) return;
+      if (!chats[jid]) chats[jid] = { jid: jid, name: jid };
+      openThread(jid);
+    }
+  };
+
   enterListScreen();
   W.connect();
 })();

@@ -40,56 +40,93 @@ self.addEventListener("push", function (ev) {
   ev.waitUntil(showSummaryNotification());
 });
 
-// Ask the daemon what to say. If it can't be reached — the phone woke but has
-// no data, or the daemon is down — still show something, because the push
-// already told us a message exists and silence would be worse than vague.
+// Ask the daemon what to say, then show ONE notification per chat.
+//
+// Tagging each notification with its chat JID is what produces the behaviour
+// you'd expect from a phone: a second message in the same conversation replaces
+// that conversation's bubble instead of stacking a new one, while a different
+// conversation gets its own. renotify makes the replacement buzz, so an
+// updating bubble still announces itself rather than changing silently.
+//
+// If the daemon can't be reached — woken with no data, or it's down — still
+// show something generic, because the push already told us a message exists and
+// silence would be worse than vague.
 function showSummaryNotification() {
-  var fallback = { title: "WhatsApp", body: "New message", count: 1 };
+  var fallback = { title: "WhatsApp", body: "New message" };
 
   if (!CONFIG || !CONFIG.DAEMON_WS) {
-    return notify(fallback);
+    return notify(fallback, "wa-generic");
   }
   var base = CONFIG.DAEMON_WS.replace(/^ws/, "http").replace(/\/ws.*$/, "");
   var url = base + "/notify-summary?token=" + encodeURIComponent(CONFIG.TOKEN || "");
 
   return fetch(url, { cache: "no-store" })
-    .then(function (r) { return r.ok ? r.json() : fallback; })
+    .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (s) {
-      // count 0 means everything has since been read, most likely on another
-      // device. Don't buzz the phone for something already dealt with.
-      if (s && s.count === 0) return;
-      return notify(s && s.title ? s : fallback);
+      if (!s || !s.chats) return notify(fallback, "wa-generic");
+      // Nothing unread means it was read elsewhere between the push being sent
+      // and the phone waking. Clear any stale bubbles instead of buzzing.
+      if (!s.chats.length) return clearStale([]);
+
+      var jobs = s.chats.map(function (ch) {
+        return notify(
+          { title: ch.title, body: ch.body },
+          "wa-" + ch.jid,
+          { jid: ch.jid }
+        );
+      });
+      // Drop bubbles for conversations that are no longer unread — read on
+      // another device, most likely.
+      jobs.push(clearStale(s.chats.map(function (ch) { return "wa-" + ch.jid; })));
+      return Promise.all(jobs);
     })
-    .catch(function () { return notify(fallback); });
+    .catch(function () { return notify(fallback, "wa-generic"); });
 }
 
-function notify(s) {
+function notify(s, tag, data) {
   return self.registration.showNotification(s.title || "WhatsApp", {
     body: s.body || "New message",
     icon: "/icons/icon-112.png",
-    // One tag so a burst collapses into a single notification rather than
-    // stacking up a screenful on a feature phone.
-    tag: "wa-messages",
-    renotify: true
+    tag: tag || "wa-generic",
+    renotify: true,
+    data: data || {}
+  });
+}
+
+// Close notifications whose chat no longer has anything unread.
+function clearStale(keepTags) {
+  if (!self.registration.getNotifications) return Promise.resolve();
+  return self.registration.getNotifications().then(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      if (keepTags.indexOf(list[i].tag) === -1) list[i].close();
+    }
   });
 }
 
 self.addEventListener("notificationclick", function (ev) {
   ev.notification.close();
-  ev.waitUntil(openApp());
+  var jid = (ev.notification.data && ev.notification.data.jid) || "";
+  ev.waitUntil(openApp(jid));
 });
 
 // Focus the app if it's already running, otherwise launch it. clients.openApp
 // is a KaiOS 2.5 extension; openWindow is the standard path, and either may be
 // missing, so all three are tried.
-function openApp() {
+function openApp(jid) {
   return self.clients.matchAll({ type: "window", includeUncontrolled: true })
     .then(function (list) {
       for (var i = 0; i < list.length; i++) {
+        // Already running: tell it which conversation was tapped, so the user
+        // lands in that chat rather than the list.
+        if (jid && list[i].postMessage) {
+          list[i].postMessage({ type: "openchat", jid: jid });
+        }
         if ("focus" in list[i]) return list[i].focus();
       }
-      if (self.clients.openApp) return self.clients.openApp("/index.html");
-      if (self.clients.openWindow) return self.clients.openWindow("/index.html");
+      // Not running. The JID rides in the URL so the app can read it at boot.
+      var path = "/index.html" + (jid ? "#chat=" + encodeURIComponent(jid) : "");
+      if (self.clients.openApp) return self.clients.openApp(path);
+      if (self.clients.openWindow) return self.clients.openWindow(path);
       return undefined;
     });
 }
