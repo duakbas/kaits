@@ -1819,10 +1819,30 @@
   }
 
   // ---------- wire up events ----------
+  var everConnected = false;
+
   W.onStatus(function (s) {
     elStatus.textContent =
       s === "open" ? "●" : s === "connecting" ? "…" : "○";
     elStatus.className = "status " + s;
+
+    if (s !== "open") return;
+    if (!everConnected) { everConnected = true; return; }
+
+    // RECONNECT. The chat list refreshes on its own (wire asks for it), but an
+    // already-open thread would sit there stale: openThread only fetches when
+    // it has no history yet, and it isn't called again on reconnect. So
+    // anything that arrived while we were disconnected — which is precisely
+    // what a push notification wakes us for — stayed invisible until you left
+    // the chat and came back. Re-pull the open thread explicitly.
+    if (currentJID) {
+      W.send(W.T.GETHISTORY, { jid: currentJID, before: 0, limit: 40 });
+      W.send(W.T.MARKREAD, { jid: currentJID });
+      if (!(chats[currentJID] && chats[currentJID].group)) {
+        // Presence subscriptions are per-connection and don't survive.
+        W.send(W.T.WATCH, { jid: currentJID });
+      }
+    }
   });
 
   W.on(W.T.READY, function () { console.log("daemon ready"); });
