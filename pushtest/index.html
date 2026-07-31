@@ -104,6 +104,31 @@ navigator.serviceWorker.addEventListener("message", function (ev) {
   }
 });
 
+// ---- heartbeat: how long does this app keep running once you close the phone? ----
+//
+// With KaiOS's push service dropping everything, the fallback is for the app to
+// hold its own connection and raise notifications itself. That only works while
+// the app is alive, and nobody seems to know how long that is on a flip phone
+// with the lid shut. So: post a beat every 15s and watch when they stop.
+//
+// The beats also say whether the page is hidden, because "still running while
+// backgrounded" and "still running while visible" are different answers.
+var beat = 0;
+var startedAt = Date.now();
+
+function sendBeat() {
+  if (!CATCHER) return;
+  beat++;
+  var alive = Math.round((Date.now() - startedAt) / 1000);
+  var hidden = (typeof document.hidden === "boolean") ? document.hidden : "unknown";
+  fetch(CATCHER + "/beat", {
+    method: "POST",
+    body: JSON.stringify({ beat: beat, aliveSeconds: alive, hidden: hidden })
+  }).catch(function () { /* catcher down, or we're offline; keep beating */ });
+}
+setInterval(sendBeat, 15000);
+sendBeat();
+
 document.addEventListener("keydown", function (e) {
   if (e.key === "1") {
     navigator.serviceWorker.getRegistration().then(function (reg) {

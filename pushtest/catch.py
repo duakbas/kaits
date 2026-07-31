@@ -11,6 +11,7 @@ written to endpoint.txt next to this file, which is gitignored.
 """
 
 import http.server
+import json
 import os
 import socket
 import sys
@@ -20,18 +21,41 @@ import urllib.request
 PORT = 9999
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAVED = os.path.join(HERE, "endpoint.txt")
+LAST_BEAT = 0.0
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
-        endpoint = self.rfile.read(length).decode("utf-8", "replace").strip()
+        body = self.rfile.read(length).decode("utf-8", "replace").strip()
+        if self.path.startswith("/beat"):
+            self._beat(body)
+        else:
+            self._endpoint(body)
+        self._cors(200)
+
+    def _endpoint(self, endpoint):
         with open(SAVED, "w") as f:
             f.write(endpoint)
         print("\ngot endpoint, saved to endpoint.txt:")
         print("  " + endpoint[:70] + ("…" if len(endpoint) > 70 else ""))
         print("\nNow: close the phone, wait, then run  python3 catch.py ring")
-        self._cors(200)
+
+    # Heartbeats answer the question push can't: how long the app keeps running
+    # once the phone is shut. The gap between beats is the interesting number —
+    # a widening gap means the OS is throttling before it kills.
+    def _beat(self, body):
+        global LAST_BEAT
+        now = time.time()
+        gap = ("  (+%ds since last)" % round(now - LAST_BEAT)) if LAST_BEAT else ""
+        LAST_BEAT = now
+        try:
+            d = json.loads(body)
+            print("%s  beat %s   alive %ss   hidden=%s%s" % (
+                time.strftime("%H:%M:%S"), d.get("beat"), d.get("aliveSeconds"),
+                d.get("hidden"), gap))
+        except Exception:
+            print("%s  beat%s" % (time.strftime("%H:%M:%S"), gap))
 
     def do_OPTIONS(self):
         self._cors(200)

@@ -107,3 +107,50 @@ are different from "always wakes".
 
 Written by the catcher, gitignored. It's a capability URL: anyone holding it can
 wake your phone. Don't paste it into a bug report.
+
+## Finding, 31 July 2026 — KaiOS push is accepting and discarding
+
+Tested on an Energizer E282SC (KaiOS 2.5), installed via the submission
+portal's Test Device route — no debug access, no sideloading.
+
+Everything on the app's side worked:
+
+- installed from KaiStore on a debug-locked handset;
+- service worker registered, notification permission granted;
+- **keyless subscribe succeeded** — no `applicationServerKey` needed, which is
+  what the payload-free design depends on;
+- a local notification raised by the worker displays normally.
+
+The push itself does not arrive. The endpoint is issued by
+`notification.kaiostech.com:8443` — KaiOS's own infrastructure, not Mozilla's
+autopush. `ring` gets HTTP 200 and the phone shows nothing, with the app open
+and the worker alive. The page logs no `push` event at all.
+
+The decisive detail: **after unsubscribing, the same endpoint still returns
+HTTP 200.** A service tracking its subscriptions would answer 404 or 410. It
+isn't checking, isn't queuing, and isn't delivering — it accepts everything and
+discards it.
+
+This also rules out the theory circulating in the BananaHackers Discord, that
+the problem is clients mishandling *encrypted* pushes. This subscription is
+keyless and the pushes carry no payload; there is nothing to decrypt.
+
+### What it means
+
+The blocker is upstream of anything in this repo. The daemon's push design is
+sound and the phone is capable — a server at KaiOS is dropping the messages. If
+that service is repaired, the existing code starts working with no changes.
+
+### Re-testing
+
+`python3 pushtest/catch.py ring` against a live endpoint. If the subscription
+has expired, re-subscribe on the phone (`1`) with `catch.py serve` running.
+
+### The open question this raises
+
+If push stays dead, the fallback is for the app to hold its own connection and
+raise notifications itself — a worker can call `showNotification()` for any
+reason, not only from a push. That works only while the app is still running,
+so the number that matters is **how long a KaiOS app survives after the flip is
+closed**. The heartbeat answers it: open the app, close the phone, and watch
+when the beats stop.
