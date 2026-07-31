@@ -36,6 +36,8 @@ const (
 	TError      = "error"      // {code, msg}
 	TProfile    = "profile"    // reply to "getprofile"/"savecontact" (ProfileData)
 	TChatUpdate = "chatupdate" // {chat, pinned, muted, archived, removed}
+	TReaction   = "reaction"   // {chat, msgid, reactions:[...]} — the full current set
+	TStatus     = "status"     // {chat, msgid, status} delivery state of a message we sent
 )
 
 // ---- app -> daemon ----
@@ -76,6 +78,19 @@ type MsgData struct {
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to
 	QuotedName string `json:"quotedname,omitempty"` // who sent the quoted message
 	Forwarded  bool   `json:"forwarded,omitempty"`  // carries WhatsApp's forwarded marker
+	// Status is the delivery state of a message we sent: "" | "sent" |
+	// "delivered" | "read" | "played". Meaningless on incoming messages.
+	Status    string         `json:"status,omitempty"`
+	Reactions []ReactionData `json:"reactions,omitempty"`
+}
+
+// ReactionData is one person's reaction to one message. The app groups these by
+// emoji to show counts, and lists them by person when opened.
+type ReactionData struct {
+	SenderJID  string `json:"sender"`
+	SenderName string `json:"sendername"`
+	Emoji      string `json:"emoji"`
+	Timestamp  int64  `json:"ts"`
 }
 
 // SendData is an outgoing message from the app.

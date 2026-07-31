@@ -228,12 +228,7 @@ func (c *Client) handleEvent(evt any) {
 		c.handleHistorySync(v)
 
 	case *events.Receipt:
-		c.hub.PushT(ws.TReceipt, map[string]any{
-			"chat":  v.Chat.String(),
-			"type":  string(v.Type),
-			"msgid": firstID(v.MessageIDs),
-			"ts":    v.Timestamp.Unix(),
-		})
+		c.handleReceipt(v)
 
 	case *events.Presence:
 		c.hub.PushT(ws.TPresence, map[string]any{
@@ -256,6 +251,106 @@ func (c *Client) handleEvent(evt any) {
 	}
 }
 
+// handleReceipt turns a delivery/read receipt into a stored status and a status
+// frame for the app.
+//
+// A receipt covers a LIST of message ids, not one — the old code took only the
+// first and silently dropped the rest, so a batch acknowledgement updated a
+// single tick. Statuses also arrive out of order (one recipient's "delivered"
+// after another's "read"), so the store only ever moves a message forwards.
+func (c *Client) handleReceipt(v *events.Receipt) {
+	status := statusForReceipt(v.Type)
+	if status == "" {
+		return // a type we don't render, e.g. server-side bookkeeping
+	}
+	chat := c.canonicalJID(v.Chat).String()
+	for _, id := range v.MessageIDs {
+		msgID := string(id)
+		if !c.hist.setMessageStatus(msgID, status) {
+			continue // already at or past this state
+		}
+		c.hub.PushT(ws.TStatus, map[string]any{
+			"chat": chat, "msgid": msgID, "status": status, "ts": v.Timestamp.Unix(),
+		})
+	}
+}
+
+// statusForReceipt maps WhatsApp's receipt types onto the three states the UI
+// draws. Read-self (this account reading elsewhere) counts as read; anything
+// unrecognised is ignored rather than guessed at.
+func statusForReceipt(t types.ReceiptType) string {
+	switch t {
+	case types.ReceiptTypeDelivered:
+		return "delivered"
+	case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
+		return "read"
+	case types.ReceiptTypePlayed:
+		return "played"
+	}
+	return ""
+}
+
+// handleReaction records someone reacting to a message and pushes the message's
+// complete reaction set to the app.
+//
+// WhatsApp sends a reaction as a message whose ReactionMessage names the target,
+// and an empty emoji means the reaction was removed. The app is sent the whole
+// set rather than a delta, so it never has to reconcile add/remove ordering.
+func (c *Client) handleReaction(v *events.Message, live bool) {
+	r := v.Message.GetReactionMessage()
+	key := r.GetKey()
+	if key == nil || key.GetID() == "" {
+		return
+	}
+	chat := c.canonicalJID(v.Info.Chat).String()
+	sender := c.canonicalJID(v.Info.Sender).String()
+	name := c.senderName(v)
+
+	ts := v.Info.Timestamp.Unix()
+	if ms := r.GetSenderTimestampMS(); ms > 0 {
+		ts = ms / 1000
+	}
+	c.hist.putReaction(chat, key.GetID(), sender, name, r.GetText(), ts)
+
+	if live {
+		c.hub.PushT(ws.TReaction, map[string]any{
+			"chat":      chat,
+			"msgid":     key.GetID(),
+			"reactions": c.hist.reactionsForMessage(chat, key.GetID()),
+		})
+	}
+}
+
+// MarkChatRead tells WhatsApp the user has read a chat's incoming messages, and
+// records it locally so we don't keep re-sending the same receipt.
+func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return 0, err
+	}
+	ids, lastSender := c.hist.unreadMessageIDs(chatJID, 50)
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	msgIDs := make([]types.MessageID, 0, len(ids))
+	for _, id := range ids {
+		msgIDs = append(msgIDs, types.MessageID(id))
+	}
+	// In a group WhatsApp wants the sender of the messages being acknowledged;
+	// in a DM that's the chat itself.
+	sender := jid
+	if jid.Server == types.GroupServer && lastSender != "" {
+		if s, err := types.ParseJID(lastSender); err == nil {
+			sender = s
+		}
+	}
+	if err := c.WA.MarkRead(ctx, msgIDs, time.Now(), jid, sender); err != nil {
+		return 0, err
+	}
+	c.hist.markMessagesRead(chatJID, ids)
+	return len(ids), nil
+}
+
 // pushMessage handles a live incoming message: build, persist, and notify app.
 func (c *Client) pushMessage(v *events.Message) { c.handleMsg(v, true) }
 
@@ -264,6 +359,13 @@ func (c *Client) pushMessage(v *events.Message) { c.handleMsg(v, true) }
 // so they're stored but don't spam the UI as new-message notifications.
 func (c *Client) handleMsg(v *events.Message, live bool) {
 	m := v.Message
+
+	// A reaction is a message about another message, not a message in its own
+	// right — it decorates an existing bubble rather than adding one.
+	if m.GetReactionMessage() != nil {
+		c.handleReaction(v, live)
+		return
+	}
 	// Canonicalize LID -> phone JID so a person isn't split across two chats.
 	chat := c.canonicalJID(v.Info.Chat)
 	isGroup := chat.Server == types.GroupServer

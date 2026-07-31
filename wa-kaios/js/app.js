@@ -278,6 +278,9 @@
     if (!threads[jid] || !threads[jid].loadedHistory) {
       W.send(W.T.GETHISTORY, { jid: jid, before: 0, limit: 40 });
     }
+    // Opening a chat is the read signal — tell WhatsApp, so the sender's ticks
+    // turn blue. The daemon works out which messages are still unread.
+    W.send(W.T.MARKREAD, { jid: jid });
     renderThread();
     elInput.value = "";
     enterComposeMode();
@@ -337,6 +340,13 @@
     // and "Message directly" only make sense for someone else's message in a
     // group; deleting for everyone only works on your own.
     var items = [{ action: "reply", label: "Reply" }];
+    var reactionCount = (m.reactions || []).length;
+    if (reactionCount) {
+      items.push({
+        action: "reactions",
+        label: "Reactions (" + reactionCount + ")"
+      });
+    }
     if (isGroup && fromOther) {
       items.push({ action: "replyprivate", label: "Reply privately" });
       items.push({ action: "dm", label: "Message " + shortName(m.sendername) });
@@ -416,6 +426,10 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "reactions") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openReactionList(m);
     } else if (action === "replyprivate") {
       // Same composer, but the send is flagged private — the daemon redirects
       // it to the sender's DM and keeps the group message as the quote.
@@ -438,6 +452,105 @@
       var back = currentJID;
       openProfileForMessage(m, function () { openThread(back); });
     }
+  }
+
+  // ---------- time formatting ----------
+  // 24-hour clock: unambiguous, and narrower than "10:45 PM" on a 240px screen.
+  function timeOf(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000);
+    return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+  function pad2(n) { return n < 10 ? "0" + n : String(n); }
+
+  var DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                   "Friday", "Saturday"];
+  var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  // Date separator label, WhatsApp-style: Today / Yesterday / weekday within the
+  // last week / an explicit date beyond that.
+  function dayLabel(ts) {
+    var d = new Date(ts * 1000);
+    var today = new Date();
+    var days = daysBetween(d, today);
+    if (days === 0) return "Today";
+    if (days === 1) return "Yesterday";
+    if (days < 7) return DAY_NAMES[d.getDay()];
+    var label = d.getDate() + " " + MONTH_NAMES[d.getMonth()];
+    if (d.getFullYear() !== today.getFullYear()) label += " " + d.getFullYear();
+    return label;
+  }
+
+  // Whole days between two dates, ignoring the time of day — comparing
+  // timestamps directly would call 23:59 and 00:01 "the same day".
+  function daysBetween(a, b) {
+    var da = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+    var db = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+    return Math.round((db - da) / 86400000);
+  }
+
+  function sameDay(tsA, tsB) {
+    if (!tsA || !tsB) return false;
+    return daysBetween(new Date(tsA * 1000), new Date(tsB * 1000)) === 0;
+  }
+
+  // ---------- delivery ticks ----------
+  // ✓ sent, ✓✓ delivered, ✓✓ (blue) read. Only meaningful on our own messages.
+  function tickFor(status) {
+    if (status === "read" || status === "played") return { mark: "✓✓", cls: "tick read" };
+    if (status === "delivered") return { mark: "✓✓", cls: "tick" };
+    return { mark: "✓", cls: "tick" };
+  }
+
+  // ---------- reactions ----------
+  // Group a message's reactions by emoji, preserving first-seen order so the
+  // row doesn't reshuffle as more arrive.
+  function groupReactions(list) {
+    var order = [];
+    var byEmoji = {};
+    (list || []).forEach(function (r) {
+      if (!r || !r.emoji) return;
+      if (!byEmoji[r.emoji]) { byEmoji[r.emoji] = []; order.push(r.emoji); }
+      byEmoji[r.emoji].push(r);
+    });
+    return order.map(function (e) { return { emoji: e, people: byEmoji[e] }; });
+  }
+
+  // The detail view: who reacted with what, like WhatsApp's reaction sheet.
+  function openReactionList(m) {
+    var groups = groupReactions(m.reactions);
+    if (!groups.length) return;
+    elChatMenuTitle.textContent = "Reactions";
+    elChatMenuList.innerHTML = "";
+    groups.forEach(function (g) {
+      g.people.forEach(function (p) {
+        var row = document.createElement("div");
+        row.className = "menu-item reaction-row";
+        row.setAttribute("data-nav", "");
+        var who = document.createElement("span");
+        who.textContent = p.sendername || p.sender || "Unknown";
+        var em = document.createElement("span");
+        em.className = "reaction-row-emoji";
+        em.textContent = g.emoji;
+        row.appendChild(who);
+        row.appendChild(em);
+        elChatMenuList.appendChild(row);
+      });
+    });
+    elChatMenu.hidden = false;
+    var back = function () {
+      elChatMenu.hidden = true;
+      enterSelectMode();
+      selectIdx = keep;
+      renderThread();
+    };
+    var keep = selectIdx;
+    Nav.setScreen({
+      list: elChatMenu,
+      onSoftLeft: back, onBack: back, onEnter: back, onSoftRight: back
+    });
+    Nav.setSoftkeys("Close", "", "OK");
   }
 
   // shortName trims a display name to something that fits a 240px menu row.
@@ -619,7 +732,18 @@
     forceScrollBottom = false;
     elThreadMsgs.innerHTML = "";
     var lastSender = null;
+    var lastTS = 0;
     msgs.forEach(function (m, idx) {
+      // Date separator whenever the day changes (and before the first message).
+      if (m.ts && !sameDay(lastTS, m.ts)) {
+        var sep = document.createElement("div");
+        sep.className = "day-sep";
+        sep.textContent = dayLabel(m.ts);
+        elThreadMsgs.appendChild(sep);
+        lastSender = null; // re-label the sender after a break in the day
+      }
+      if (m.ts) lastTS = m.ts;
+
       // In groups, label each incoming message with its sender — but only when
       // the sender changes, so runs from one person aren't repetitive.
       if (isGroup && !m.fromme && m.sendername && m.sendername !== lastSender) {
@@ -673,7 +797,36 @@
       } else {
         renderMediaBubble(b, m);
       }
+
+      // Time, and for our own messages the delivery ticks, on one trailing line.
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      var t = document.createElement("span");
+      t.textContent = timeOf(m.ts);
+      meta.appendChild(t);
+      if (m.fromme && !m.deleted) {
+        var tick = tickFor(m.status);
+        var tk = document.createElement("span");
+        tk.className = tick.cls;
+        tk.textContent = tick.mark;
+        meta.appendChild(tk);
+      }
+      b.appendChild(meta);
       elThreadMsgs.appendChild(b);
+
+      // Reactions hang below the bubble, grouped by emoji with a count.
+      var groups = groupReactions(m.reactions);
+      if (groups.length) {
+        var row = document.createElement("div");
+        row.className = "reactions " + (m.fromme ? "me" : "them");
+        groups.forEach(function (g) {
+          var chip = document.createElement("span");
+          chip.className = "reaction-chip";
+          chip.textContent = g.emoji + (g.people.length > 1 ? " " + g.people.length : "");
+          row.appendChild(chip);
+        });
+        elThreadMsgs.appendChild(row);
+      }
     });
     // in select mode, scroll the selected bubble into view; else stick to bottom
     if (selectMode) {
@@ -697,7 +850,8 @@
     if (!privateReply) {
       var echo = {
         msgid: "local-" + Date.now(), chat: currentJID, fromme: true,
-        ts: Math.floor(Date.now() / 1000), kind: "text", text: text
+        ts: Math.floor(Date.now() / 1000), kind: "text", text: text,
+        status: "sent"
       };
       if (replyingTo) {
         echo.quotedtext = replyingTo.text;
@@ -1016,7 +1170,12 @@
     c.preview = (m.group && !m.fromme && m.sendername)
       ? m.sendername + ": " + body
       : body;
-    if (!m.fromme && currentJID !== m.chat) c.unread = (c.unread || 0) + 1;
+    if (!m.fromme && currentJID !== m.chat) {
+      c.unread = (c.unread || 0) + 1;
+    } else if (!m.fromme) {
+      // It arrived while the user is looking at the chat, so it's read now.
+      W.send(W.T.MARKREAD, { jid: m.chat });
+    }
 
     if (currentJID === m.chat) {
       // Don't disrupt an open action menu; refresh underneath otherwise.
@@ -1089,6 +1248,29 @@
       });
       renderChatList(); // always render — list may be the visible screen after refresh
     }
+  });
+
+  W.on(W.T.REACTION, function (d) {
+    if (!d || !d.chat || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) {
+        // The daemon sends the complete set, so replace rather than merge —
+        // that way removals land correctly too.
+        arr[i].reactions = d.reactions || [];
+        break;
+      }
+    }
+    if (currentJID === d.chat && !menuOpen) renderThread();
+  });
+
+  W.on(W.T.STATUS, function (d) {
+    if (!d || !d.chat || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) { arr[i].status = d.status; break; }
+    }
+    if (currentJID === d.chat && !menuOpen) renderThread();
   });
 
   W.on(W.T.PROFILE, function (p) {

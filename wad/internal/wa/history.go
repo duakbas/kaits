@@ -68,6 +68,19 @@ func openHistStore(path string) (*histStore, error) {
 		name TEXT,
 		ts   INTEGER
 	);
+	-- One row per person per message. WhatsApp models a reaction as a message
+	-- carrying the target's key, and re-reacting replaces the previous emoji —
+	-- hence the primary key, and why an empty emoji means "removed".
+	CREATE TABLE IF NOT EXISTS reactions (
+		chat   TEXT,
+		msgid  TEXT,
+		sender TEXT,
+		name   TEXT,
+		emoji  TEXT,
+		ts     INTEGER,
+		PRIMARY KEY (chat, msgid, sender)
+	);
+	CREATE INDEX IF NOT EXISTS idx_reactions_msg ON reactions(chat, msgid);
 	-- Everything needed to re-download one attachment from WhatsApp's CDN.
 	-- Without this, media only worked while the message that carried it was
 	-- still in the in-memory cache, so every photo broke on daemon restart.
@@ -94,6 +107,8 @@ func openHistStore(path string) (*histStore, error) {
 		db.Exec(`ALTER TABLE chats ADD COLUMN ` + col + ` INTEGER DEFAULT 0`)
 	}
 	db.Exec(`ALTER TABLE messages ADD COLUMN forwarded INTEGER DEFAULT 0`)
+	// Delivery state for our own outgoing messages: "" (sent) -> delivered -> read.
+	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT DEFAULT ''`)
 	return &histStore{db: db}, nil
 }
 
@@ -277,6 +292,142 @@ func (h *histStore) mediaRefFor(msgid string) (mediaRef, bool) {
 	return r, true
 }
 
+// statusRank orders delivery states so a receipt can never move a message
+// backwards. Receipts arrive out of order — a "delivered" for one device can
+// land after another device already reported "read".
+var statusRank = map[string]int{"": 0, "sent": 1, "delivered": 2, "read": 3, "played": 4}
+
+// setMessageStatus advances a message's delivery state, ignoring anything that
+// would downgrade it. Returns true if the row actually changed.
+func (h *histStore) setMessageStatus(msgid, status string) bool {
+	if h == nil || h.db == nil || msgid == "" || status == "" {
+		return false
+	}
+	var current sql.NullString
+	if h.db.QueryRow(`SELECT COALESCE(status,'') FROM messages WHERE msgid=? LIMIT 1`,
+		msgid).Scan(&current) != nil {
+		return false
+	}
+	if statusRank[status] <= statusRank[current.String] {
+		return false
+	}
+	res, _ := h.db.Exec(`UPDATE messages SET status=? WHERE msgid=?`, status, msgid)
+	if res == nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+// putReaction records (or, with an empty emoji, clears) one person's reaction.
+func (h *histStore) putReaction(chat, msgid, sender, name, emoji string, ts int64) {
+	if h == nil || h.db == nil || chat == "" || msgid == "" || sender == "" {
+		return
+	}
+	if emoji == "" {
+		h.db.Exec(`DELETE FROM reactions WHERE chat=? AND msgid=? AND sender=?`, chat, msgid, sender)
+		return
+	}
+	h.db.Exec(`INSERT INTO reactions (chat,msgid,sender,name,emoji,ts) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(chat,msgid,sender) DO UPDATE SET
+			emoji=excluded.emoji, name=excluded.name, ts=excluded.ts`,
+		chat, msgid, sender, name, emoji, ts)
+}
+
+// reactionsForChat returns every reaction in a chat, keyed by target message, so
+// a history page can be decorated in one query instead of one per message.
+func (h *histStore) reactionsForChat(chat string) map[string][]ws.ReactionData {
+	out := map[string][]ws.ReactionData{}
+	if h == nil || h.db == nil {
+		return out
+	}
+	rows, err := h.db.Query(`SELECT msgid, sender, COALESCE(name,''), emoji, COALESCE(ts,0)
+		FROM reactions WHERE chat=? ORDER BY ts ASC`, chat)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var msgid string
+		var r ws.ReactionData
+		if rows.Scan(&msgid, &r.SenderJID, &r.SenderName, &r.Emoji, &r.Timestamp) != nil {
+			continue
+		}
+		out[msgid] = append(out[msgid], r)
+	}
+	return out
+}
+
+// reactionsForMessage returns the reactions on a single message.
+func (h *histStore) reactionsForMessage(chat, msgid string) []ws.ReactionData {
+	var out []ws.ReactionData
+	if h == nil || h.db == nil {
+		return out
+	}
+	rows, err := h.db.Query(`SELECT sender, COALESCE(name,''), emoji, COALESCE(ts,0)
+		FROM reactions WHERE chat=? AND msgid=? ORDER BY ts ASC`, chat, msgid)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r ws.ReactionData
+		if rows.Scan(&r.SenderJID, &r.SenderName, &r.Emoji, &r.Timestamp) != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// unreadMessageIDs lists incoming messages in a chat that we haven't marked read
+// yet, so the app can tell WhatsApp about them in one go.
+func (h *histStore) unreadMessageIDs(chat string, limit int) ([]string, string) {
+	if h == nil || h.db == nil {
+		return nil, ""
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := h.db.Query(`SELECT msgid, sender FROM messages
+		WHERE chat=? AND fromme=0 AND COALESCE(status,'')<>'read'
+		ORDER BY ts DESC LIMIT ?`, chat, limit)
+	if err != nil {
+		return nil, ""
+	}
+	defer rows.Close()
+	var ids []string
+	var lastSender string
+	for rows.Next() {
+		var id string
+		var sender sql.NullString
+		if rows.Scan(&id, &sender) != nil {
+			continue
+		}
+		ids = append(ids, id)
+		if lastSender == "" {
+			lastSender = sender.String
+		}
+	}
+	return ids, lastSender
+}
+
+// markMessagesRead flags incoming messages as read locally, after WhatsApp has
+// been told.
+func (h *histStore) markMessagesRead(chat string, ids []string) {
+	if h == nil || h.db == nil || len(ids) == 0 {
+		return
+	}
+	q := `UPDATE messages SET status='read' WHERE chat=? AND msgid IN (?` +
+		repeatPlaceholders(len(ids)-1) + `)`
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, chat)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	h.db.Exec(q, args...)
+}
+
 // mediaGap is one stored attachment we can't currently download, because its
 // keys were never captured.
 type mediaGap struct {
@@ -419,7 +570,7 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	if limit <= 0 {
 		limit = 40
 	}
-	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name,COALESCE(forwarded,0)
+	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name,COALESCE(forwarded,0),COALESCE(status,'')
 	      FROM messages WHERE chat=?`
 	args := []any{chat}
 	if beforeTS > 0 {
@@ -439,13 +590,14 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	for rows.Next() {
 		var d ws.MsgData
 		var fromme, ts, fwd sql.NullInt64
-		var sender, sname, text, media, mime, qid, qtext, qname, kind sql.NullString
+		var sender, sname, text, media, mime, qid, qtext, qname, kind, status sql.NullString
 		if err := rows.Scan(&d.MsgID, &d.ChatJID, &sender, &sname, &fromme,
 			&ts, &kind, &text, &media, &mime,
-			&qid, &qtext, &qname, &fwd); err != nil {
+			&qid, &qtext, &qname, &fwd, &status); err != nil {
 			continue
 		}
 		d.Forwarded = fwd.Int64 == 1
+		d.Status = status.String
 		d.SenderJID = sender.String
 		d.SenderName = sname.String
 		d.Kind = kind.String
@@ -459,8 +611,14 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 		d.FromMe = fromme.Int64 == 1
 		tmp = append(tmp, d)
 	}
+	// Decorate with reactions in one query rather than one per message.
+	byMsg := h.reactionsForChat(chat)
 	for i := len(tmp) - 1; i >= 0; i-- {
-		out = append(out, tmp[i])
+		m := tmp[i]
+		if rs, ok := byMsg[m.MsgID]; ok {
+			m.Reactions = rs
+		}
+		out = append(out, m)
 	}
 	return out
 }

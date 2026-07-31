@@ -323,6 +323,22 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			Data: mustJSON(waCli.SaveContact(d.JID, d.Name))})
 		hub.PushT(ws.TChatList, waCli.ListChats())
 
+	case ws.TMarkRead:
+		var d struct {
+			JID string `json:"jid"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badmarkread", "msg": err.Error()})
+			return
+		}
+		// Quiet on failure: the user opened a chat, they didn't ask to send a
+		// receipt, so an error here shouldn't interrupt them.
+		if n, err := waCli.MarkChatRead(ctx, d.JID); err != nil {
+			log.Printf("markread %s: %v", d.JID, err)
+		} else if n > 0 {
+			log.Printf("markread: %d messages in %s", n, d.JID)
+		}
+
 	case ws.TGetChats:
 		hub.PushT(ws.TChatList, waCli.ListChats())
 

@@ -708,3 +708,112 @@ func TestMediaMessagesWithoutKeysCoversAllKinds(t *testing.T) {
 		t.Errorf("gaps = %d, want %d (one per media kind)", got, len(kinds))
 	}
 }
+
+// Receipts arrive out of order — one recipient's "delivered" can land after
+// another's "read" — so a status must never move backwards.
+func TestSetMessageStatusOnlyAdvances(t *testing.T) {
+	h := newHist(t)
+	putMsg(h, "c@s.whatsapp.net", "m1", "me", "You", "hi", 100, true)
+
+	if !h.setMessageStatus("m1", "delivered") {
+		t.Error("delivered should have been applied")
+	}
+	if !h.setMessageStatus("m1", "read") {
+		t.Error("read should have been applied over delivered")
+	}
+	// A late "delivered" must be ignored, not demote the message.
+	if h.setMessageStatus("m1", "delivered") {
+		t.Error("delivered must not overwrite read")
+	}
+	if got := h.history("c@s.whatsapp.net", 0, 10)[0].Status; got != "read" {
+		t.Errorf("status = %q, want read", got)
+	}
+	// Re-applying the same status is not a change.
+	if h.setMessageStatus("m1", "read") {
+		t.Error("re-applying the same status should report no change")
+	}
+	if h.setMessageStatus("nosuch", "read") {
+		t.Error("unknown message should report no change")
+	}
+}
+
+func TestReactionsReplaceAndRemove(t *testing.T) {
+	h := newHist(t)
+	chat, msg := "g@g.us", "m1"
+	putMsg(h, chat, msg, "x@s.whatsapp.net", "X", "hi", 100, false)
+
+	h.putReaction(chat, msg, "a@s.whatsapp.net", "Alex", "👍", 110)
+	h.putReaction(chat, msg, "b@s.whatsapp.net", "Bea", "👍", 111)
+	h.putReaction(chat, msg, "c@s.whatsapp.net", "Cem", "❤️", 112)
+
+	if got := h.reactionsForMessage(chat, msg); len(got) != 3 {
+		t.Fatalf("reactions = %d, want 3", len(got))
+	}
+
+	// Reacting again replaces that person's emoji rather than adding a row.
+	h.putReaction(chat, msg, "a@s.whatsapp.net", "Alex", "😂", 120)
+	got := h.reactionsForMessage(chat, msg)
+	if len(got) != 3 {
+		t.Fatalf("after re-react, reactions = %d, want 3", len(got))
+	}
+	for _, r := range got {
+		if r.SenderJID == "a@s.whatsapp.net" && r.Emoji != "😂" {
+			t.Errorf("Alex's emoji = %q, want 😂", r.Emoji)
+		}
+	}
+
+	// An empty emoji means the reaction was withdrawn.
+	h.putReaction(chat, msg, "b@s.whatsapp.net", "Bea", "", 130)
+	if got := h.reactionsForMessage(chat, msg); len(got) != 2 {
+		t.Errorf("after removal, reactions = %d, want 2", len(got))
+	}
+}
+
+// The history page decorates messages with their reactions in one query; each
+// message must get its own, and messages without any must get none.
+func TestHistoryCarriesReactions(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	putMsg(h, chat, "m1", "x@s.whatsapp.net", "X", "reacted to", 100, false)
+	putMsg(h, chat, "m2", "x@s.whatsapp.net", "X", "plain", 101, false)
+	h.putReaction(chat, "m1", "a@s.whatsapp.net", "Alex", "👍", 110)
+
+	byID := map[string][]ws.ReactionData{}
+	for _, m := range h.history(chat, 0, 10) {
+		byID[m.MsgID] = m.Reactions
+	}
+	if len(byID["m1"]) != 1 || byID["m1"][0].Emoji != "👍" {
+		t.Errorf("m1 reactions = %+v, want one 👍", byID["m1"])
+	}
+	if len(byID["m2"]) != 0 {
+		t.Errorf("m2 should have no reactions, got %+v", byID["m2"])
+	}
+}
+
+// Read receipts should cover only incoming, not-yet-read messages — never our
+// own, and never ones already acknowledged.
+func TestUnreadMessageIDsAndMarking(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	putMsg(h, chat, "in1", "x@s.whatsapp.net", "X", "a", 100, false)
+	putMsg(h, chat, "in2", "y@s.whatsapp.net", "Y", "b", 101, false)
+	putMsg(h, chat, "mine", "me", "You", "c", 102, true)
+
+	ids, sender := h.unreadMessageIDs(chat, 50)
+	if len(ids) != 2 {
+		t.Fatalf("unread = %v, want the 2 incoming messages", ids)
+	}
+	if sender == "" {
+		t.Error("expected a sender for the group receipt")
+	}
+	for _, id := range ids {
+		if id == "mine" {
+			t.Error("our own message must not need a read receipt")
+		}
+	}
+
+	h.markMessagesRead(chat, ids)
+	if left, _ := h.unreadMessageIDs(chat, 50); len(left) != 0 {
+		t.Errorf("after marking, unread = %v, want none", left)
+	}
+}
