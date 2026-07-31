@@ -242,9 +242,9 @@
           renderChatList();
           Nav.refreshFocus();
           e.preventDefault();
-          return;
+          return true;
         }
-        return undefined; // fall through to Nav's own movement
+        return false; // not handled: let Nav move focus up as usual
       },
       onEnter: function (e, el) {
         if (!el) return;

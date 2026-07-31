@@ -62,12 +62,17 @@
 
   document.addEventListener("keydown", function (e) {
     switch (e.key) {
+      // A screen's own onUp/onDown wins, EXCEPT when it returns false — that's
+      // the handler saying "not mine, do the normal thing". Without that escape
+      // hatch a screen that only wants to special-case the top of the list has
+      // to reimplement focus movement, and if it forgets, the list simply stops
+      // moving in that direction.
       case "ArrowUp":
-        if (screen.onUp) return screen.onUp(e);
+        if (screen.onUp && screen.onUp(e) !== false) return;
         if (moveFocus(-1)) e.preventDefault();
         break;
       case "ArrowDown":
-        if (screen.onDown) return screen.onDown(e);
+        if (screen.onDown && screen.onDown(e) !== false) return;
         if (moveFocus(1)) e.preventDefault();
         break;
       case "ArrowLeft":
