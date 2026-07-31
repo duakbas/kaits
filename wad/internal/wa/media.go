@@ -67,9 +67,9 @@ func (s *mediaStore) get(id string) (whatsmeow.DownloadableMessage, bool) {
 
 // AvatarResult is a cached avatar lookup: either image bytes or a "none" mark.
 type avatarEntry struct {
-	data  []byte
-	mime  string
-	none  bool // true = looked up, no photo (don't retry constantly)
+	data []byte
+	mime string
+	none bool // true = looked up, no photo (don't retry constantly)
 }
 
 // AvatarFor resolves and fetches a JID's profile picture, caching the result
@@ -136,12 +136,41 @@ func fetchURL(ctx context.Context, url string) ([]byte, string, error) {
 	return data, mime, nil
 }
 
-// download fetches and decrypts the bytes for a stored media message.
-func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
-	dl, ok := c.media.get(id)
-	if !ok {
-		return nil, fmt.Errorf("media %s not in cache (evicted or never seen)", id)
-	}
-	return c.WA.Download(ctx, dl)
+// mmsTypeFor maps a media type to the MMS type string WhatsApp's CDN expects.
+// whatsmeow keeps this mapping unexported, so it's repeated here — the values
+// are part of the wire protocol and don't drift.
+var mmsTypeFor = map[whatsmeow.MediaType]string{
+	whatsmeow.MediaImage:    "image",
+	whatsmeow.MediaVideo:    "video",
+	whatsmeow.MediaAudio:    "audio",
+	whatsmeow.MediaDocument: "document",
 }
 
+// downloadMedia fetches and decrypts the bytes for a media message.
+//
+// The in-memory cache holds the original protobuf and is the fast path, but it
+// is bounded and dies with the process — which is why every photo used to break
+// after a restart or a browser refresh. The keys needed to re-fetch from the CDN
+// are persisted per message, so failing over to those makes media durable.
+func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
+	if dl, ok := c.media.get(id); ok {
+		data, err := c.WA.Download(ctx, dl)
+		if err == nil {
+			return data, nil
+		}
+		// Fall through: a stale cached entry can still fail, and the stored keys
+		// may well work.
+	}
+
+	ref, ok := c.hist.mediaRefFor(id)
+	if !ok {
+		return nil, fmt.Errorf("media %s has no stored keys (predates key storage, or never had media)", id)
+	}
+	mediaType := whatsmeow.MediaType(ref.mediaType)
+	mms, known := mmsTypeFor[mediaType]
+	if !known {
+		return nil, fmt.Errorf("media %s has unsupported type %q", id, ref.mediaType)
+	}
+	return c.WA.DownloadMediaWithPath(ctx, ref.directPath,
+		ref.encSHA256, ref.sha256, ref.mediaKey, mediaType, mms, false)
+}

@@ -78,6 +78,91 @@ func replyTextMsg(body, quotedID string, sender types.JID, quoted *waE2E.Message
 	}
 }
 
+// unsupportedLabel names a message type the app can't render yet, so it can be
+// shown as a placeholder instead of vanishing. Returns "" for message types that
+// legitimately have nothing to display — protocol housekeeping the user never
+// sent and shouldn't see.
+func unsupportedLabel(m *waE2E.Message) string {
+	switch {
+	case m.GetContactMessage() != nil:
+		if n := m.GetContactMessage().GetDisplayName(); n != "" {
+			return "[contact: " + n + "]"
+		}
+		return "[contact card]"
+	case m.GetContactsArrayMessage() != nil:
+		return "[contact cards]"
+	case m.GetPollCreationMessageV3() != nil:
+		if n := m.GetPollCreationMessageV3().GetName(); n != "" {
+			return "[poll: " + n + "]"
+		}
+		return "[poll]"
+	case m.GetPollUpdateMessage() != nil:
+		return "[poll vote]"
+	case m.GetEventMessage() != nil:
+		return "[event]"
+	case m.GetProductMessage() != nil:
+		return "[product]"
+	case m.GetGroupInviteMessage() != nil:
+		return "[group invite]"
+	case m.GetViewOnceMessage() != nil, m.GetViewOnceMessageV2() != nil,
+		m.GetViewOnceMessageV2Extension() != nil:
+		return "[view-once message]"
+	case m.GetPtvMessage() != nil:
+		return "[video note]"
+	case m.GetProtocolMessage() != nil, m.GetSenderKeyDistributionMessage() != nil:
+		return "" // housekeeping, not a message the user sent
+	}
+	return "[unsupported message]"
+}
+
+// markForwarded stamps a message as a forward, so the recipient's client shows
+// the "Forwarded" label instead of presenting it as freshly written.
+//
+// WhatsApp carries this in ContextInfo: IsForwarded plus a ForwardingScore that
+// counts hops (at 5+ clients show "forwarded many times"). The field lives on
+// whichever message variant is set, so this has to walk them; a variant with no
+// ContextInfo yet gets one.
+func markForwarded(m *waE2E.Message, score uint32) *waE2E.Message {
+	if m == nil {
+		return m
+	}
+	if score < 1 {
+		score = 1
+	}
+	stamp := func(ci *waE2E.ContextInfo) *waE2E.ContextInfo {
+		if ci == nil {
+			ci = &waE2E.ContextInfo{}
+		}
+		ci.IsForwarded = proto.Bool(true)
+		ci.ForwardingScore = proto.Uint32(score)
+		return ci
+	}
+	switch {
+	case m.GetExtendedTextMessage() != nil:
+		m.ExtendedTextMessage.ContextInfo = stamp(m.ExtendedTextMessage.GetContextInfo())
+	case m.GetImageMessage() != nil:
+		m.ImageMessage.ContextInfo = stamp(m.ImageMessage.GetContextInfo())
+	case m.GetVideoMessage() != nil:
+		m.VideoMessage.ContextInfo = stamp(m.VideoMessage.GetContextInfo())
+	case m.GetAudioMessage() != nil:
+		m.AudioMessage.ContextInfo = stamp(m.AudioMessage.GetContextInfo())
+	case m.GetDocumentMessage() != nil:
+		m.DocumentMessage.ContextInfo = stamp(m.DocumentMessage.GetContextInfo())
+	case m.GetStickerMessage() != nil:
+		m.StickerMessage.ContextInfo = stamp(m.StickerMessage.GetContextInfo())
+	case m.GetConversation() != "":
+		// A plain Conversation has nowhere to put ContextInfo — promote it to an
+		// ExtendedTextMessage, which is what WhatsApp itself does when forwarding.
+		return &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        proto.String(m.GetConversation()),
+				ContextInfo: stamp(nil),
+			},
+		}
+	}
+	return m
+}
+
 // privateReplyMsg builds a "reply privately" — a DM to someone that quotes a
 // message they sent in a group. It's an ordinary reply plus RemoteJID naming
 // the group the quoted message came from; without that, the recipient's client
@@ -87,4 +172,3 @@ func privateReplyMsg(body, quotedID string, sender, group types.JID, quoted *waE
 	msg.ExtendedTextMessage.ContextInfo.RemoteJID = proto.String(group.String())
 	return msg
 }
-

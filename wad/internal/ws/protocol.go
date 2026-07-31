@@ -36,25 +36,29 @@ const (
 	TError      = "error"      // {code, msg}
 	TProfile    = "profile"    // reply to "getprofile"/"savecontact" (ProfileData)
 	TChatUpdate = "chatupdate" // {chat, pinned, muted, archived, removed}
+	TReaction   = "reaction"   // {chat, msgid, reactions:[...]} — the full current set
+	TStatus     = "status"     // {chat, msgid, status} delivery state of a message we sent
+	TTyping     = "typing"     // both ways: {chat, sender, sendername, state} composing/paused
 )
 
 // ---- app -> daemon ----
 const (
-	TSend        = "send"        // send a text/image message (see SendData)
-	TGetChats    = "getchats"    // request chat list
-	TGetHistory  = "gethistory"  // {jid, before, limit} request history for a chat
-	TMarkRead    = "markread"    // {jid, msgid} mark read
-	TDelete      = "delete"      // {chat, msgid} delete (revoke) own message
-	TForward     = "forward"     // {srcmsgid, dest} forward a message to another chat
-	TDeleted     = "deleted"     // daemon->app: {chat, msgid} confirm a deletion
-	TCallAnswer  = "callanswer"  // user pressed green key on an incoming call
-	TCallReject  = "callreject"  // user pressed red key / declined
-	TCallDial    = "calldial"    // {jid} place an outgoing call
-	TCallHangup  = "callhangup"  // end the active call
-	TCallSignalA = "callsignal"  // WebRTC signalling from app -> pion (same type both ways)
-	TChatAction  = "chataction"  // {chat, action, on} pin/mute/archive/delete a chat
-	TGetProfile  = "getprofile"  // {jid} request contact or group info
-	TSaveContact = "savecontact" // {jid, name} save a local nickname ("" clears)
+	TSend         = "send"         // send a text/image message (see SendData)
+	TGetChats     = "getchats"     // request chat list
+	TGetHistory   = "gethistory"   // {jid, before, limit} request history for a chat
+	TMarkRead     = "markread"     // {jid, msgid} mark read
+	TDelete       = "delete"       // {chat, msgid} delete (revoke) own message
+	TForward      = "forward"      // {srcmsgid, dest} forward a message to another chat
+	TDeleted      = "deleted"      // daemon->app: {chat, msgid} confirm a deletion
+	TCallAnswer   = "callanswer"   // user pressed green key on an incoming call
+	TCallReject   = "callreject"   // user pressed red key / declined
+	TCallDial     = "calldial"     // {jid} place an outgoing call
+	TCallHangup   = "callhangup"   // end the active call
+	TCallSignalA  = "callsignal"   // WebRTC signalling from app -> pion (same type both ways)
+	TChatAction   = "chataction"   // {chat, action, on} pin/mute/archive/delete a chat
+	TGetProfile   = "getprofile"   // {jid} request contact or group info
+	TSaveContact  = "savecontact"  // {jid, name} save a local nickname ("" clears)
+	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 )
 
 // MsgData is an inbound message pushed to the app.
@@ -75,6 +79,26 @@ type MsgData struct {
 	QuotedID   string `json:"quoted,omitempty"`
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to
 	QuotedName string `json:"quotedname,omitempty"` // who sent the quoted message
+	Forwarded  bool   `json:"forwarded,omitempty"`  // carries WhatsApp's forwarded marker
+	// Status is the delivery state of a message we sent: "" | "sent" |
+	// "delivered" | "read" | "played". Meaningless on incoming messages.
+	Status    string         `json:"status,omitempty"`
+	Reactions []ReactionData `json:"reactions,omitempty"`
+	// Location payload, set when Kind == "location". Lat/Lon are 0,0 only when
+	// genuinely unknown — the app checks Kind, not the coordinates.
+	Lat        float64 `json:"lat,omitempty"`
+	Lon        float64 `json:"lon,omitempty"`
+	LocName    string  `json:"locname,omitempty"`
+	LocAddress string  `json:"locaddress,omitempty"`
+}
+
+// ReactionData is one person's reaction to one message. The app groups these by
+// emoji to show counts, and lists them by person when opened.
+type ReactionData struct {
+	SenderJID  string `json:"sender"`
+	SenderName string `json:"sendername"`
+	Emoji      string `json:"emoji"`
+	Timestamp  int64  `json:"ts"`
 }
 
 // SendData is an outgoing message from the app.

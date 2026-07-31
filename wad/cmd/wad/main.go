@@ -3,7 +3,9 @@
 // backend interface (wire meowcaller into internal/calls to enable them).
 //
 // Run:
-//   WAD_TOKEN=somesecret go run ./cmd/wad
+//
+//	WAD_TOKEN=somesecret go run ./cmd/wad
+//
 // First run prints a QR — scan it from WhatsApp > Linked devices.
 package main
 
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,16 +53,105 @@ func main() {
 	// the current resolver, then exits: merge duplicate @lid chats into their
 	// phone JID, then re-resolve chat and sender names that are still raw
 	// numbers. Safe to re-run — each pass only touches rows still unresolved.
-	if os.Getenv("WAD_MIGRATE_LIDS") == "1" {
+	// WAD_RESYNC=1 additionally asks WhatsApp to re-send the whole contact list
+	// before repairing, which is what to reach for when stored history still
+	// shows raw numbers. It refreshes the same tables a fresh pairing would,
+	// without unlinking the session.
+	resync := os.Getenv("WAD_RESYNC") == "1"
+	if os.Getenv("WAD_MIGRATE_LIDS") == "1" || resync {
 		if err := waCli.Connect(ctx); err != nil {
 			log.Fatalf("connect for migration: %v", err)
 		}
 		time.Sleep(3 * time.Second) // let the LID store settle
+		if resync {
+			log.Printf("LID migration: requesting a full contact resync…")
+			if err := waCli.ResyncContacts(ctx); err != nil {
+				log.Printf("LID migration: contact resync failed (%v) — repairing with what we have", err)
+			} else {
+				// The sync arrives as app-state patches; give them a moment to
+				// land in whatsmeow's tables before we read them back.
+				time.Sleep(10 * time.Second)
+				log.Printf("LID migration: contact resync done")
+			}
+			// Then fill in the LID<->phone pairs. This is the step that fixes a
+			// contact whose saved name is on their phone row while their group
+			// messages arrive under an unlinked LID.
+			log.Printf("LID migration: looking up LIDs for contacts that have none…")
+			queried, learned, failed := waCli.ResyncLIDMappings(ctx)
+			log.Printf("LID migration: asked about %d contacts, learned %d new LID mappings", queried, learned)
+			if failed > 0 {
+				log.Printf("LID migration: %d contacts could not be looked up (rate limit) — "+
+					"re-run WAD_RESYNC=1 later to pick up the rest", failed)
+			}
+		}
 		seen, merged, unmapped := waCli.RunLIDMigration()
 		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
 		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())
 		log.Printf("LID migration: %d message sender names backfilled", waCli.BackfillSenderNamesNow())
 		log.Printf("LID migration: %d quoted-reply names backfilled", waCli.BackfillQuotedNamesNow())
+		// Finally, correct rows holding a wrong-but-plausible name — the passes
+		// above only touch names that look like bare numbers.
+		rc, rm, rq := waCli.RefreshNamesNow()
+		log.Printf("LID migration: refreshed %d chat titles, %d sender names, %d quoted names "+
+			"to saved/address-book names", rc, rm, rq)
+		// Then mark everyone the user hasn't saved with "~". Must come after the
+		// refresh above, which is what un-marks anyone who IS saved.
+		mc, mm, mq := waCli.MarkUnsavedNamesNow()
+		log.Printf("LID migration: marked %d chat titles, %d sender names, %d quoted names "+
+			"as unsaved (~)", mc, mm, mq)
+		// Mentions are baked into the stored message body at receive time, so
+		// ones that failed to resolve then are frozen as raw ids until now.
+		log.Printf("LID migration: %d messages had @mentions resolved", waCli.ResolveStoredMentions())
+		// Previews embed the sender's name, so they must be recomputed last —
+		// after every name pass above has settled.
+		log.Printf("LID migration: %d chat previews rebuilt", waCli.RebuildPreviewsNow())
+		if os.Getenv("WAD_INCLUDE_STATUS") != "1" && waCli.PurgeStatusBroadcast() {
+			log.Printf("LID migration: removed the stored status/Updates chat " +
+				"(WAD_INCLUDE_STATUS=1 to keep it in future)")
+		}
+		return
+	}
+
+	// WAD_REFETCH_MEDIA=1 asks the phone to re-send history for chats whose
+	// attachments have no stored keys, so old photos become viewable again.
+	// Answers arrive asynchronously as HistorySync events, so this stays
+	// connected for a while after the requests go out rather than exiting
+	// immediately.
+	if os.Getenv("WAD_REFETCH_MEDIA") == "1" {
+		if err := waCli.Connect(ctx); err != nil {
+			log.Fatalf("connect for media refetch: %v", err)
+		}
+		time.Sleep(5 * time.Second) // let the session settle
+		before, missing := waCli.MediaKeyStats()
+		log.Printf("media refetch: %d attachments have keys, %d don't", before, missing)
+
+		maxReq := 40
+		if v := os.Getenv("WAD_REFETCH_MAX"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				maxReq = n
+			}
+		}
+		sent, chats := waCli.RefetchMediaKeys(ctx, maxReq)
+		log.Printf("media refetch: sent %d history requests across %d chats", sent, chats)
+
+		if sent > 0 {
+			// The phone replies whenever it feels like it. Hold the connection
+			// open so the HistorySync handler can store what comes back.
+			wait := 90 * time.Second
+			log.Printf("media refetch: waiting %s for responses (Ctrl-C to stop early)…", wait)
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+			}
+			after, stillMissing := waCli.MediaKeyStats()
+			log.Printf("media refetch: now %d attachments have keys (+%d), %d still missing",
+				after, after-before, stillMissing)
+			if after == before {
+				log.Printf("media refetch: nothing came back — the phone may be offline, " +
+					"or may refuse to serve history this old")
+			}
+		}
+		waCli.WA.Disconnect()
 		return
 	}
 
@@ -78,6 +170,7 @@ func main() {
 	mux.HandleFunc("/ws", hub.ServeHTTP(token))
 	mux.HandleFunc("/media/", mediaHandler(waCli))
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
+	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 
 	go func() {
@@ -235,6 +328,49 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			Data: mustJSON(waCli.SaveContact(d.JID, d.Name))})
 		hub.PushT(ws.TChatList, waCli.ListChats())
 
+	case ws.TTyping:
+		var d struct {
+			Chat  string `json:"chat"`
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			return
+		}
+		// Silent on failure: a typing indicator is not worth an error frame.
+		if err := waCli.SendTyping(ctx, d.Chat, d.State == "composing"); err != nil {
+			log.Printf("typing %s: %v", d.Chat, err)
+		}
+
+	case ws.TSendReaction:
+		var d struct {
+			Chat  string `json:"chat"`
+			MsgID string `json:"msgid"`
+			Emoji string `json:"emoji"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badreaction", "msg": err.Error()})
+			return
+		}
+		if err := waCli.SendReaction(ctx, d.Chat, d.MsgID, d.Emoji); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "reaction", "msg": err.Error()})
+		}
+
+	case ws.TMarkRead:
+		var d struct {
+			JID string `json:"jid"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badmarkread", "msg": err.Error()})
+			return
+		}
+		// Quiet on failure: the user opened a chat, they didn't ask to send a
+		// receipt, so an error here shouldn't interrupt them.
+		if n, err := waCli.MarkChatRead(ctx, d.JID); err != nil {
+			log.Printf("markread %s: %v", d.JID, err)
+		} else if n > 0 {
+			log.Printf("markread: %d messages in %s", n, d.JID)
+		}
+
 	case ws.TGetChats:
 		hub.PushT(ws.TChatList, waCli.ListChats())
 
@@ -271,6 +407,23 @@ func avatarHandler(c *wa.Client) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(data)
+	}
+}
+
+// locThumbHandler serves the map preview WhatsApp embeds in a location message.
+// These are stored bytes, not CDN downloads, so they're always available and
+// need no keys.
+func locThumbHandler(c *wa.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/locthumb/")
+		data := c.LocationThumb(id)
+		if len(data) == 0 {
+			http.Error(w, "no thumbnail", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "private, max-age=86400")
 		w.Write(data)
 	}

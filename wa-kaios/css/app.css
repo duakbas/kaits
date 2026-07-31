@@ -272,6 +272,86 @@ header .status.closed { color: var(--danger); }
   color: var(--muted);
 }
 
+/* location card */
+.loc-card { display: block; }
+.loc-map {
+  display: block;
+  width: 100%;
+  max-width: 170px;
+  border-radius: 4px;
+  background: var(--panel);
+}
+.loc-map.placeholder {
+  height: 70px;
+  line-height: 70px;
+  text-align: center;
+  font-size: 26px;
+}
+.loc-title { font-size: 12px; font-weight: 700; margin-top: 3px; }
+.loc-addr { font-size: 10px; color: var(--muted); word-break: break-word; }
+.loc-addr.dim { opacity: 0.7; }
+
+/* a message type we can't render yet */
+.media-file.unsupported { font-style: italic; color: var(--muted); }
+
+/* someone is typing */
+.chat-prev.typing { color: var(--accent); font-style: italic; }
+
+/* date separator between days */
+.day-sep {
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 2px 8px;
+  margin: 6px auto 4px;
+  width: fit-content;
+  max-width: 80%;
+}
+
+/* time + delivery ticks, trailing the bubble body */
+.meta {
+  display: block;
+  text-align: right;
+  font-size: 9px;
+  color: var(--muted);
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.meta .tick { margin-left: 3px; }
+/* blue only once actually read, so the state is readable at a glance */
+.meta .tick.read { color: #53bdeb; }
+
+/* reaction chips hanging under a bubble */
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: -2px 0 4px;
+}
+.reactions.me { justify-content: flex-end; padding-right: 6px; }
+.reactions.them { justify-content: flex-start; padding-left: 6px; }
+.reaction-chip {
+  font-size: 10px;
+  line-height: 1.4;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 5px;
+}
+/* who-reacted-with-what rows */
+.reaction-row { display: flex; justify-content: space-between; align-items: center; }
+.reaction-row-emoji { font-size: 14px; margin-left: 8px; }
+
+/* forwarded marker inside a bubble */
+.fwd-label {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
 /* ---- contact / group info screen ---- */
 #profile-body { padding: 10px 8px 8px; text-align: center; }
 .profile-avatar {

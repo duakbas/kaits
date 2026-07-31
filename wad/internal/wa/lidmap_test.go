@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -178,6 +180,61 @@ func TestContactNamePrefersSavedNameAcrossRows(t *testing.T) {
 	}
 }
 
+// When BOTH rows carry a full_name — your saved nickname on the phone row and
+// the contact's own profile name on the LID row — the saved one must win. Row
+// order from sqlite is arbitrary, so without an explicit address ordering the
+// same person renders under different names in different groups.
+func TestContactNamePrefersPhoneRowWhenBothHaveFullName(t *testing.T) {
+	path := newFakeSession(t, true)
+	mustExec(t, path, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES (?,?)`,
+		"104570072096833", "905322873800")
+	// Inserted LID-row first on purpose: it is what a naive query returns first.
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "104570072096833@lid", "Sarp Doruk Gerenli")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "905322873800@s.whatsapp.net", "bulgayrian")
+
+	s, err := openSessionStore(path)
+	if err != nil {
+		t.Fatalf("openSessionStore: %v", err)
+	}
+	defer s.close()
+
+	// Reached from the group (a LID) and from the DM (a phone JID), the answer
+	// has to be the same — that consistency is the whole point.
+	lid := types.JID{User: "104570072096833", Server: types.HiddenUserServer}
+	if got := s.contactName(lid); got != "bulgayrian" {
+		t.Errorf("contactName(lid) = %q, want saved name %q", got, "bulgayrian")
+	}
+	s.reset()
+	pn := types.JID{User: "905322873800", Server: types.DefaultUserServer}
+	if got := s.contactName(pn); got != "bulgayrian" {
+		t.Errorf("contactName(pn) = %q, want saved name %q", got, "bulgayrian")
+	}
+}
+
+// The phone row wins only within a column: a LID-row full_name still beats a
+// phone-row push_name, because "you saved it" outranks "they named themselves".
+func TestContactNameColumnBeatsAddressOrder(t *testing.T) {
+	path := newFakeSession(t, true)
+	mustExec(t, path, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES (?,?)`, "555", "9051112233")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, push_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "9051112233@s.whatsapp.net", "selfnamed")
+	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES (?,?,?)`,
+		"me@s.whatsapp.net", "555@lid", "Saved Name")
+
+	s, err := openSessionStore(path)
+	if err != nil {
+		t.Fatalf("openSessionStore: %v", err)
+	}
+	defer s.close()
+
+	lid := types.JID{User: "555", Server: types.HiddenUserServer}
+	if got := s.contactName(lid); got != "Saved Name" {
+		t.Errorf("contactName = %q, want %q (full_name outranks push_name)", got, "Saved Name")
+	}
+}
+
 func TestContactNameFallsBackThroughPreferenceOrder(t *testing.T) {
 	path := newFakeSession(t, true)
 	mustExec(t, path, `INSERT INTO whatsmeow_contacts (our_jid, their_jid, push_name, business_name) VALUES (?,?,?,?)`,
@@ -294,4 +351,79 @@ func TestNilSessionStoreIsSafe(t *testing.T) {
 	}
 	s.logState()
 	s.close()
+}
+
+// tildeUnsaved implements WhatsApp's convention for distinguishing "a person I
+// saved as X" from "a person calling themselves X".
+func TestTildeUnsaved(t *testing.T) {
+	cases := []struct {
+		name  string
+		saved bool
+		want  string
+	}{
+		{"bulgayrian", true, "bulgayrian"},                   // user's own name for them
+		{"Sarp Doruk Gerenli", false, "~Sarp Doruk Gerenli"}, // their own name
+		{"~Already Marked", false, "~Already Marked"},        // no double tilde
+		{"", false, ""}, // nothing to mark
+		{"", true, ""},
+	}
+	for _, c := range cases {
+		if got := tildeUnsaved(c.name, c.saved); got != c.want {
+			t.Errorf("tildeUnsaved(%q, %v) = %q, want %q", c.name, c.saved, got, c.want)
+		}
+	}
+}
+
+// Message types the app can't render must produce a labelled placeholder rather
+// than vanishing — a silently dropped message leaves an unexplained hole in the
+// thread. Protocol housekeeping is the one thing that should stay invisible.
+func TestUnsupportedLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *waE2E.Message
+		want string
+	}{
+		{"contact with name", &waE2E.Message{
+			ContactMessage: &waE2E.ContactMessage{DisplayName: proto.String("Alex")},
+		}, "[contact: Alex]"},
+		{"contact without name", &waE2E.Message{
+			ContactMessage: &waE2E.ContactMessage{},
+		}, "[contact card]"},
+		{"poll", &waE2E.Message{
+			PollCreationMessageV3: &waE2E.PollCreationMessage{Name: proto.String("Lunch?")},
+		}, "[poll: Lunch?]"},
+		{"view once", &waE2E.Message{
+			ViewOnceMessage: &waE2E.FutureProofMessage{},
+		}, "[view-once message]"},
+		{"protocol housekeeping stays hidden", &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{},
+		}, ""},
+		{"unknown falls back", &waE2E.Message{}, "[unsupported message]"},
+	}
+	for _, c := range cases {
+		if got := unsupportedLabel(c.msg); got != c.want {
+			t.Errorf("%s: unsupportedLabel = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Status/"Updates" posts are a separate product surface, not a conversation.
+// Broadcast LISTS are real chats and must not be caught by the same filter.
+func TestIsStatusBroadcast(t *testing.T) {
+	cases := []struct {
+		name string
+		jid  types.JID
+		want bool
+	}{
+		{"status feed", types.StatusBroadcastJID, true},
+		{"broadcast list", types.JID{User: "1234567890", Server: types.BroadcastServer}, false},
+		{"ordinary dm", types.JID{User: "41791234567", Server: types.DefaultUserServer}, false},
+		{"group", types.JID{User: "123-456", Server: types.GroupServer}, false},
+		{"lid", types.JID{User: "104570072096833", Server: types.HiddenUserServer}, false},
+	}
+	for _, c := range cases {
+		if got := isStatusBroadcast(c.jid); got != c.want {
+			t.Errorf("%s: isStatusBroadcast(%s) = %v, want %v", c.name, c.jid, got, c.want)
+		}
+	}
 }

@@ -14,11 +14,13 @@
     CALLOFFER: "calloffer", CALLSTATE: "callstate", CALLSIGNAL: "callsignal",
     ERROR: "error",
     PROFILE: "profile", CHATUPDATE: "chatupdate",
+    REACTION: "reaction", STATUS: "status", TYPING: "typing",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
+    SENDREACTION: "sendreaction",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };

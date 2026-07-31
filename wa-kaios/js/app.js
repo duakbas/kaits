@@ -93,7 +93,9 @@
         (c.archived ? "🗄 " : "") + (c.name || c.jid);
       var prev = document.createElement("div");
       prev.className = "chat-prev";
-      prev.textContent = c.preview || "";
+      var typed = typingLabel(c.jid);
+      if (typed) { prev.className += " typing"; prev.textContent = typed; }
+      else prev.textContent = c.preview || "";
       col.appendChild(name);
       col.appendChild(prev);
 
@@ -166,6 +168,7 @@
   }
 
   function enterListScreen() {
+    stopTyping();
     currentJID = null;
     show(elList);
     Nav.setScreen({
@@ -278,6 +281,9 @@
     if (!threads[jid] || !threads[jid].loadedHistory) {
       W.send(W.T.GETHISTORY, { jid: jid, before: 0, limit: 40 });
     }
+    // Opening a chat is the read signal — tell WhatsApp, so the sender's ticks
+    // turn blue. The daemon works out which messages are still unread.
+    W.send(W.T.MARKREAD, { jid: jid });
     renderThread();
     elInput.value = "";
     enterComposeMode();
@@ -336,7 +342,19 @@
     // Build the rows that actually apply to THIS message. "Reply privately"
     // and "Message directly" only make sense for someone else's message in a
     // group; deleting for everyone only works on your own.
-    var items = [{ action: "reply", label: "Reply" }];
+    var items = [];
+    if (m.kind === "location") items.push({ action: "openmap", label: "Open in maps" });
+    items.push({ action: "reply", label: "Reply" });
+    var mine = myReactionTo(m);
+    items.push({ action: "react", label: mine ? "Change reaction " + mine : "React" });
+    if (mine) items.push({ action: "unreact", label: "Remove my reaction" });
+    var reactionCount = (m.reactions || []).length;
+    if (reactionCount) {
+      items.push({
+        action: "reactions",
+        label: "Reactions (" + reactionCount + ")"
+      });
+    }
     if (isGroup && fromOther) {
       items.push({ action: "replyprivate", label: "Reply privately" });
       items.push({ action: "dm", label: "Message " + shortName(m.sendername) });
@@ -416,6 +434,28 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "openmap") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openLocation(m);
+      enterSelectMode();
+      selectIdx = keepSelection(m);
+      renderThread();
+    } else if (action === "react") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      promptForReaction(m);
+    } else if (action === "unreact") {
+      W.send(W.T.SENDREACTION, { chat: currentJID, msgid: m.msgid, emoji: "" });
+      menuOpen = false;
+      elMenu.hidden = true;
+      enterSelectMode();
+      selectIdx = keepSelection(m);
+      renderThread();
+    } else if (action === "reactions") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openReactionList(m);
     } else if (action === "replyprivate") {
       // Same composer, but the send is flagged private — the daemon redirects
       // it to the sender's DM and keeps the group message as the quote.
@@ -438,6 +478,228 @@
       var back = currentJID;
       openProfileForMessage(m, function () { openThread(back); });
     }
+  }
+
+  // ---------- typing indicators ----------
+  // Incoming: chat JID -> {names:{sender:name}, timer}. WhatsApp doesn't always
+  // send a "paused" to close a "composing", so each entry self-expires.
+  var typing = {};
+  var TYPING_TTL = 8000;
+
+  function setTyping(chat, sender, name, composing) {
+    var entry = typing[chat] || (typing[chat] = { names: {} });
+    if (composing) {
+      entry.names[sender] = name || "Someone";
+    } else {
+      delete entry.names[sender];
+    }
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(function () {
+      delete typing[chat];
+      refreshTypingUI(chat);
+    }, TYPING_TTL);
+    refreshTypingUI(chat);
+  }
+
+  function typingLabel(chat) {
+    var entry = typing[chat];
+    if (!entry) return "";
+    var names = Object.keys(entry.names).map(function (k) { return entry.names[k]; });
+    if (!names.length) return "";
+    if (names.length === 1) {
+      // In a DM the name is redundant — you know who you're talking to.
+      return (chats[chat] && chats[chat].group) ? names[0] + " is typing…" : "typing…";
+    }
+    return names.length + " people are typing…";
+  }
+
+  function refreshTypingUI(chat) {
+    if (currentJID === chat) {
+      var label = typingLabel(chat);
+      var c = chats[chat] || {};
+      elThreadTitle.textContent = label ? (c.name || chat) + " — " + label : (c.name || chat);
+    }
+    if (!elList.hidden) renderChatList();
+  }
+
+  // ---------- outgoing typing ----------
+  // Send "composing" while the user types, and "paused" once they stop. Rate
+  // limited: WhatsApp wants an occasional refresh, not one per keystroke.
+  var typingSentAt = 0;
+  var typingStopTimer = null;
+  var TYPING_REFRESH = 4000;
+
+  function noteTyping() {
+    if (!currentJID) return;
+    var now = Date.now();
+    if (now - typingSentAt > TYPING_REFRESH) {
+      W.send(W.T.TYPING, { chat: currentJID, state: "composing" });
+      typingSentAt = now;
+    }
+    if (typingStopTimer) clearTimeout(typingStopTimer);
+    typingStopTimer = setTimeout(stopTyping, 3000);
+  }
+
+  function stopTyping() {
+    if (typingStopTimer) { clearTimeout(typingStopTimer); typingStopTimer = null; }
+    if (!currentJID || !typingSentAt) return;
+    W.send(W.T.TYPING, { chat: currentJID, state: "paused" });
+    typingSentAt = 0;
+  }
+
+  // ---------- time formatting ----------
+  // 24-hour clock: unambiguous, and narrower than "10:45 PM" on a 240px screen.
+  function timeOf(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000);
+    return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+  function pad2(n) { return n < 10 ? "0" + n : String(n); }
+
+  var DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                   "Friday", "Saturday"];
+  var MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  // Date separator label, WhatsApp-style: Today / Yesterday / weekday within the
+  // last week / an explicit date beyond that.
+  function dayLabel(ts) {
+    var d = new Date(ts * 1000);
+    var today = new Date();
+    var days = daysBetween(d, today);
+    if (days === 0) return "Today";
+    if (days === 1) return "Yesterday";
+    if (days < 7) return DAY_NAMES[d.getDay()];
+    var label = d.getDate() + " " + MONTH_NAMES[d.getMonth()];
+    if (d.getFullYear() !== today.getFullYear()) label += " " + d.getFullYear();
+    return label;
+  }
+
+  // Whole days between two dates, ignoring the time of day — comparing
+  // timestamps directly would call 23:59 and 00:01 "the same day".
+  function daysBetween(a, b) {
+    var da = new Date(a.getFullYear(), a.getMonth(), a.getDate());
+    var db = new Date(b.getFullYear(), b.getMonth(), b.getDate());
+    return Math.round((db - da) / 86400000);
+  }
+
+  function sameDay(tsA, tsB) {
+    if (!tsA || !tsB) return false;
+    return daysBetween(new Date(tsA * 1000), new Date(tsB * 1000)) === 0;
+  }
+
+  // ---------- delivery ticks ----------
+  // ✓ sent, ✓✓ delivered, ✓✓ (blue) read. Only meaningful on our own messages.
+  function tickFor(status) {
+    if (status === "read" || status === "played") return { mark: "✓✓", cls: "tick read" };
+    if (status === "delivered") return { mark: "✓✓", cls: "tick" };
+    return { mark: "✓", cls: "tick" };
+  }
+
+  // ---------- reactions ----------
+  // Group a message's reactions by emoji, preserving first-seen order so the
+  // row doesn't reshuffle as more arrive.
+  function groupReactions(list) {
+    var order = [];
+    var byEmoji = {};
+    (list || []).forEach(function (r) {
+      if (!r || !r.emoji) return;
+      if (!byEmoji[r.emoji]) { byEmoji[r.emoji] = []; order.push(r.emoji); }
+      byEmoji[r.emoji].push(r);
+    });
+    return order.map(function (e) { return { emoji: e, people: byEmoji[e] }; });
+  }
+
+  // myReactionTo returns the emoji WE reacted with, or "". The daemon labels our
+  // own reaction "You", which is the only marker available client-side.
+  function myReactionTo(m) {
+    var list = (m && m.reactions) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].sendername === "You") return list[i].emoji;
+    }
+    return "";
+  }
+
+  // keepSelection re-finds a message's index after the thread array shifts.
+  function keepSelection(m) {
+    var msgs = threads[currentJID] || [];
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].msgid === m.msgid) return i;
+    }
+    return selectIdx;
+  }
+
+  // promptForReaction opens a text field so the PHONE's keyboard provides the
+  // emoji, rather than shipping our own picker.
+  //
+  // KaiOS 2.5 has no API to open the keyboard directly on its emoji panel —
+  // there is no inputmode for it, and the panel is reached by the user cycling
+  // input modes. So the best available behaviour is: focus a field, which raises
+  // the keyboard, and let them switch to emoji. Whatever they enter is sent
+  // as-is, which also means a desktop browser can just type or paste one.
+  function promptForReaction(m) {
+    var mine = myReactionTo(m);
+    textPrompt("React", mine,
+      "Switch the keyboard to emoji, then pick one. Leave empty to remove.",
+      function (val) {
+        // Send what was typed, only guarding against a whole sentence being
+        // submitted as a "reaction". Deliberately NOT splitting into one
+        // character: a single emoji can be many code units (skin tones,
+        // variation selectors, ZWJ sequences like 👨‍👩‍👧), and Gecko 48 has no
+        // Intl.Segmenter to split them correctly. Truncating would corrupt
+        // them, so a generous cap is safer than clever slicing.
+        var emoji = (val || "").trim();
+        if (emoji.length > 16) emoji = "";
+        if (emoji === "" && val && val.trim()) {
+          toast("That's too long for a reaction");
+        } else {
+          W.send(W.T.SENDREACTION, { chat: currentJID, msgid: m.msgid, emoji: emoji });
+        }
+        enterSelectMode();
+        selectIdx = keepSelection(m);
+        renderThread();
+      },
+      function () {
+        enterSelectMode();
+        selectIdx = keepSelection(m);
+        renderThread();
+      });
+  }
+
+  // The detail view: who reacted with what, like WhatsApp's reaction sheet.
+  function openReactionList(m) {
+    var groups = groupReactions(m.reactions);
+    if (!groups.length) return;
+    elChatMenuTitle.textContent = "Reactions";
+    elChatMenuList.innerHTML = "";
+    groups.forEach(function (g) {
+      g.people.forEach(function (p) {
+        var row = document.createElement("div");
+        row.className = "menu-item reaction-row";
+        row.setAttribute("data-nav", "");
+        var who = document.createElement("span");
+        who.textContent = p.sendername || p.sender || "Unknown";
+        var em = document.createElement("span");
+        em.className = "reaction-row-emoji";
+        em.textContent = g.emoji;
+        row.appendChild(who);
+        row.appendChild(em);
+        elChatMenuList.appendChild(row);
+      });
+    });
+    elChatMenu.hidden = false;
+    var back = function () {
+      elChatMenu.hidden = true;
+      enterSelectMode();
+      selectIdx = keep;
+      renderThread();
+    };
+    var keep = selectIdx;
+    Nav.setScreen({
+      list: elChatMenu,
+      onSoftLeft: back, onBack: back, onEnter: back, onSoftRight: back
+    });
+    Nav.setSoftkeys("Close", "", "OK");
   }
 
   // shortName trims a display name to something that fits a 240px menu row.
@@ -599,6 +861,13 @@
       stk.src = url;
       stk.alt = "sticker";
       b.appendChild(stk);
+    } else if (m.kind === "location") {
+      renderLocationBubble(b, m);
+    } else if (m.kind === "unsupported") {
+      var un = document.createElement("div");
+      un.className = "media-file unsupported";
+      un.textContent = m.text || "[unsupported message]";
+      b.appendChild(un);
     } else if (m.kind === "doc") {
       var doc = document.createElement("div");
       doc.className = "media-file";
@@ -607,6 +876,89 @@
     } else {
       b.textContent = "[" + m.kind + "]";
     }
+  }
+
+  // A location renders as WhatsApp's own map preview (shipped inside the
+  // message, so no tiles are fetched and no API key is needed) plus whatever
+  // name/address came with it. Selecting it offers to open a real map app.
+  function renderLocationBubble(b, m) {
+    var card = document.createElement("div");
+    card.className = "loc-card";
+
+    if (m.media) {
+      var img = document.createElement("img");
+      img.className = "loc-map";
+      img.src = mediaBase() + m.media;
+      img.alt = "map";
+      card.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "loc-map placeholder";
+      ph.textContent = "📍";
+      card.appendChild(ph);
+    }
+
+    var title = document.createElement("div");
+    title.className = "loc-title";
+    title.textContent = m.locname || "Location";
+    card.appendChild(title);
+
+    if (m.locaddress) {
+      var addr = document.createElement("div");
+      addr.className = "loc-addr";
+      addr.textContent = m.locaddress;
+      card.appendChild(addr);
+    }
+    if (m.lat || m.lon) {
+      var co = document.createElement("div");
+      co.className = "loc-addr dim";
+      co.textContent = m.lat.toFixed(5) + ", " + m.lon.toFixed(5);
+      card.appendChild(co);
+    }
+    b.appendChild(card);
+    if (m.text) {
+      var cap = document.createElement("div");
+      cap.className = "caption";
+      cap.textContent = m.text;
+      b.appendChild(cap);
+    }
+  }
+
+  // openLocation hands the coordinates to whatever map app the phone has.
+  //
+  // A geo: URI is the standard Android/KaiOS way and lets the OS show its own
+  // "open with" chooser, which is what we want rather than hardcoding a
+  // provider. Desktop browsers don't handle geo:, so there we fall back to
+  // OpenStreetMap in a new tab.
+  function openLocation(m) {
+    if (!m || (!m.lat && !m.lon)) { toast("No coordinates on this message"); return; }
+    var label = m.locname || m.locaddress || "Location";
+    var geo = "geo:" + m.lat + "," + m.lon + "?q=" +
+      m.lat + "," + m.lon + "(" + encodeURIComponent(label) + ")";
+    var osm = "https://www.openstreetmap.org/?mlat=" + m.lat +
+      "&mlon=" + m.lon + "#map=16/" + m.lat + "/" + m.lon;
+
+    if (window.MozActivity) {
+      try {
+        var act = new window.MozActivity({ name: "view", data: { type: "url", url: geo } });
+        // No map app registered for geo: — fall back to the web map.
+        act.onerror = function () { openURL(osm); };
+        return;
+      } catch (e) {
+        // fall through
+      }
+    }
+    openURL(osm);
+  }
+
+  function openURL(url) {
+    if (window.MozActivity) {
+      try {
+        new window.MozActivity({ name: "view", data: { type: "url", url: url } });
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    window.open(url, "_blank");
   }
 
   function renderThread() {
@@ -619,7 +971,18 @@
     forceScrollBottom = false;
     elThreadMsgs.innerHTML = "";
     var lastSender = null;
+    var lastTS = 0;
     msgs.forEach(function (m, idx) {
+      // Date separator whenever the day changes (and before the first message).
+      if (m.ts && !sameDay(lastTS, m.ts)) {
+        var sep = document.createElement("div");
+        sep.className = "day-sep";
+        sep.textContent = dayLabel(m.ts);
+        elThreadMsgs.appendChild(sep);
+        lastSender = null; // re-label the sender after a break in the day
+      }
+      if (m.ts) lastTS = m.ts;
+
       // In groups, label each incoming message with its sender — but only when
       // the sender changes, so runs from one person aren't repetitive.
       if (isGroup && !m.fromme && m.sendername && m.sendername !== lastSender) {
@@ -638,6 +1001,14 @@
       // tint incoming group bubbles' left border with the sender color
       if (isGroup && !m.fromme && m.sendername) {
         b.style.borderLeft = "2px solid " + colorFor(m.sendername);
+      }
+      // WhatsApp's forwarded marker, above any quote bar — same order the
+      // official clients use.
+      if (m.forwarded) {
+        var fwd = document.createElement("div");
+        fwd.className = "fwd-label";
+        fwd.textContent = "↪ Forwarded";
+        b.appendChild(fwd);
       }
       // if this message quotes another, show a small quote bar first
       if (m.quotedtext) {
@@ -665,7 +1036,36 @@
       } else {
         renderMediaBubble(b, m);
       }
+
+      // Time, and for our own messages the delivery ticks, on one trailing line.
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      var t = document.createElement("span");
+      t.textContent = timeOf(m.ts);
+      meta.appendChild(t);
+      if (m.fromme && !m.deleted) {
+        var tick = tickFor(m.status);
+        var tk = document.createElement("span");
+        tk.className = tick.cls;
+        tk.textContent = tick.mark;
+        meta.appendChild(tk);
+      }
+      b.appendChild(meta);
       elThreadMsgs.appendChild(b);
+
+      // Reactions hang below the bubble, grouped by emoji with a count.
+      var groups = groupReactions(m.reactions);
+      if (groups.length) {
+        var row = document.createElement("div");
+        row.className = "reactions " + (m.fromme ? "me" : "them");
+        groups.forEach(function (g) {
+          var chip = document.createElement("span");
+          chip.className = "reaction-chip";
+          chip.textContent = g.emoji + (g.people.length > 1 ? " " + g.people.length : "");
+          row.appendChild(chip);
+        });
+        elThreadMsgs.appendChild(row);
+      }
     });
     // in select mode, scroll the selected bubble into view; else stick to bottom
     if (selectMode) {
@@ -689,7 +1089,8 @@
     if (!privateReply) {
       var echo = {
         msgid: "local-" + Date.now(), chat: currentJID, fromme: true,
-        ts: Math.floor(Date.now() / 1000), kind: "text", text: text
+        ts: Math.floor(Date.now() / 1000), kind: "text", text: text,
+        status: "sent"
       };
       if (replyingTo) {
         echo.quotedtext = replyingTo.text;
@@ -700,6 +1101,7 @@
       toast("Sent privately");
     }
     elInput.value = "";
+    stopTyping();
     clearReply();
   }
 
@@ -750,9 +1152,11 @@
     else sub.textContent = p.members ? p.members + " participants" : "Group";
     elProfileBody.appendChild(sub);
 
-    // If we're showing a nickname, note what they call themselves, so the two
-    // names aren't confusable.
-    if (!p.group && p.pushname && p.pushname !== p.name) {
+    // If we're showing a name the user chose, note what the contact calls
+    // themselves underneath. Compare with the tilde stripped: for an unsaved
+    // person the heading IS their own name, already marked, and repeating it
+    // here would just print the same string twice.
+    if (!p.group && p.pushname && p.pushname !== (p.name || "").replace(/^~/, "")) {
       var pn = document.createElement("div");
       pn.className = "profile-sub dim";
       pn.textContent = "~" + p.pushname + (p.business ? " (business)" : "");
@@ -1006,7 +1410,12 @@
     c.preview = (m.group && !m.fromme && m.sendername)
       ? m.sendername + ": " + body
       : body;
-    if (!m.fromme && currentJID !== m.chat) c.unread = (c.unread || 0) + 1;
+    if (!m.fromme && currentJID !== m.chat) {
+      c.unread = (c.unread || 0) + 1;
+    } else if (!m.fromme) {
+      // It arrived while the user is looking at the chat, so it's read now.
+      W.send(W.T.MARKREAD, { jid: m.chat });
+    }
 
     if (currentJID === m.chat) {
       // Don't disrupt an open action menu; refresh underneath otherwise.
@@ -1081,6 +1490,34 @@
     }
   });
 
+  W.on(W.T.TYPING, function (d) {
+    if (!d || !d.chat || !d.sender) return;
+    setTyping(d.chat, d.sender, d.sendername, d.state === "composing");
+  });
+
+  W.on(W.T.REACTION, function (d) {
+    if (!d || !d.chat || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) {
+        // The daemon sends the complete set, so replace rather than merge —
+        // that way removals land correctly too.
+        arr[i].reactions = d.reactions || [];
+        break;
+      }
+    }
+    if (currentJID === d.chat && !menuOpen) renderThread();
+  });
+
+  W.on(W.T.STATUS, function (d) {
+    if (!d || !d.chat || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) { arr[i].status = d.status; break; }
+    }
+    if (currentJID === d.chat && !menuOpen) renderThread();
+  });
+
   W.on(W.T.PROFILE, function (p) {
     if (!p || !p.jid) return;
     var req = pendingProfile;
@@ -1137,6 +1574,10 @@
 
   // ---------- boot ----------
   document.getElementById("reply-bar-x").onclick = clearReply;
+
+  // Typing signal comes off real input events, not keydown, so D-pad and
+  // softkey presses don't register as composing.
+  elInput.addEventListener("input", noteTyping);
 
   // scroll to top of a thread -> load an older page of history
   var loadingOlder = false;

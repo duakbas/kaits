@@ -97,6 +97,22 @@ func openSessionStore(path string) (*sessionStore, error) {
 	}, nil
 }
 
+// reset drops every cached lookup. Call it after something refills whatsmeow's
+// tables (a contact resync), so mappings we previously recorded as misses get
+// asked again instead of waiting out their TTL.
+func (s *sessionStore) reset() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lidToPN = make(map[string]string)
+	s.pnToLID = make(map[string]string)
+	s.names = make(map[string]nameEntry)
+	s.lidMiss = make(map[string]time.Time)
+	s.pnMiss = make(map[string]time.Time)
+}
+
 func (s *sessionStore) close() {
 	if s != nil && s.db != nil {
 		s.db.Close()
@@ -187,9 +203,18 @@ func (s *sessionStore) counterpart(jid types.JID) types.JID {
 //
 // It checks the JID *and* its phone<->LID counterpart, because a name you saved
 // on your phone syncs keyed by the phone JID while the message that needs the
-// name arrives keyed by a LID. Preference order across whichever row has it:
-// full_name (you saved it) > first_name > push_name (they set it) >
-// business_name.
+// name arrives keyed by a LID.
+//
+// Two orderings decide the winner, and both matter:
+//
+//   - by column: full_name (you saved it) > first_name > push_name (they named
+//     themselves) > business_name.
+//   - by address, as a tie-break: the PHONE row before the LID row. The address
+//     book syncs against the phone JID, so that's where your saved name lives;
+//     the LID row often carries the contact's own profile name. Both rows can
+//     have a full_name, and picking whichever the database happened to return
+//     first means the same person shows up under different names in different
+//     groups.
 func (s *sessionStore) contactName(jid types.JID) string {
 	if s == nil || s.db == nil || jid.User == "" {
 		return ""
@@ -204,40 +229,42 @@ func (s *sessionStore) contactName(jid types.JID) string {
 		return e.name
 	}
 
-	jids := []any{key}
-	if alt := s.counterpart(jid.ToNonAD()); !alt.IsEmpty() {
-		jids = append(jids, alt.String())
+	// Build the lookup order explicitly: phone form first, whichever we were
+	// handed. counterpart() fills in the half we don't have.
+	ordered := orderedContactJIDs(s, jid.ToNonAD())
+	args := make([]any, len(ordered))
+	for i, j := range ordered {
+		args[i] = j
 	}
 
-	q := `SELECT full_name, first_name, push_name, business_name
-	      FROM whatsmeow_contacts WHERE their_jid IN (?` + repeatPlaceholders(len(jids)-1) + `)`
-	rows, err := s.db.Query(q, jids...)
+	q := `SELECT their_jid, full_name, first_name, push_name, business_name
+	      FROM whatsmeow_contacts WHERE their_jid IN (?` + repeatPlaceholders(len(ordered)-1) + `)`
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return ""
 	}
 	defer rows.Close()
 
-	// Collect every matching row, then apply the preference order *across* rows
-	// — the phone-JID row may hold the saved name while the LID row holds only
-	// a push name, and the saved name should win regardless of row order.
-	var cols [4][]string
+	// Index rows by address so the ordering above decides, not row order.
+	type contactRow [4]string
+	byJID := map[string]contactRow{}
 	for rows.Next() {
+		var who string
 		var full, first, push, business sql.NullString
-		if rows.Scan(&full, &first, &push, &business) != nil {
+		if rows.Scan(&who, &full, &first, &push, &business) != nil {
 			continue
 		}
-		for i, v := range []sql.NullString{full, first, push, business} {
-			if v.String != "" {
-				cols[i] = append(cols[i], v.String)
-			}
-		}
+		byJID[who] = contactRow{full.String, first.String, push.String, business.String}
 	}
 
 	name := ""
-	for _, candidates := range cols {
-		if len(candidates) > 0 {
-			name = candidates[0]
-			break
+outer:
+	for col := 0; col < 4; col++ {
+		for _, j := range ordered {
+			if v := byJID[j][col]; v != "" {
+				name = v
+				break outer
+			}
 		}
 	}
 
@@ -251,6 +278,36 @@ func (s *sessionStore) contactName(jid types.JID) string {
 	return name
 }
 
+// orderedContactJIDs returns the addresses to look a contact up under, phone
+// form first. Deduplicated, and it always includes the JID we were given even
+// when the lid map can't supply its counterpart.
+func orderedContactJIDs(s *sessionStore, jid types.JID) []string {
+	alt := s.counterpart(jid)
+	var phone, lid types.JID
+	if jid.Server == types.HiddenUserServer {
+		lid, phone = jid, alt
+	} else {
+		phone, lid = jid, alt
+	}
+	out := make([]string, 0, 2)
+	for _, j := range []types.JID{phone, lid} {
+		if j.IsEmpty() {
+			continue
+		}
+		s := j.String()
+		dup := false
+		for _, existing := range out {
+			if existing == s {
+				dup = true
+			}
+		}
+		if !dup {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // repeatPlaceholders returns n additional ",?" placeholders for an IN clause.
 func repeatPlaceholders(n int) string {
 	out := ""
@@ -258,6 +315,107 @@ func repeatPlaceholders(n int) string {
 		out += ",?"
 	}
 	return out
+}
+
+// addressBookName returns ONLY a name the user themselves put on this contact —
+// full_name or first_name, never push_name. It's the authoritative tier: if
+// this returns something, it is what the person should be displayed as.
+//
+// Used by the repair passes, which need to tell "we now know a better name"
+// from "we know some name". Uncached: it runs in one-shot backfills, not on the
+// message path.
+func (s *sessionStore) addressBookName(jid types.JID) string {
+	if s == nil || s.db == nil || jid.User == "" {
+		return ""
+	}
+	ordered := orderedContactJIDs(s, jid.ToNonAD())
+	args := make([]any, len(ordered))
+	for i, j := range ordered {
+		args[i] = j
+	}
+	q := `SELECT their_jid, full_name, first_name FROM whatsmeow_contacts
+	      WHERE their_jid IN (?` + repeatPlaceholders(len(ordered)-1) + `)`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	type row [2]string
+	byJID := map[string]row{}
+	for rows.Next() {
+		var who string
+		var full, first sql.NullString
+		if rows.Scan(&who, &full, &first) != nil {
+			continue
+		}
+		byJID[who] = row{full.String, first.String}
+	}
+	for col := 0; col < 2; col++ {
+		for _, j := range ordered {
+			if v := byJID[j][col]; v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// phoneContacts lists every phone-form address in whatsmeow's contact table.
+// These are the inputs for a LID-mapping backfill: WhatsApp's usync takes a
+// phone JID and answers with that person's LID.
+func (s *sessionStore) phoneContacts() []string {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT their_jid FROM whatsmeow_contacts
+		WHERE their_jid LIKE '%@s.whatsapp.net'`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil && j != "" {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// unmappedPhoneContacts is phoneContacts minus the ones the lid map already
+// knows, so a re-run only asks about what's still missing.
+func (s *sessionStore) unmappedPhoneContacts() []string {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT DISTINCT c.their_jid FROM whatsmeow_contacts c
+		WHERE c.their_jid LIKE '%@s.whatsapp.net'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM whatsmeow_lid_map m
+		    WHERE m.pn = replace(c.their_jid, '@s.whatsapp.net', ''))`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var j string
+		if rows.Scan(&j) == nil && j != "" {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// lidMapCount is the number of LID<->phone pairs currently stored.
+func (s *sessionStore) lidMapCount() int {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM whatsmeow_lid_map`).Scan(&n)
+	return n
 }
 
 // logSessionStoreState reports what the direct-table resolver found at startup,

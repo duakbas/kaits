@@ -131,7 +131,9 @@ func (c *Client) userStatus(ctx context.Context, canon, raw types.JID) string {
 func (c *Client) contactInfoFor(jid types.JID) types.ContactInfo {
 	var out types.ContactInfo
 	seen := map[types.JID]bool{}
-	for _, j := range []types.JID{jid.ToNonAD(), c.canonicalJID(jid), c.sess.counterpart(jid.ToNonAD())} {
+	// Phone form first: that's the address book's key, so its names should win
+	// over whatever the LID row happens to carry (same ordering as contactName).
+	for _, j := range []types.JID{c.canonicalJID(jid), jid.ToNonAD(), c.sess.counterpart(jid.ToNonAD())} {
 		if j.IsEmpty() || seen[j] {
 			continue
 		}
