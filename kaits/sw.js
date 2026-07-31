@@ -91,11 +91,13 @@ function showSummaryNotification() {
 }
 
 function notify(s, tag, data) {
+  // Same minimal option set as the app's osNotify, for the same reason: on
+  // Gecko 48 the fuller version vibrated without rendering anything. tag and
+  // data earn their place (per-chat replacement, and knowing which chat to
+  // open on tap); icon and renotify don't.
   return self.registration.showNotification(s.title || "Kaits", {
     body: s.body || "New message",
-    icon: "/icons/icon-112.png",
     tag: tag || "wa-generic",
-    renotify: true,
     data: data || {}
   });
 }
