@@ -648,3 +648,14 @@ header .status.closed { color: var(--danger); }
   margin-top: 8px;
   line-height: 1.35;
 }
+
+/* Off-screen, unfocusable-looking, but genuinely focusable. Parking focus here
+   ends the input method's editing session. */
+#focus-sink {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  outline: none;
+}
