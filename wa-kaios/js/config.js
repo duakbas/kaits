@@ -25,5 +25,18 @@ window.CONFIG = {
   // Buzz when a message arrives in the chat you already have open. Off by
   // default: you're looking straight at it, so the buzz tells you nothing the
   // screen didn't. Flip it if you'd rather feel every message.
-  VIBRATE_IN_OPEN_CHAT: false
+  VIBRATE_IN_OPEN_CHAT: false,
+
+  // How the app alerts you. "auto" follows the phone's own notification
+  // profile — silent mode silences the beep, vibration-off stops the buzz —
+  // and falls back to the values below when the phone won't tell us (always
+  // the case in a desktop browser, and possibly on the phone, since reading
+  // settings is permission-gated).
+  //
+  // "always" and "never" ignore the phone and do what they say.
+  //
+  // Fallbacks when nothing is known: vibrate yes, beep no. A missed buzz beats
+  // a browser tab beeping at you in a meeting.
+  NOTIFY_VIBRATE: "auto",
+  NOTIFY_SOUND: "auto"
 };

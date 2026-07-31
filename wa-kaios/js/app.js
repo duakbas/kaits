@@ -2050,10 +2050,110 @@
   var pendingNotif = null;   // {jid, title, body} — survives the bar hiding
   var notifTimer = null;
 
+  // ---- alerting: beep, buzz, or both, following the phone's own profile ----
+  //
+  // A phone already knows whether its owner wants noise: that's what the ringer
+  // profile is for. Rather than inventing a second setting the user has to keep
+  // in sync, ask the device via mozSettings and follow it. Two keys matter —
+  // audio.volume.notification (0 means silenced) and vibration.enabled.
+  //
+  // Everything here degrades to the config values, because mozSettings is
+  // absent in a desktop browser and MAY be refused on the phone: the Settings
+  // API is permission-gated and a plain hosted app might not be granted it.
+  // That's unverified on real hardware, so nothing depends on it working.
+  var phoneProfile = { sound: null, vibrate: null }; // null = phone didn't say
+
+  function readPhoneProfile() {
+    var ms = navigator.mozSettings;
+    if (!ms || !ms.createLock) return;
+    try {
+      var lock = ms.createLock();
+      var vol = lock.get("audio.volume.notification");
+      vol.onsuccess = function () {
+        var v = vol.result["audio.volume.notification"];
+        if (typeof v === "number") phoneProfile.sound = v > 0;
+      };
+      var vib = lock.get("vibration.enabled");
+      vib.onsuccess = function () {
+        var v = vib.result["vibration.enabled"];
+        if (typeof v === "boolean") phoneProfile.vibrate = v;
+      };
+      // Follow the profile as it changes, so flipping the phone to silent
+      // takes effect without restarting the app.
+      if (ms.addObserver) {
+        ms.addObserver("audio.volume.notification", function (e) {
+          if (typeof e.settingValue === "number") phoneProfile.sound = e.settingValue > 0;
+        });
+        ms.addObserver("vibration.enabled", function (e) {
+          if (typeof e.settingValue === "boolean") phoneProfile.vibrate = e.settingValue;
+        });
+      }
+    } catch (e) { /* not permitted — the config values stand */ }
+  }
+  readPhoneProfile();
+
+  // mode is "auto" | "always" | "never"; phoneSays is true/false/null.
+  // "auto" follows the phone when it answers, and otherwise uses fallback —
+  // which is why the default fallback for sound is OFF and for vibration is ON.
+  // A missed buzz is a smaller problem than a dev build beeping in a meeting.
+  function wants(mode, phoneSays, fallback) {
+    if (mode === "always") return true;
+    if (mode === "never") return false;
+    return phoneSays === null ? fallback : phoneSays;
+  }
+
   function buzz() {
-    if (navigator.vibrate) {
+    var cfg = window.CONFIG || {};
+    if (wants(cfg.NOTIFY_VIBRATE || "auto", phoneProfile.vibrate, true) &&
+        navigator.vibrate) {
       try { navigator.vibrate(120); } catch (e) { /* not permitted; ignore */ }
     }
+    if (wants(cfg.NOTIFY_SOUND || "auto", phoneProfile.sound, false)) {
+      beep();
+    }
+  }
+
+  // beep plays a short two-tone chirp, synthesised rather than shipped as an
+  // audio file — no asset to load, no decoder to depend on, and it stays
+  // audible on a small speaker.
+  //
+  // The context is built on first use: creating one at startup keeps the audio
+  // hardware awake for a notification that may never come.
+  var audioCtx = null;
+
+  function beep() {
+    try {
+      if (!audioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        // Ask for the notification channel so the phone's own notification
+        // volume (and silent mode) governs this, instead of media volume.
+        // Privileged on Firefox OS, so it may be ignored — hence try/catch and
+        // no reliance on it.
+        try { audioCtx.mozAudioChannelType = "notification"; } catch (e) { /* fine */ }
+      }
+      // Desktop browsers start a context created without a user gesture in the
+      // "suspended" state, which makes the beep silently do nothing.
+      if (audioCtx.state === "suspended" && audioCtx.resume) audioCtx.resume();
+      chirp(audioCtx.currentTime);
+      chirp(audioCtx.currentTime + 0.13);
+    } catch (e) { /* no audio available; the vibration carries it */ }
+  }
+
+  function chirp(at) {
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    // Ramp instead of switching on and off: an abrupt gain change is a click.
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.25, at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.09);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(at);
+    osc.stop(at + 0.1);
   }
 
   // alertForMessage decides what a newly arrived message does to the UI.
@@ -2397,6 +2497,24 @@
       if (!jid) return;
       if (!chats[jid]) chats[jid] = { jid: jid, name: jid };
       openThread(jid);
+    },
+    // Dev hooks. Alerting is the one part that can't be checked by reading the
+    // code — whether the phone answers mozSettings, whether the beep is audible
+    // over a speaker — so make it triggerable on demand.
+    testAlert: function () { buzz(); },
+    testBeep: function () { beep(); },
+    alertProfile: function () {
+      return {
+        phoneSays: phoneProfile,
+        mozSettings: !!navigator.mozSettings,
+        canVibrate: !!navigator.vibrate
+      };
+    },
+    testBanner: function (title, body) {
+      pendingNotif = { jid: currentJID || "test@s.whatsapp.net",
+                       title: title || "Test chat", body: body || "A message" };
+      showNotifBar();
+      refreshNotifSoftkey();
     }
   };
 
