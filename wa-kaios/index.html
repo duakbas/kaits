@@ -21,6 +21,21 @@
       <div id="notif-body"></div>
     </div>
 
+    <!-- First-run setup: where the daemon is. Shown instead of the chat list
+         until it's been answered, and reachable later from the list. -->
+    <div id="setup" class="screen" hidden>
+      <div class="setup-head">Connect to your daemon</div>
+      <div class="setup-label">Server address</div>
+      <input id="setup-host" type="text" placeholder="192.168.1.200">
+      <div class="setup-label">Token</div>
+      <input id="setup-token" type="text" placeholder="WAD_TOKEN">
+      <div class="setup-preview" id="setup-preview"></div>
+      <div class="setup-hint">
+        Your computer's address on this network, and the token you started
+        wad with. Port 8080 is assumed if you don't give one.
+      </div>
+    </div>
+
     <!-- chat list -->
     <div id="chatlist" class="screen"></div>
 
@@ -116,6 +131,7 @@
 
   <!-- load order matters: config -> wire -> nav -> app -->
   <script src="js/config.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/wire.js"></script>
   <script src="js/nav.js"></script>
   <script src="js/app.js"></script>

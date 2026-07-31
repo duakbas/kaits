@@ -23,21 +23,15 @@ BUILD="$HERE/build"
 STAGE="$BUILD/app"
 OUT="$BUILD/kaits.zip"
 
-# The phone is not your laptop: localhost inside a packaged app means the phone
-# itself, so the socket would never connect. Same class of mistake as leaving
-# the push test's catcher on its placeholder, and just as silent.
+# config.js is only a fallback now — the app asks for the daemon address on
+# first run and stores it on the phone, so the packaged default rarely matters.
+# Still worth saying out loud, because a localhost default means the setup
+# screen is the ONLY way the app will ever connect.
 DAEMON="$(sed -n 's/.*DAEMON_WS:[[:space:]]*"\([^"]*\)".*/\1/p' "$HERE/js/config.js" | head -1)"
 case "$DAEMON" in
   *localhost*|*127.0.0.1*)
-    echo "config.js points DAEMON_WS at $DAEMON"
-    echo
-    echo "From the phone that means the phone. Set it to your machine's LAN"
-    echo "address (or a public wss:// host) before packaging."
-    exit 1
-    ;;
-  "")
-    echo "couldn't read DAEMON_WS from js/config.js — has its shape changed?"
-    exit 1
+    echo "note: config.js still defaults to $DAEMON"
+    echo "      that's fine — the app asks for the address on first run."
     ;;
 esac
 
@@ -61,6 +55,6 @@ else
   echo "PROBLEM: manifest.webapp is not at the zip root; the portal will reject this."
   exit 1
 fi
-echo "daemon: $DAEMON"
+echo "default daemon in config.js: ${DAEMON:-unset} (overridden by on-phone setup)"
 echo
-echo "The zip contains js/config.js, including WAD_TOKEN. Treat it as a secret."
+echo "The token is entered on the phone now, so the zip carries no secret."

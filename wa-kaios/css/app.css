@@ -609,3 +609,42 @@ header .status.closed { color: var(--danger); }
 
 /* an unsent draft, shown in place of the chat preview */
 .chat-prev.draft { color: var(--danger); font-style: italic; }
+
+/* ---- first-run setup ---- */
+#setup { padding: 8px; }
+.setup-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.setup-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+#setup input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 6px;
+  outline: none;
+  -moz-user-select: text;
+  user-select: text;
+}
+#setup input.focused { border-color: var(--accent); }
+.setup-preview {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: 8px;
+  word-break: break-all;
+}
+.setup-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 8px;
+  line-height: 1.35;
+}

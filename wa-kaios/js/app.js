@@ -160,6 +160,18 @@
       }
       elList.appendChild(row);
     });
+
+    // Settings sits at the very bottom, past every chat. A LAN address changes
+    // with DHCP, so there has to be a way back to it — but it's needed once in
+    // a blue moon, so it costs nothing to reach it by pressing Down a lot.
+    var cog = document.createElement("div");
+    cog.className = "chat-row archived-entry";
+    cog.setAttribute("data-nav", "");
+    cog.setAttribute("data-settings", "1");
+    cog.textContent = "⚙  Settings";
+    cog.onclick = function () { enterSetupScreen(enterListScreen); };
+    elList.appendChild(cog);
+
     scheduleAvatarLoad();
   }
 
@@ -260,6 +272,7 @@
         if (!el) return;
         if (el.getAttribute("data-archived")) { openArchived(); return; }
         if (el.getAttribute("data-archived-back")) { closeArchived(); return; }
+        if (el.getAttribute("data-settings")) { enterSetupScreen(enterListScreen); return; }
         openThread(el.getAttribute("data-jid"));
       },
       onSoftLeft: enterSearchScreen,
@@ -2621,6 +2634,69 @@
     }
   };
 
-  enterListScreen();
-  W.connect();
+  // ---------- first-run setup ----------
+  //
+  // Where the daemon lives is the one thing the app can't guess and can't ship
+  // baked in: a LAN address changes with DHCP, and a token in the package would
+  // travel inside every zip uploaded to a submission portal. So ask once, store
+  // it on the phone, and offer a way back in when the address moves.
+  var elSetup = document.getElementById("setup");
+  var elSetupHost = document.getElementById("setup-host");
+  var elSetupToken = document.getElementById("setup-token");
+  var elSetupPreview = document.getElementById("setup-preview");
+
+  function enterSetupScreen(returnTo) {
+    var cur = Settings.current();
+    elSetupHost.value = cur.host || "";
+    elSetupToken.value = cur.token || "";
+    updateSetupPreview();
+    show(elSetup);
+
+    var field = 0;                       // 0 = host, 1 = token
+    var fields = [elSetupHost, elSetupToken];
+    function focusField(i) {
+      field = (i + fields.length) % fields.length;
+      fields.forEach(function (f) { f.className = ""; });
+      fields[field].className = "focused";
+      fields[field].focus();
+    }
+
+    function saveAndGo() {
+      var saved = Settings.save(elSetupHost.value, elSetupToken.value);
+      if (!saved) { toast("Enter the server address"); return; }
+      // Reconnect against the new address rather than waiting for a retry —
+      // the old socket is pointed at somewhere that may no longer exist.
+      W.reconnect();
+      enterListScreen();
+    }
+
+    Nav.setScreen({
+      onUp: function () { focusField(field - 1); return true; },
+      onDown: function () { focusField(field + 1); return true; },
+      onEnter: saveAndGo,
+      onSoftRight: saveAndGo,
+      // No way out on first run: without an address there's nothing to show.
+      onSoftLeft: returnTo || null,
+      onBack: returnTo || null
+    });
+    Nav.setSoftkeys(returnTo ? "Cancel" : "", "SAVE", "Save");
+    focusField(0);
+  }
+
+  function updateSetupPreview() {
+    var url = Settings.preview(elSetupHost.value);
+    elSetupPreview.textContent = url ? "→ " + url : "";
+  }
+  elSetupHost.addEventListener("input", updateSetupPreview);
+
+  window.App.setup = function () { enterSetupScreen(enterListScreen); };
+
+  // Boot. An unconfigured app has nowhere to connect, so it asks first and
+  // connects afterwards.
+  if (Settings.configured()) {
+    enterListScreen();
+    W.connect();
+  } else {
+    enterSetupScreen(null);
+  }
 })();

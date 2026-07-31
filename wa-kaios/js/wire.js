@@ -170,6 +170,22 @@
   window.Wire = {
     T: T,
     connect: connect,
+    // reconnect drops the current socket and dials again, for when the daemon's
+    // ADDRESS changed rather than the connection failing — after setup, the old
+    // socket points somewhere that may not exist any more, and waiting for its
+    // backoff to expire would leave the app looking broken.
+    reconnect: function () {
+      if (ws) {
+        // Silence the close handler first, or it schedules a retry against the
+        // socket we're deliberately discarding.
+        ws.onclose = null;
+        ws.onerror = null;
+        try { ws.close(); } catch (e) {}
+        ws = null;
+      }
+      backoff = C.RECONNECT_MIN;
+      connect();
+    },
     send: send,
     on: function (type, fn) {
       (listeners[type] = listeners[type] || []).push(fn);
