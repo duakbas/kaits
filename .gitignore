@@ -15,3 +15,5 @@ wad/wad
 # Push test: a capability URL that can wake the phone.
 endpoint.txt
 pushtest/build/
+__pycache__/
+*.pyc

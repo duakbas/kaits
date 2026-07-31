@@ -21,8 +21,11 @@
 <script>
 // The catcher on your computer. The phone can't show you a 200-character
 // endpoint URL in a way you'd ever retype, so it posts it instead.
-// Put your computer's LAN IP here — not localhost, that's the phone itself.
-var CATCHER = "http://192.168.1.10:9999";
+//
+// Left as a placeholder on purpose: package.sh substitutes the real address at
+// build time, so there's nothing to remember to edit. Only change this by hand
+// if you're serving the hosted layout straight from the repo.
+var CATCHER = "";
 
 var logEl = document.getElementById("log");
 function log(msg, cls) {
@@ -84,8 +87,8 @@ function subscribe(reg) {
 }
 
 function sendToCatcher(ep) {
-  if (!CATCHER || CATCHER.indexOf("192.168.1.10") === 0) {
-    log("(set CATCHER to your computer's IP to have this sent automatically)");
+  if (!CATCHER) {
+    log("(no catcher address baked in — the endpoint is above, transcribe it)");
     return;
   }
   return fetch(CATCHER + "/endpoint", { method: "POST", body: ep })

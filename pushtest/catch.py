@@ -63,8 +63,14 @@ def serve():
     ip = lan_ip()
     print("listening on port %d" % PORT)
     print("set CATCHER in pushtest/index.html to:  http://%s:%d" % (ip, PORT))
-    print("waiting for the phone…")
-    http.server.HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    print("waiting for the phone…  (Ctrl-C to stop)")
+    server = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
 
 
 def ring():

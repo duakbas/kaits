@@ -10,9 +10,31 @@
 # root; a packaged app is its own root, so the manifest is rewritten here rather
 # than kept in two places that drift.
 #
-#   ./pushtest/package.sh        -> pushtest/build/pushtest.zip
+# The catcher address is substituted at BUILD time rather than edited into
+# index.html, so the source keeps its placeholder and there is no "did I
+# remember to change it" step to forget. Forgetting is silent and costs you a
+# whole upload-install-open cycle to discover, so this refuses to build without
+# one.
+#
+#   ./pushtest/package.sh 192.168.1.200      -> pushtest/build/pushtest.zip
+#   ./pushtest/package.sh http://host:9999   (full URL also fine)
 
 set -euo pipefail
+
+CATCHER="${1:-}"
+if [ -z "$CATCHER" ]; then
+  echo "usage: $0 <catcher-ip-or-url>"
+  echo
+  echo "The phone posts its push endpoint there. Run 'python3 pushtest/catch.py"
+  echo "serve' first — it prints the address to use."
+  exit 1
+fi
+# Bare IP or host:port gets the scheme and default port filled in.
+case "$CATCHER" in
+  http://*|https://*) ;;
+  *:*)                CATCHER="http://$CATCHER" ;;
+  *)                  CATCHER="http://$CATCHER:9999" ;;
+esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -23,8 +45,13 @@ OUT="$BUILD/pushtest.zip"
 rm -rf "$BUILD"
 mkdir -p "$STAGE/icons"
 
-cp "$HERE/index.html" "$STAGE/"
-cp "$HERE/sw.js"      "$STAGE/"
+# Substitute the catcher address into the copy, never the source.
+sed 's|^var CATCHER = .*|var CATCHER = "'"$CATCHER"'";|' "$HERE/index.html" > "$STAGE/index.html"
+if ! grep -q "var CATCHER = \"$CATCHER\";" "$STAGE/index.html"; then
+  echo "could not substitute CATCHER — has the declaration in index.html changed?"
+  exit 1
+fi
+cp "$HERE/sw.js" "$STAGE/"
 cp "$ROOT/wa-kaios/icons/icon-56.png"  "$STAGE/icons/"
 cp "$ROOT/wa-kaios/icons/icon-112.png" "$STAGE/icons/"
 
@@ -76,5 +103,6 @@ else
   exit 1
 fi
 echo
-echo "Before uploading, check CATCHER is set in pushtest/index.html — the phone"
-echo "posts its push endpoint there, and it is baked into the package."
+echo "catcher baked in: $CATCHER"
+echo "Make sure 'python3 pushtest/catch.py serve' is running there when you open"
+echo "the app on the phone."
