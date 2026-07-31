@@ -15,12 +15,13 @@
     ERROR: "error",
     PROFILE: "profile", CHATUPDATE: "chatupdate",
     REACTION: "reaction", STATUS: "status", TYPING: "typing",
+    SEARCHRESULT: "searchresult",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
-    SENDREACTION: "sendreaction",
+    SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };
@@ -30,6 +31,7 @@
   var listeners = {};   // type -> [fn]
   var pendingFrames = [];  // frames received before a handler existed
   var statusFn = null;  // called with "connecting"|"open"|"closed"
+  var queuedFn = null;  // called with the number of frames waiting to go out
   var reqId = 0;
 
   function emit(type, data) {
@@ -63,6 +65,9 @@
     ws.onopen = function () {
        backoff = C.RECONNECT_MIN;
        setStatus("open");
+       // Anything typed while offline goes out before we ask for state, so the
+       // chat list we get back already reflects it.
+       flushOutbox();
        setTimeout(function () { if (ws && ws.readyState === WebSocket.OPEN) send(T.GETCHATS, null); }, 400);
      };
 
@@ -89,6 +94,51 @@
     backoff = Math.min(backoff * 2, C.RECONNECT_MAX);
   }
 
+  // ---- outbox ----
+  // Frames that matter are queued while the socket is down and flushed on
+  // reconnect. Without this they were logged and thrown away: you'd type a
+  // message, the composer would clear, and it would simply never exist. On a
+  // phone with real signal that isn't an edge case.
+  //
+  // Only frames worth replaying are queued. Re-sending a stale "getchats" or a
+  // typing indicator from two minutes ago is noise at best, so those are
+  // dropped as before.
+  var QUEUEABLE = {
+    send: true, delete: true, forward: true, chataction: true,
+    savecontact: true, sendreaction: true, markread: true
+  };
+  var outbox = [];
+  var OUTBOX_MAX = 50;
+  var OUTBOX_KEY = "wa_outbox";
+
+  // Best-effort persistence so a refresh mid-outage doesn't lose the queue.
+  // localStorage may be absent or full on KaiOS, and that must never break
+  // sending, so every access is guarded.
+  function saveOutbox() {
+    try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox)); } catch (e) {}
+  }
+  function loadOutbox() {
+    try {
+      var raw = localStorage.getItem(OUTBOX_KEY);
+      if (raw) outbox = JSON.parse(raw) || [];
+    } catch (e) { outbox = []; }
+  }
+  loadOutbox();
+
+  function flushOutbox() {
+    if (!outbox.length || !ws || ws.readyState !== WebSocket.OPEN) return;
+    var pending = outbox.slice();
+    outbox = [];
+    saveOutbox();
+    console.log("wire: flushing " + pending.length + " queued frame(s)");
+    for (var i = 0; i < pending.length; i++) {
+      try { ws.send(JSON.stringify(pending[i])); }
+      catch (e) { outbox.push(pending[i]); }
+    }
+    if (outbox.length) saveOutbox();
+    if (queuedFn) queuedFn(outbox.length);
+  }
+
   // send(type, dataObj) -> returns the request id (for correlating replies)
   function send(type, data) {
     var id = String(++reqId);
@@ -96,6 +146,16 @@
     if (data !== null && data !== undefined) frame.data = data;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(frame));
+      return id;
+    }
+    if (QUEUEABLE[type]) {
+      // Drop the oldest rather than grow without bound — a queue so long it
+      // can't be delivered is worse than losing the stalest entry.
+      outbox.push(frame);
+      while (outbox.length > OUTBOX_MAX) outbox.shift();
+      saveOutbox();
+      console.warn("wire: queued while offline:", type);
+      if (queuedFn) queuedFn(outbox.length);
     } else {
       console.warn("wire: send while not open, dropped:", type);
     }
@@ -116,6 +176,8 @@
       pendingFrames = still;
     },
     onStatus: function (fn) { statusFn = fn; },
+    onQueued: function (fn) { queuedFn = fn; },
+    queuedCount: function () { return outbox.length; },
     isOpen: function () { return ws && ws.readyState === WebSocket.OPEN; }
   };
 })();

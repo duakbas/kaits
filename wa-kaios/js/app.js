@@ -48,25 +48,60 @@
   var elPromptTitle = document.getElementById("prompt-title");
   var elPromptInput = document.getElementById("prompt-input");
   var elPromptHint = document.getElementById("prompt-hint");
+  var elViewer = document.getElementById("viewer");
+  var elViewerImg = document.getElementById("viewer-img");
+  var elViewerCap = document.getElementById("viewer-caption");
+  var elSearch = document.getElementById("search");
+  var elSearchInput = document.getElementById("search-input");
+  var elSearchResults = document.getElementById("search-results");
 
   function show(el) {
-    [elList, elThread, elCall, elProfile].forEach(function (s) { s.hidden = true; });
+    [elList, elThread, elCall, elProfile, elSearch].forEach(function (s) { s.hidden = true; });
     el.hidden = false;
   }
 
   // ---------- chat list screen ----------
+  // showArchived is a separate view, entered by pressing Up from the topmost
+  // chat — the same gesture WhatsApp uses, and it keeps archived chats out of
+  // the way without spending a screen on them.
+  var showArchived = false;
+
+  function archivedCount() {
+    var n = 0;
+    for (var k in chats) if (chats[k] && chats[k].archived) n++;
+    return n;
+  }
+
   function renderChatList() {
-    var arr = Object.keys(chats).map(function (j) { return chats[j]; });
+    var arr = Object.keys(chats).map(function (j) { return chats[j]; })
+      .filter(function (c) { return !!c.archived === showArchived; });
     arr.sort(function (a, b) {
-      // Archived sink to the bottom, pinned float to the top, rest by recency.
-      // (A separate "Archived" section like real WhatsApp would be nicer; this
-      // keeps them out of the way without another screen.)
-      if (!!a.archived !== !!b.archived) return a.archived ? 1 : -1;
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return (b.ts || 0) - (a.ts || 0);
     });
 
     elList.innerHTML = "";
+
+    // The archived entry only appears once you've pressed Up past the top, so
+    // it costs nothing until wanted.
+    if (!showArchived && archivedRevealed && archivedCount()) {
+      var arch = document.createElement("div");
+      arch.className = "chat-row archived-entry";
+      arch.setAttribute("data-nav", "");
+      arch.setAttribute("data-archived", "1");
+      arch.textContent = "🗄  Archived (" + archivedCount() + ")";
+      arch.onclick = openArchived;
+      elList.appendChild(arch);
+    }
+    if (showArchived) {
+      var back = document.createElement("div");
+      back.className = "chat-row archived-entry";
+      back.setAttribute("data-nav", "");
+      back.setAttribute("data-archived-back", "1");
+      back.textContent = "←  Back to chats";
+      back.onclick = closeArchived;
+      elList.appendChild(back);
+    }
     if (!arr.length) {
       var empty = document.createElement("div");
       empty.className = "empty";
@@ -174,13 +209,46 @@
     }
   }
 
+  var archivedRevealed = false; // the archived row is shown after an Up at the top
+
+  function openArchived() {
+    showArchived = true;
+    archivedRevealed = false;
+    enterListScreen();
+  }
+  function closeArchived() {
+    showArchived = false;
+    archivedRevealed = false;
+    enterListScreen();
+  }
+
   function enterListScreen() {
     stopTyping();
     currentJID = null;
     show(elList);
     Nav.setScreen({
       list: elList,
-      onEnter: function (e, el) { if (el) openThread(el.getAttribute("data-jid")); },
+      onUp: function (e) {
+        // At the very top, one more Up reveals the archived entry rather than
+        // doing nothing.
+        var el = Nav.focusedEl();
+        var first = elList.querySelector("[data-nav]");
+        if (el && el === first && !showArchived && archivedCount() && !archivedRevealed) {
+          archivedRevealed = true;
+          renderChatList();
+          Nav.refreshFocus();
+          e.preventDefault();
+          return;
+        }
+        return undefined; // fall through to Nav's own movement
+      },
+      onEnter: function (e, el) {
+        if (!el) return;
+        if (el.getAttribute("data-archived")) { openArchived(); return; }
+        if (el.getAttribute("data-archived-back")) { closeArchived(); return; }
+        openThread(el.getAttribute("data-jid"));
+      },
+      onSoftLeft: enterSearchScreen,
       // Right on a chat row opens its pin/mute/archive/delete menu. The right
       // softkey does the same, since Right isn't discoverable on its own.
       onRight: function () {
@@ -192,7 +260,7 @@
         if (el) openChatMenu(el.getAttribute("data-jid"));
       }
     });
-    Nav.setSoftkeys("", "SELECT", "Options");
+    Nav.setSoftkeys("Search", "SELECT", "Options");
     renderChatList();
   }
 
@@ -298,6 +366,9 @@
     // Opening a chat is the read signal — tell WhatsApp, so the sender's ticks
     // turn blue. The daemon works out which messages are still unread.
     W.send(W.T.MARKREAD, { jid: jid });
+    // WhatsApp only sends presence for people you've subscribed to, and the
+    // subscription resets on reconnect — so ask each time the chat opens.
+    if (!(chats[jid] && chats[jid].group)) W.send(W.T.WATCH, { jid: jid });
     renderThread();
     elInput.value = "";
     enterComposeMode();
@@ -310,6 +381,7 @@
     renderThread(); // clear any bubble highlight
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
+      onLeft: openAttachMenu,         // attachments live off Left from the composer
       onBack: enterListScreen,
       onSoftLeft: enterListScreen,    // "Back"
       onSoftRight: sendCurrent,       // "Send"
@@ -383,6 +455,46 @@
     return true;
   }
 
+  // openAttachMenu offers the attachment kinds. Reuses the chat-menu overlay
+  // rather than adding another screen.
+  function openAttachMenu() {
+    if (!currentJID) return;
+    elChatMenuTitle.textContent = "Attach";
+    elChatMenuList.innerHTML = "";
+    [
+      { action: "photo", label: "📷  Photo" },
+      { action: "file", label: "📎  File" }
+    ].forEach(function (it) {
+      var row = document.createElement("div");
+      row.className = "menu-item";
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-attach", it.action);
+      row.textContent = it.label;
+      elChatMenuList.appendChild(row);
+    });
+    elChatMenu.hidden = false;
+    var close = function () { elChatMenu.hidden = true; enterComposeMode(); };
+    Nav.setScreen({
+      list: elChatMenu,
+      onEnter: function (e, el) {
+        if (!el) return;
+        elChatMenu.hidden = true;
+        pickAndSend(el.getAttribute("data-attach") === "photo" ? "image" : "doc");
+        enterComposeMode();
+      },
+      onSoftLeft: close, onBack: close,
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (el) {
+          elChatMenu.hidden = true;
+          pickAndSend(el.getAttribute("data-attach") === "photo" ? "image" : "doc");
+          enterComposeMode();
+        }
+      }
+    });
+    Nav.setSoftkeys("Cancel", "", "OK");
+  }
+
   // ---------- action menu ----------
   function openActionMenu() {
     var msgs = threads[currentJID] || [];
@@ -396,6 +508,9 @@
     // group; deleting for everyone only works on your own.
     var items = [];
     if (m.kind === "location") items.push({ action: "openmap", label: "Open in maps" });
+    if ((m.kind === "image" || m.kind === "sticker") && m.media) {
+      items.push({ action: "view", label: "View photo" });
+    }
     items.push({ action: "reply", label: "Reply" });
     var mine = myReactionTo(m);
     items.push({ action: "react", label: mine ? "Change reaction " + mine : "React" });
@@ -486,6 +601,10 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "view") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openViewer(m);
     } else if (action === "openmap") {
       menuOpen = false;
       elMenu.hidden = true;
@@ -567,11 +686,27 @@
 
   function refreshTypingUI(chat) {
     if (currentJID === chat) {
-      var label = typingLabel(chat);
+      // Typing outranks presence: it's the more immediate fact.
+      var label = typingLabel(chat) || presenceLabel(chat);
       var c = chats[chat] || {};
       elThreadTitle.textContent = label ? (c.name || chat) + " — " + label : (c.name || chat);
     }
     if (!elList.hidden) renderChatList();
+  }
+
+  // presenceLabel renders "online" or "last seen ...". A zero lastseen means
+  // the contact hides it, which is different from "a long time ago" — so we
+  // show nothing rather than inventing a date.
+  function presenceLabel(chat) {
+    var p = presence[chat];
+    if (!p) return "";
+    if (p.online) return "online";
+    if (!p.lastseen) return "";
+    var d = new Date(p.lastseen * 1000);
+    var days = daysBetween(d, new Date());
+    if (days === 0) return "last seen " + timeOf(p.lastseen);
+    if (days === 1) return "last seen yesterday";
+    return "last seen " + d.getDate() + " " + MONTH_NAMES[d.getMonth()];
   }
 
   // ---------- outgoing typing ----------
@@ -1422,6 +1557,206 @@
       .map(function (w) { return w.charAt(0).toUpperCase(); }).join("") || "?";
   }
 
+  // ---------- full-screen media viewer ----------
+  // Tapping a photo should show it, not download it. Left/Right steps through
+  // the other images in the same chat so browsing doesn't mean backing out to
+  // the thread between every one.
+  var viewerList = [];
+  var viewerIdx = 0;
+
+  function openViewer(m) {
+    var msgs = threads[currentJID] || [];
+    viewerList = msgs.filter(function (x) {
+      return (x.kind === "image" || x.kind === "sticker") && x.media && !x.deleted;
+    });
+    viewerIdx = 0;
+    for (var i = 0; i < viewerList.length; i++) {
+      if (viewerList[i].msgid === m.msgid) { viewerIdx = i; break; }
+    }
+    if (!viewerList.length) { toast("Nothing to show"); return; }
+    showViewerAt(viewerIdx);
+
+    elViewer.hidden = false;
+    Nav.setScreen({
+      onLeft: function () { stepViewer(-1); },
+      onRight: function () { stepViewer(1); },
+      onUp: function () { stepViewer(-1); },
+      onDown: function () { stepViewer(1); },
+      onSoftLeft: closeViewer,
+      onBack: closeViewer,
+      onSoftRight: function () { saveCurrentImage(); },
+      onEnter: function () { saveCurrentImage(); }
+    });
+    Nav.setSoftkeys("Close", "", "Save");
+  }
+
+  function showViewerAt(i) {
+    var m = viewerList[i];
+    if (!m) return;
+    elViewerImg.src = mediaBase() + m.media;
+    var caption = m.text || "";
+    var pos = viewerList.length > 1 ? (i + 1) + "/" + viewerList.length : "";
+    elViewerCap.textContent = [pos, caption].filter(Boolean).join("  ");
+  }
+
+  function stepViewer(delta) {
+    var next = viewerIdx + delta;
+    if (next < 0 || next >= viewerList.length) return;
+    viewerIdx = next;
+    showViewerAt(viewerIdx);
+  }
+
+  function closeViewer() {
+    elViewer.hidden = true;
+    elViewerImg.src = "";
+    enterSelectMode();
+    renderThread();
+  }
+
+  // Saving hands the image to the phone rather than triggering a browser
+  // download — on KaiOS a "download" isn't a meaningful concept.
+  function saveCurrentImage() {
+    var m = viewerList[viewerIdx];
+    if (!m) return;
+    var url = mediaBase() + m.media;
+    if (window.MozActivity) {
+      try {
+        new window.MozActivity({ name: "view", data: { type: "url", url: url } });
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    window.open(url, "_blank");
+  }
+
+  // ---------- sending attachments ----------
+  // The bytes come from the phone's own Camera/Gallery via a pick activity,
+  // which is the only way to reach them — an app can't browse the filesystem.
+  // On desktop there's a hidden file input instead, so this is testable.
+  function pickAndSend(kind) {
+    if (!currentJID) return;
+    if (window.MozActivity) {
+      try {
+        var act = new window.MozActivity({
+          name: "pick",
+          data: { type: kind === "image" ? ["image/jpeg", "image/png"] : ["*/*"] }
+        });
+        act.onsuccess = function () {
+          var blob = this.result && this.result.blob;
+          if (blob) blobToBase64AndSend(blob, kind, this.result.name || "");
+          else toast("Nothing picked");
+        };
+        act.onerror = function () { toast("Couldn't open the picker"); };
+        return;
+      } catch (e) { /* fall through to the desktop path */ }
+    }
+    desktopFilePick(kind);
+  }
+
+  // Desktop fallback: a throwaway file input, so attachments can be exercised
+  // in a browser during development.
+  function desktopFilePick(kind) {
+    var input = document.createElement("input");
+    input.type = "file";
+    input.accept = kind === "image" ? "image/*" : "*/*";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.onchange = function () {
+      var f = input.files && input.files[0];
+      if (f) blobToBase64AndSend(f, kind, f.name || "");
+      document.body.removeChild(input);
+    };
+    input.click();
+  }
+
+  function blobToBase64AndSend(blob, kind, filename) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      // FileReader gives a data: URL; the daemon strips the prefix, but send
+      // the payload only so the frame isn't needlessly larger.
+      var out = String(reader.result || "");
+      var comma = out.indexOf(",");
+      var b64 = comma >= 0 ? out.slice(comma + 1) : out;
+      toast("Sending…");
+      W.send(W.T.SEND, {
+        chat: currentJID, kind: kind, media: b64,
+        mime: blob.type || "", filename: filename,
+        text: "", quoted: replyingTo ? replyingTo.msgid : ""
+      });
+      clearReply();
+    };
+    reader.onerror = function () { toast("Couldn't read that file"); };
+    reader.readAsDataURL(blob);
+  }
+
+  // ---------- search ----------
+  var searchDebounce = null;
+
+  function enterSearchScreen() {
+    show(elSearch);
+    elSearchResults.innerHTML = "";
+    elSearchInput.value = "";
+    Nav.setScreen({
+      list: elSearch,
+      onSoftLeft: enterListScreen,
+      onBack: enterListScreen,
+      onEnter: function (e, el) {
+        // Enter on a result opens its chat; Enter in the box just searches.
+        if (el && el.getAttribute("data-jid")) {
+          openThread(el.getAttribute("data-jid"));
+        } else {
+          runSearch();
+        }
+      },
+      onSoftRight: runSearch
+    });
+    Nav.setSoftkeys("Back", "", "Search");
+    setTimeout(function () { elSearchInput.focus(); }, 0);
+  }
+
+  function runSearch() {
+    var q = elSearchInput.value.trim();
+    if (q.length < 2) { toast("Type at least 2 characters"); return; }
+    W.send(W.T.SEARCH, { q: q, limit: 60 });
+  }
+
+  function scheduleSearch() {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    // Wait for a pause in typing: every keystroke scanning the history would
+    // be wasteful, and on a keypad each character takes a moment anyway.
+    searchDebounce = setTimeout(runSearch, 500);
+  }
+
+  function renderSearchResults(d) {
+    elSearchResults.innerHTML = "";
+    var results = (d && d.results) || [];
+    if (!results.length) {
+      var none = document.createElement("div");
+      none.className = "empty";
+      none.textContent = "No messages found";
+      elSearchResults.appendChild(none);
+      return;
+    }
+    results.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "search-row";
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-jid", r.chat);
+      row.onclick = function () { openThread(r.chat); };
+
+      var head = document.createElement("div");
+      head.className = "search-head";
+      head.textContent = (r.chatname || r.chat) + " · " +
+        (r.fromme ? "You" : (r.sendername || "")) + " · " + timeOf(r.ts);
+      var body = document.createElement("div");
+      body.className = "search-body";
+      body.textContent = truncate(r.text || "[" + r.kind + "]", 70);
+      row.appendChild(head);
+      row.appendChild(body);
+      elSearchResults.appendChild(row);
+    });
+    Nav.refreshFocus();
+  }
+
   // ---------- incoming call screen ----------
   function showIncomingCall(d) {
     activeCall = d;
@@ -1576,6 +1911,15 @@
     }
   });
 
+  // presence: jid -> {online, lastseen}
+  var presence = {};
+
+  W.on(W.T.PRESENCE, function (d) {
+    if (!d || !d.jid) return;
+    presence[d.jid] = { online: !d.unavailable, lastseen: d.lastseen || 0 };
+    if (currentJID === d.jid) refreshTypingUI(d.jid);
+  });
+
   W.on(W.T.TYPING, function (d) {
     if (!d || !d.chat || !d.sender) return;
     setTyping(d.chat, d.sender, d.sendername, d.state === "composing");
@@ -1602,6 +1946,10 @@
       if (arr[i].msgid === d.msgid) { arr[i].status = d.status; break; }
     }
     if (currentJID === d.chat && !menuOpen) renderThread();
+  });
+
+  W.on(W.T.SEARCHRESULT, function (d) {
+    if (!elSearch.hidden) renderSearchResults(d);
   });
 
   W.on(W.T.PROFILE, function (p) {
@@ -1648,6 +1996,30 @@
 
   W.on(W.T.ERROR, function (d) {
     console.error("daemon error:", d.code, d.msg);
+    // A failed send used to look exactly like a successful one. Say something.
+    toast(friendlyError(d));
+  });
+
+  // friendlyError turns a daemon error code into something worth reading on a
+  // 240px screen. Unknown codes fall back to the raw message, which is still
+  // better than silence.
+  function friendlyError(d) {
+    if (!d) return "Something went wrong";
+    switch (d.code) {
+      case "send": return "Message not sent";
+      case "sendmedia": return "Attachment not sent";
+      case "chataction": return "Couldn't change that chat";
+      case "delete": return "Couldn't delete";
+      case "forward": return "Couldn't forward";
+      case "reaction": return "Couldn't react";
+      case "profile": return "Couldn't load profile";
+    }
+    return (d.msg || "Something went wrong").slice(0, 60);
+  }
+
+  // Show how many messages are waiting to go out while offline.
+  W.onQueued(function (n) {
+    if (n > 0) toast(n + " message" + (n === 1 ? "" : "s") + " waiting to send");
   });
 
   W.on("deleted", function (d) {
@@ -1665,6 +2037,7 @@
   // Typing signal comes off real input events, not keydown, so D-pad and
   // softkey presses don't register as composing.
   elInput.addEventListener("input", noteTyping);
+  elSearchInput.addEventListener("input", scheduleSearch);
 
   // Scrolling to the top of a thread loads an older page. D-pad navigation goes
   // through moveSelect instead, which calls the same helper — scrollIntoView
