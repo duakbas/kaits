@@ -125,6 +125,11 @@
       </div>
     </div>
 
+    <!-- Key log, shown only when CONFIG.DEBUG_KEYS is on. There is no console
+         on the phone and no way to attach one, so when the keypad appears dead
+         this is the difference between a diagnosis and a guess. -->
+    <div id="keylog" hidden></div>
+
     <!-- Somewhere for focus to go that isn't a text field. blur() alone leaves
          KaiOS's input method attached, which swallows the D-pad: the keypad
          keeps feeding a textbox that isn't on screen any more. -->

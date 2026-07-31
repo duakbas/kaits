@@ -673,3 +673,19 @@ header .status.closed { color: var(--danger); }
 /* The softkey bar is clickable on desktop (see nav.js). No pointer exists on
    the phone, so this only ever shows up during development. */
 #softkeys span { cursor: pointer; }
+
+#keylog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;              /* just above the softkey bar */
+  z-index: 90;
+  padding: 1px 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #d9a441;
+  font-size: 10px;
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#keylog[hidden] { display: none; }
