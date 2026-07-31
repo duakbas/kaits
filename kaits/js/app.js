@@ -102,6 +102,14 @@
     if (!a || a === document.body) return;
     if (el && el.contains && el.contains(a)) return;
     try { a.blur(); } catch (e) {}
+    // Park focus on the SCREEN, not on an off-screen sink. Focusing an
+    // invisible one-pixel div ended the editing session but left the D-pad
+    // going nowhere — keys worked while an input held focus and died the
+    // moment focus moved off it. A visible, focusable container keeps the app
+    // in a state where KaiOS still routes keys to the page.
+    if (el && el.focus) {
+      try { el.focus(); return; } catch (e) {}
+    }
     if (elFocusSink) { try { elFocusSink.focus(); } catch (e) {} }
   }
 
