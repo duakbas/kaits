@@ -423,11 +423,23 @@ header .status.closed { color: var(--danger); }
   font-size: 12px;
 }
 
-#composer {
+#composer-row {
   flex: 0 0 auto;
-  width: 100%;
-  border: none;
+  display: flex;
+  align-items: center;
   border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+#attach-btn {
+  flex: 0 0 auto;
+  padding: 6px 4px 6px 6px;
+  font-size: 14px;
+  opacity: 0.75;
+}
+#composer {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
   background: var(--panel);
   color: var(--text);
   font-size: 13px;

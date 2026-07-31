@@ -24,7 +24,13 @@
         <div id="reply-bar-text"></div>
         <span id="reply-bar-x">✕</span>
       </div>
-      <input id="composer" type="text" placeholder="Type a message…">
+      <!-- The paperclip is a visible home for attachments. There's no touch on
+           KaiOS, so it doubles as a hint that Left opens the attach menu; it is
+           still clickable, which is what makes it usable in a desktop browser. -->
+      <div id="composer-row">
+        <span id="attach-btn" title="Attach (press Left)">📎</span>
+        <input id="composer" type="text" placeholder="Type a message…">
+      </div>
     </div>
 
     <!-- contact / group info -->
