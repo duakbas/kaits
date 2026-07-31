@@ -871,3 +871,99 @@ func TestLocationThumbRoundTrip(t *testing.T) {
 		t.Error("empty thumbnail should not be stored")
 	}
 }
+
+// Unread is derived from messages never marked read, which is what makes it
+// survive a refresh — nothing is stored per-chat that could drift.
+func TestUnreadCountDerivesFromMessages(t *testing.T) {
+	h := newHist(t)
+	chat := "g@g.us"
+	putMsg(h, chat, "in1", "x@s.whatsapp.net", "X", "a", 100, false)
+	putMsg(h, chat, "in2", "x@s.whatsapp.net", "X", "b", 101, false)
+	putMsg(h, chat, "mine", "me", "You", "c", 102, true)
+
+	if got := h.unreadCount(chat); got != 2 {
+		t.Errorf("unread = %d, want 2 (our own message must not count)", got)
+	}
+	// listChats has to report the same number, since that's what the badge uses.
+	rows := h.listChats()
+	if len(rows) != 1 || rows[0]["unread"].(int64) != 2 {
+		t.Errorf("listChats unread = %v, want 2", rows[0]["unread"])
+	}
+
+	if n := h.markAllRead(chat); n != 2 {
+		t.Errorf("markAllRead reported %d, want 2", n)
+	}
+	if got := h.unreadCount(chat); got != 0 {
+		t.Errorf("after reading, unread = %d, want 0", got)
+	}
+	// Re-reading an already-read chat is a no-op.
+	if n := h.markAllRead(chat); n != 0 {
+		t.Errorf("second markAllRead reported %d, want 0", n)
+	}
+}
+
+// markAllRead must clear the whole chat, not just the batch that got receipts —
+// otherwise the badge sticks above 50 unread.
+func TestMarkAllReadClearsBeyondReceiptBatch(t *testing.T) {
+	h := newHist(t)
+	chat := "busy@g.us"
+	for i := 0; i < 120; i++ {
+		putMsg(h, chat, "m"+string(rune('A'+i%26))+string(rune('0'+i/26)),
+			"x@s.whatsapp.net", "X", "spam", int64(100+i), false)
+	}
+	before := h.unreadCount(chat)
+	if before < 100 {
+		t.Fatalf("expected a large unread count, got %d", before)
+	}
+	h.markAllRead(chat)
+	if got := h.unreadCount(chat); got != 0 {
+		t.Errorf("unread = %d after markAllRead, want 0", got)
+	}
+}
+
+// Existing history predates read-tracking and has no status, which a naive count
+// would read as tens of thousands of unread messages. Opening an old database
+// must treat that history as already seen — exactly once.
+func TestUnreadBaselineAppliedOnceOnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// A database shaped like the pre-read-tracking release.
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	_, err = db.Exec(`CREATE TABLE messages (
+			msgid TEXT, chat TEXT, sender TEXT, sendername TEXT, fromme INTEGER,
+			ts INTEGER, kind TEXT, text TEXT, media TEXT, mime TEXT,
+			quoted_id TEXT, quoted_text TEXT, quoted_name TEXT,
+			PRIMARY KEY (chat, msgid));
+		CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT, is_group INTEGER,
+			pinned INTEGER, last_ts INTEGER, preview TEXT);
+		INSERT INTO chats VALUES ('c@s.whatsapp.net','Alex',0,0,100,'hi');
+		INSERT INTO messages VALUES ('m1','c@s.whatsapp.net','c@s.whatsapp.net','Alex',0,100,'text','old',NULL,NULL,NULL,NULL,NULL);
+		INSERT INTO messages VALUES ('m2','c@s.whatsapp.net','c@s.whatsapp.net','Alex',0,101,'text','older',NULL,NULL,NULL,NULL,NULL);`)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	db.Close()
+
+	h, err := openHistStore(path)
+	if err != nil {
+		t.Fatalf("openHistStore: %v", err)
+	}
+	if got := h.unreadCount("c@s.whatsapp.net"); got != 0 {
+		t.Errorf("existing history reported %d unread; it should be treated as seen", got)
+	}
+	h.close()
+
+	// A genuinely new message after the upgrade must still count.
+	h2, err := openHistStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer h2.close()
+	putMsg(h2, "c@s.whatsapp.net", "new", "c@s.whatsapp.net", "Alex", "fresh", 200, false)
+	if got := h2.unreadCount("c@s.whatsapp.net"); got != 1 {
+		t.Errorf("new message unread = %d, want 1 (baseline must not re-run)", got)
+	}
+}
