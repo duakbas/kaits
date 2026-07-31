@@ -64,6 +64,7 @@
   var elSetupToken = document.getElementById("setup-token");
   var elSetupPreview = document.getElementById("setup-preview");
   var elFocusSink = document.getElementById("focus-sink");
+  var elSetupDiag = document.getElementById("setup-diag");
   var elSearchInput = document.getElementById("search-input");
   var elSearchResults = document.getElementById("search-results");
 
@@ -2676,6 +2677,7 @@
     elSetupHost.value = cur.host || "";
     elSetupToken.value = cur.token || "";
     updateSetupPreview();
+    updateSetupDiag();
     show(elSetup);
 
     var field = 0;                       // 0 = host, 1 = token
@@ -2706,10 +2708,13 @@
       onEnter: saveAndGo,
       onSoftRight: saveAndGo,
       // No way out on first run: without an address there's nothing to show.
-      onSoftLeft: returnTo || null,
+      // Left is the notification test rather than Cancel: the red key already
+      // goes back, and a notification you cannot trigger is one you cannot
+      // debug without a console you don't have.
+      onSoftLeft: testNotification,
       onBack: returnTo || null
     });
-    Nav.setSoftkeys(returnTo ? "Cancel" : "", "SAVE", "Save");
+    Nav.setSoftkeys("Test notif", "SAVE", "Save");
     focusField(0);
   }
 
@@ -2717,6 +2722,38 @@
   // update actually land" without guessing from behaviour.
   function versionLabel() {
     return window.KAITS_VERSION ? "Kaits " + window.KAITS_VERSION : "Kaits (dev)";
+  }
+
+  // Everything that decides whether a notification can appear, in the only
+  // place it can be read on a device with no devtools.
+  function updateSetupDiag() {
+    if (!elSetupDiag) return;
+    var lines = [];
+    lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
+    lines.push("notifications: " +
+      (window.Notification ? Notification.permission : "unsupported"));
+    lines.push("service worker: " +
+      (("serviceWorker" in navigator) ? "supported" : "unsupported"));
+    var ps = (window.App && App.pushState) ? App.pushState() : null;
+    if (ps) lines.push("push: " + ps.state);
+    lines.push(versionLabel());
+    elSetupDiag.textContent = lines.join("\n");
+  }
+
+  // A notification raised the same way a real message would raise one, so a
+  // failure here and a failure on an incoming message have the same cause.
+  function testNotification() {
+    if (window.Notification && Notification.permission !== "granted" &&
+        Notification.requestPermission) {
+      Notification.requestPermission().then(function () {
+        updateSetupDiag();
+        osNotify("Kaits", "Test notification", "test@s.whatsapp.net");
+      });
+      return;
+    }
+    osNotify("Kaits", "Test notification", "test@s.whatsapp.net");
+    buzz();
+    toast("Sent — close the flip and check");
   }
 
   function updateSetupPreview() {
