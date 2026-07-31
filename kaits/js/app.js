@@ -358,7 +358,11 @@
       { action: "mute", label: c.muted ? "Unmute" : "Mute" },
       { action: "archive", label: c.archived ? "Unarchive" : "Archive" },
       { action: "info", label: c.group ? "Group info" : "Contact info" },
-      { action: "delete", label: "Delete chat" }
+      { action: "delete", label: "Delete chat" },
+      // Not about this chat, but it's the only menu reachable from the list
+      // without scrolling past every conversation — and the settings screen is
+      // where the diagnostics live, so it has to be quick to reach.
+      { action: "settings", label: "⚙  App settings" }
     ].forEach(function (item) {
       var row = document.createElement("div");
       row.className = "menu-item" + (item.action === "delete" ? " danger" : "");
@@ -394,6 +398,13 @@
     if (!jid) { closeChatMenu(); return; }
     var c = chats[jid] || {};
     var back = chatMenuReturn || enterListScreen;
+    if (action === "settings") {
+      elChatMenu.hidden = true;
+      chatMenuJID = null;
+      chatMenuReturn = null;
+      enterSetupScreen(back);
+      return;
+    }
     if (action === "info") {
       elChatMenu.hidden = true;
       openProfile(jid, back);
