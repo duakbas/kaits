@@ -2759,6 +2759,19 @@
   function updateSetupDiag() {
     if (!elSetupDiag) return;
     var lines = [];
+    // First, because everything below it depends on it. Service workers and
+    // the Notification API are unavailable outside a secure context, and the
+    // failures are silent: permission requests reject, registration never
+    // happens, and nothing says why. localhost counts as secure; a bare LAN IP
+    // over plain http does not.
+    var secure = (typeof isSecureContext === "boolean")
+      ? isSecureContext
+      : (location.protocol === "https:" || location.protocol === "app:" ||
+         location.hostname === "localhost" || location.hostname === "127.0.0.1");
+    if (!secure) {
+      lines.push("!! INSECURE ORIGIN (" + location.origin + ")");
+      lines.push("   notifications need https, localhost, or the packaged app");
+    }
     lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
     lines.push("notifications: " +
       (window.Notification ? Notification.permission : "unsupported"));
@@ -2775,11 +2788,24 @@
   // A notification raised the same way a real message would raise one, so a
   // failure here and a failure on an incoming message have the same cause.
   function testNotification() {
-    if (window.Notification && Notification.permission !== "granted" &&
-        Notification.requestPermission) {
-      Notification.requestPermission().then(function () {
+    if (!window.Notification) { toast("No Notification API here"); return; }
+    if (Notification.permission !== "granted" && Notification.requestPermission) {
+      var req;
+      try {
+        req = Notification.requestPermission();
+      } catch (e) {
+        toast("Permission request failed: " + e.message);
+        return;
+      }
+      // Outside a secure context this rejects, and awaiting it silently was
+      // exactly how "nothing happens and nothing says why" came about.
+      Promise.resolve(req).then(function (p) {
         updateSetupDiag();
+        if (p !== "granted") { toast("Permission " + p); return; }
         osNotify("Kaits", "Test notification", "test@s.whatsapp.net");
+      }, function (e) {
+        updateSetupDiag();
+        toast("Can't ask for permission: " + (e && e.message ? e.message : e));
       });
       return;
     }
