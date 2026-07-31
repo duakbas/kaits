@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "0.0.1",
   "name": "Kaits",
   "description": "Chat client - talks to your own wad daemon",
   "type": "web",
