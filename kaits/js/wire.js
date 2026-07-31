@@ -110,7 +110,12 @@
   // dropped as before.
   var QUEUEABLE = {
     send: true, delete: true, forward: true, chataction: true,
-    savecontact: true, sendreaction: true, markread: true, edit: true
+    savecontact: true, sendreaction: true, markread: true, edit: true,
+    // The push endpoint is produced by the service worker, which registers as
+    // soon as the app loads — reliably BEFORE the socket is up. Dropping it
+    // meant the daemon never learned where to wake the phone, and nothing said
+    // so beyond one line in a console nobody can read on the device.
+    pushsub: true
   };
   var outbox = [];
   var OUTBOX_MAX = 50;
