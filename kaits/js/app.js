@@ -63,6 +63,7 @@
   var elSetupHost = document.getElementById("setup-host");
   var elSetupToken = document.getElementById("setup-token");
   var elSetupPreview = document.getElementById("setup-preview");
+  var elFocusSink = document.getElementById("focus-sink");
   var elSearchInput = document.getElementById("search-input");
   var elSearchResults = document.getElementById("search-results");
 
@@ -74,11 +75,24 @@
   function show(el) {
     SCREENS.forEach(function (s) { if (s) s.hidden = true; });
     el.hidden = false;
-    // Leaving a text field focused sends the keypad to it instead of to Nav.
-    if (document.activeElement && document.activeElement !== document.body &&
-        !el.contains(document.activeElement)) {
-      try { document.activeElement.blur(); } catch (e) {}
-    }
+    releaseInput(el);
+  }
+
+  // releaseInput gets the keypad back from a text field.
+  //
+  // blur() alone is not enough on KaiOS: the input method holds its editing
+  // session open, so the keypad keeps feeding a textbox that is no longer on
+  // screen and the D-pad does nothing. Moving focus onto a non-input element
+  // is what actually ends the session.
+  //
+  // Skipped when the incoming screen owns the focused element — the thread
+  // wants its composer focused.
+  function releaseInput(el) {
+    var a = document.activeElement;
+    if (!a || a === document.body) return;
+    if (el && el.contains && el.contains(a)) return;
+    try { a.blur(); } catch (e) {}
+    if (elFocusSink) { try { elFocusSink.focus(); } catch (e) {} }
   }
 
   // ---------- chat list screen ----------
@@ -2678,6 +2692,10 @@
       if (!saved) { toast("Enter the server address"); return; }
       // Reconnect against the new address rather than waiting for a retry —
       // the old socket is pointed at somewhere that may no longer exist.
+      // Let go of the field before the screen changes; by the time
+      // enterListScreen runs, the input method has already been handed the
+      // keypad for this frame.
+      try { elSetupHost.blur(); elSetupToken.blur(); } catch (e) {}
       W.reconnect();
       enterListScreen();
     }

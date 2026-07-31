@@ -121,6 +121,11 @@
       </div>
     </div>
 
+    <!-- Somewhere for focus to go that isn't a text field. blur() alone leaves
+         KaiOS's input method attached, which swallows the D-pad: the keypad
+         keeps feeding a textbox that isn't on screen any more. -->
+    <div id="focus-sink" tabindex="-1"></div>
+
     <!-- softkey bar -->
     <div id="softkeys">
       <span id="sk-left"></span>
