@@ -59,12 +59,26 @@
   var elViewerImg = document.getElementById("viewer-img");
   var elViewerCap = document.getElementById("viewer-caption");
   var elSearch = document.getElementById("search");
+  var elSetup = document.getElementById("setup");
+  var elSetupHost = document.getElementById("setup-host");
+  var elSetupToken = document.getElementById("setup-token");
+  var elSetupPreview = document.getElementById("setup-preview");
   var elSearchInput = document.getElementById("search-input");
   var elSearchResults = document.getElementById("search-results");
 
+  // Every screen must be listed here. A screen that isn't gets left visible on
+  // top of whatever replaced it — which is how the setup form ended up floating
+  // over the chat list, stealing the keypad because its input still had focus.
+  var SCREENS = [elList, elThread, elCall, elProfile, elSearch, elSetup];
+
   function show(el) {
-    [elList, elThread, elCall, elProfile, elSearch].forEach(function (s) { s.hidden = true; });
+    SCREENS.forEach(function (s) { if (s) s.hidden = true; });
     el.hidden = false;
+    // Leaving a text field focused sends the keypad to it instead of to Nav.
+    if (document.activeElement && document.activeElement !== document.body &&
+        !el.contains(document.activeElement)) {
+      try { document.activeElement.blur(); } catch (e) {}
+    }
   }
 
   // ---------- chat list screen ----------
@@ -2640,11 +2654,6 @@
   // baked in: a LAN address changes with DHCP, and a token in the package would
   // travel inside every zip uploaded to a submission portal. So ask once, store
   // it on the phone, and offer a way back in when the address moves.
-  var elSetup = document.getElementById("setup");
-  var elSetupHost = document.getElementById("setup-host");
-  var elSetupToken = document.getElementById("setup-token");
-  var elSetupPreview = document.getElementById("setup-preview");
-
   function enterSetupScreen(returnTo) {
     var cur = Settings.current();
     elSetupHost.value = cur.host || "";
