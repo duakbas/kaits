@@ -154,3 +154,34 @@ reason, not only from a push. That works only while the app is still running,
 so the number that matters is **how long a KaiOS app survives after the flip is
 closed**. The heartbeat answers it: open the app, close the phone, and watch
 when the beats stop.
+
+## Finding, 31 July 2026 — how long the app survives backgrounded
+
+Same handset. The app beats every 15s and reports how long it has been alive,
+so a restart is visible: `beat` and `aliveSeconds` both reset to zero.
+
+**Idle: survives indefinitely.** 2h49m with the flip shut and no sign of
+stopping. Background timers get throttled — 15s stretching to a plateau of
+roughly 3 minutes — but the throttle is tied to the DEVICE being idle, not to
+the app being backgrounded. Anything that wakes the phone snaps it straight back
+to 15s while still reporting `hidden=True`.
+
+**Survives the camera, and a phone call.** Both are large memory events and
+neither evicted it.
+
+**Killed by the browser.** After a stretch of YouTube the counters restarted
+from `beat 1  alive 0s` — the low-memory killer took it. Nothing relaunches a
+killed app, which is exactly the job Web Push would do if it worked.
+
+### What this means for notifications
+
+The WebSocket fallback works while the phone is idle or being used lightly, and
+stops silently once something memory-hungry runs. Since the app can't be woken
+again, the mitigation isn't background survival — it's making the app cheap to
+come back to: on open, show what was missed while it was gone.
+
+Timer throttling is also a floor rather than a ceiling for message latency. The
+heartbeat is a `setInterval`, and timers are the first thing throttled; an
+arriving message is a network event, which wakes the device. The real client
+additionally gets a daemon ping every 20s, so it should stay far more responsive
+than these numbers suggest.
