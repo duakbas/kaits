@@ -20,6 +20,7 @@
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
+    SENDREACTION: "sendreaction",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };

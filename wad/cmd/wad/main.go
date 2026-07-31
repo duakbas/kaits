@@ -323,6 +323,20 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			Data: mustJSON(waCli.SaveContact(d.JID, d.Name))})
 		hub.PushT(ws.TChatList, waCli.ListChats())
 
+	case ws.TSendReaction:
+		var d struct {
+			Chat  string `json:"chat"`
+			MsgID string `json:"msgid"`
+			Emoji string `json:"emoji"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badreaction", "msg": err.Error()})
+			return
+		}
+		if err := waCli.SendReaction(ctx, d.Chat, d.MsgID, d.Emoji); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "reaction", "msg": err.Error()})
+		}
+
 	case ws.TMarkRead:
 		var d struct {
 			JID string `json:"jid"`

@@ -340,6 +340,9 @@
     // and "Message directly" only make sense for someone else's message in a
     // group; deleting for everyone only works on your own.
     var items = [{ action: "reply", label: "Reply" }];
+    var mine = myReactionTo(m);
+    items.push({ action: "react", label: mine ? "Change reaction " + mine : "React" });
+    if (mine) items.push({ action: "unreact", label: "Remove my reaction" });
     var reactionCount = (m.reactions || []).length;
     if (reactionCount) {
       items.push({
@@ -426,6 +429,17 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "react") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      promptForReaction(m);
+    } else if (action === "unreact") {
+      W.send(W.T.SENDREACTION, { chat: currentJID, msgid: m.msgid, emoji: "" });
+      menuOpen = false;
+      elMenu.hidden = true;
+      enterSelectMode();
+      selectIdx = keepSelection(m);
+      renderThread();
     } else if (action === "reactions") {
       menuOpen = false;
       elMenu.hidden = true;
@@ -515,6 +529,62 @@
       byEmoji[r.emoji].push(r);
     });
     return order.map(function (e) { return { emoji: e, people: byEmoji[e] }; });
+  }
+
+  // myReactionTo returns the emoji WE reacted with, or "". The daemon labels our
+  // own reaction "You", which is the only marker available client-side.
+  function myReactionTo(m) {
+    var list = (m && m.reactions) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].sendername === "You") return list[i].emoji;
+    }
+    return "";
+  }
+
+  // keepSelection re-finds a message's index after the thread array shifts.
+  function keepSelection(m) {
+    var msgs = threads[currentJID] || [];
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].msgid === m.msgid) return i;
+    }
+    return selectIdx;
+  }
+
+  // promptForReaction opens a text field so the PHONE's keyboard provides the
+  // emoji, rather than shipping our own picker.
+  //
+  // KaiOS 2.5 has no API to open the keyboard directly on its emoji panel —
+  // there is no inputmode for it, and the panel is reached by the user cycling
+  // input modes. So the best available behaviour is: focus a field, which raises
+  // the keyboard, and let them switch to emoji. Whatever they enter is sent
+  // as-is, which also means a desktop browser can just type or paste one.
+  function promptForReaction(m) {
+    var mine = myReactionTo(m);
+    textPrompt("React", mine,
+      "Switch the keyboard to emoji, then pick one. Leave empty to remove.",
+      function (val) {
+        // Send what was typed, only guarding against a whole sentence being
+        // submitted as a "reaction". Deliberately NOT splitting into one
+        // character: a single emoji can be many code units (skin tones,
+        // variation selectors, ZWJ sequences like 👨‍👩‍👧), and Gecko 48 has no
+        // Intl.Segmenter to split them correctly. Truncating would corrupt
+        // them, so a generous cap is safer than clever slicing.
+        var emoji = (val || "").trim();
+        if (emoji.length > 16) emoji = "";
+        if (emoji === "" && val && val.trim()) {
+          toast("That's too long for a reaction");
+        } else {
+          W.send(W.T.SENDREACTION, { chat: currentJID, msgid: m.msgid, emoji: emoji });
+        }
+        enterSelectMode();
+        selectIdx = keepSelection(m);
+        renderThread();
+      },
+      function () {
+        enterSelectMode();
+        selectIdx = keepSelection(m);
+        renderThread();
+      });
   }
 
   // The detail view: who reacted with what, like WhatsApp's reaction sheet.

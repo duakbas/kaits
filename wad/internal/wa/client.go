@@ -321,6 +321,64 @@ func (c *Client) handleReaction(v *events.Message, live bool) {
 	}
 }
 
+// SendReaction reacts to a message, or clears our reaction when emoji is "".
+//
+// The target's sender has to be named, not just its id, so this resolves the
+// message the same way replies do — cache first, then stored history — which is
+// what makes reacting work on anything scrolled to, not only what arrived this
+// session. Our own reaction is recorded locally too, so the chip appears without
+// waiting for the echo to come back.
+func (c *Client) SendReaction(ctx context.Context, chatJID, msgID, emoji string) error {
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	sender, storedChat, _, ok := c.lookupMessage(msgID)
+	if !ok {
+		return fmt.Errorf("message %s is not stored; cannot react", msgID)
+	}
+	if !storedChat.IsEmpty() {
+		chat = storedChat
+	}
+	// WhatsApp wants our own JID as the sender for a message we sent.
+	if own := c.WA.Store.ID; own != nil && sender.User == own.User {
+		sender = own.ToNonAD()
+	}
+
+	msg := c.WA.BuildReaction(chat, sender, types.MessageID(msgID), emoji)
+	if _, err := c.WA.SendMessage(ctx, chat, msg); err != nil {
+		return err
+	}
+
+	self := ""
+	if own := c.WA.Store.ID; own != nil {
+		self = own.ToNonAD().String()
+	}
+	c.hist.putReaction(chat.String(), msgID, self, "You", emoji, time.Now().Unix())
+	c.hub.PushT(ws.TReaction, map[string]any{
+		"chat":      chat.String(),
+		"msgid":     msgID,
+		"reactions": c.hist.reactionsForMessage(chat.String(), msgID),
+	})
+	return nil
+}
+
+// MyReactionTo returns the emoji we've reacted to a message with, "" if none.
+// The app uses it to offer "remove" instead of "react" on a second press.
+func (c *Client) MyReactionTo(chatJID, msgID string) string {
+	own := c.WA.Store.ID
+	if own == nil {
+		return ""
+	}
+	self := own.ToNonAD().String()
+	for _, r := range c.hist.reactionsForMessage(chatJID, msgID) {
+		if r.SenderJID == self {
+			return r.Emoji
+		}
+	}
+	return ""
+}
+
 // MarkChatRead tells WhatsApp the user has read a chat's incoming messages, and
 // records it locally so we don't keep re-sending the same receipt.
 func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) {

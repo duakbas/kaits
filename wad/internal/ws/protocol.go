@@ -42,21 +42,22 @@ const (
 
 // ---- app -> daemon ----
 const (
-	TSend        = "send"        // send a text/image message (see SendData)
-	TGetChats    = "getchats"    // request chat list
-	TGetHistory  = "gethistory"  // {jid, before, limit} request history for a chat
-	TMarkRead    = "markread"    // {jid, msgid} mark read
-	TDelete      = "delete"      // {chat, msgid} delete (revoke) own message
-	TForward     = "forward"     // {srcmsgid, dest} forward a message to another chat
-	TDeleted     = "deleted"     // daemon->app: {chat, msgid} confirm a deletion
-	TCallAnswer  = "callanswer"  // user pressed green key on an incoming call
-	TCallReject  = "callreject"  // user pressed red key / declined
-	TCallDial    = "calldial"    // {jid} place an outgoing call
-	TCallHangup  = "callhangup"  // end the active call
-	TCallSignalA = "callsignal"  // WebRTC signalling from app -> pion (same type both ways)
-	TChatAction  = "chataction"  // {chat, action, on} pin/mute/archive/delete a chat
-	TGetProfile  = "getprofile"  // {jid} request contact or group info
-	TSaveContact = "savecontact" // {jid, name} save a local nickname ("" clears)
+	TSend         = "send"         // send a text/image message (see SendData)
+	TGetChats     = "getchats"     // request chat list
+	TGetHistory   = "gethistory"   // {jid, before, limit} request history for a chat
+	TMarkRead     = "markread"     // {jid, msgid} mark read
+	TDelete       = "delete"       // {chat, msgid} delete (revoke) own message
+	TForward      = "forward"      // {srcmsgid, dest} forward a message to another chat
+	TDeleted      = "deleted"      // daemon->app: {chat, msgid} confirm a deletion
+	TCallAnswer   = "callanswer"   // user pressed green key on an incoming call
+	TCallReject   = "callreject"   // user pressed red key / declined
+	TCallDial     = "calldial"     // {jid} place an outgoing call
+	TCallHangup   = "callhangup"   // end the active call
+	TCallSignalA  = "callsignal"   // WebRTC signalling from app -> pion (same type both ways)
+	TChatAction   = "chataction"   // {chat, action, on} pin/mute/archive/delete a chat
+	TGetProfile   = "getprofile"   // {jid} request contact or group info
+	TSaveContact  = "savecontact"  // {jid, name} save a local nickname ("" clears)
+	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 )
 
 // MsgData is an inbound message pushed to the app.
