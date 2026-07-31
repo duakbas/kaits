@@ -24,45 +24,58 @@ It **does** answer, on real hardware:
 - whether tapping the notification reopens the app;
 - how long a subscription endpoint stays valid.
 
-It **does not** remove the need for a phone you can install apps on. Permissions
-come from the manifest, and a manifest only applies to an installed app — a
-browser tab won't do. What it removes is the need to port the *entire* client to
-find out.
+It **does not** work in a browser tab. Permissions come from the manifest, and a
+manifest only applies to an installed app. What it removes is the need to port
+the *entire* client to find out.
 
-## Running it
+## Getting it onto the phone
 
-**1. Serve it.** The app must be reachable from the phone, so bind to your LAN,
-not localhost. From the repo root:
+Two routes. The first needs no debug access, which matters on a debug-locked
+device.
+
+### Route A — KaiStore test device (no debugging required)
+
+The submission portal can distribute a build privately to specific handsets:
+upload it, add your IMEI under **Test Device**, and it appears in KaiStore on
+that phone alone. Nothing is published and no sideloading is involved, so a
+locked bootloader and unauthorised ADB are irrelevant.
+
+1. Set `CATCHER` in `index.html` first — it is baked into the package.
+2. `./pushtest/package.sh` → `pushtest/build/pushtest.zip`
+3. Upload the zip at the KaiOS submission portal.
+4. **Test Device** → your IMEI (dial `*#06#` on the phone to get it).
+5. Wait ~5 minutes, open KaiStore on the phone, install "Push Test".
+
+### Route B — WebIDE (needs debugging enabled)
+
+Serve the repo and install the hosted manifest directly:
 
 ```
 python3 -m http.server 8000 --bind 0.0.0.0
+# WebIDE -> Install hosted app -> http://<your-ip>:8000/pushtest/manifest.webapp
 ```
 
-**2. Start the catcher**, in another terminal:
+Faster to iterate on, and nothing leaves your machine — but only if the device
+lets you in.
+
+## Running the test
+
+**1. Start the catcher**, on your computer:
 
 ```
 python3 pushtest/catch.py serve
 ```
 
 It prints your LAN IP. A push endpoint is ~200 characters; reading one off a
-240x320 screen and retyping it is not a plan, so the phone posts it here.
+240x320 screen and retyping it is not a plan, so the phone posts it here. (If
+the post fails, the endpoint is also printed on screen and can be transcribed —
+tedious, but it unblocks you.)
 
-**3. Point the app at the catcher.** Put that IP in `CATCHER` at the top of
-`pushtest/index.html`.
+**2. Open the app once.** It registers the worker, asks for notification
+permission, subscribes, and posts the endpoint. Every step prints pass or fail
+on screen — if it fails, *that failure is the answer* and worth reporting as-is.
 
-**4. Install it on the phone.** With debugging enabled, WebIDE → *Install
-hosted app* → the manifest URL:
-
-```
-http://<your-ip>:8000/pushtest/manifest.webapp
-```
-
-**5. Open it once.** It registers the worker, asks for notification permission,
-subscribes, and posts the endpoint to the catcher. Every step prints pass or
-fail on screen — if it fails, *that failure is the answer* and worth reporting
-as-is.
-
-**6. Now the actual test.** Close the phone. Wait — start with a minute, then
+**3. Now the actual test.** Close the phone. Wait — start with a minute, then
 five, then an hour, then overnight. Then:
 
 ```
