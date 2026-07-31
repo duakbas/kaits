@@ -68,6 +68,9 @@ type Client struct {
 	// contact names. nil if it couldn't be opened — callers must cope.
 	sess *sessionStore
 
+	// push wakes the phone when it isn't connected.
+	push *pusher
+
 	// gapTried remembers which chats we've already asked to backfill this run,
 	// so a long-quiet chat doesn't trigger a request on every message.
 	gapTried map[string]bool
@@ -118,6 +121,7 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		avatars:    make(map[string]avatarEntry),
 		hist:       hist,
 		sess:       sess,
+		push:       newPusher(),
 	}
 	waCli.AddEventHandler(c.handleEvent)
 	return c, nil
@@ -654,6 +658,11 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 	// Only notify the app for live messages; history-sync is pull-based.
 	if live {
 		c.hub.PushT(ws.TMessage, d)
+		// Wake the phone if the app isn't there to receive that push. When it
+		// IS connected the frame above already did the job.
+		if !c.hub.HasClient() {
+			c.notifyPush(msgSummary{Chat: d.ChatJID, FromMe: d.FromMe})
+		}
 	}
 }
 

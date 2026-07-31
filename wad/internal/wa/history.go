@@ -126,6 +126,13 @@ func openHistStore(path string) (*histStore, error) {
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(chat, fromme, status)`)
 	// Small key/value table for one-time upgrade steps.
 	db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`)
+	// Push endpoints the phone has registered. These are capability URLs —
+	// holding one lets you wake the device — so they live here with the rest of
+	// the gitignored state, never in the repo.
+	db.Exec(`CREATE TABLE IF NOT EXISTS push_subs (
+		endpoint TEXT PRIMARY KEY,
+		created  INTEGER
+	)`)
 
 	// Every message stored before read-tracking existed has an empty status,
 	// which the unread count would read as "never read" — surfacing tens of

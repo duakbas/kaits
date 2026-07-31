@@ -62,6 +62,7 @@ const (
 	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 	TSearch       = "search"       // {q, chat?, limit?} search stored messages
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
+	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 )
 
 // MsgData is an inbound message pushed to the app.

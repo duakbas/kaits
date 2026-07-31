@@ -22,6 +22,7 @@
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
     SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
+    PUSHSUB: "pushsub",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };
@@ -30,7 +31,7 @@
   var backoff = C.RECONNECT_MIN;
   var listeners = {};   // type -> [fn]
   var pendingFrames = [];  // frames received before a handler existed
-  var statusFn = null;  // called with "connecting"|"open"|"closed"
+  var statusFns = [];   // each called with "connecting"|"open"|"closed"
   var queuedFn = null;  // called with the number of frames waiting to go out
   var reqId = 0;
 
@@ -44,7 +45,11 @@
 
   function setStatus(s) {
     console.log("wire: " + s);
-    if (statusFn) statusFn(s);
+    // A list, not a slot: app.js and push.js both need to know, and a setter
+    // would silently leave whichever registered first with no callbacks.
+    for (var i = 0; i < statusFns.length; i++) {
+      try { statusFns[i](s); } catch (e) { console.error("status listener", e); }
+    }
   }
 
   function url() {
@@ -175,7 +180,7 @@
       }
       pendingFrames = still;
     },
-    onStatus: function (fn) { statusFn = fn; },
+    onStatus: function (fn) { statusFns.push(fn); },
     onQueued: function (fn) { queuedFn = fn; },
     queuedCount: function () { return outbox.length; },
     isOpen: function () { return ws && ws.readyState === WebSocket.OPEN; }

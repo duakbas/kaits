@@ -3,6 +3,7 @@ package wa
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"wad/internal/ws"
@@ -965,5 +966,50 @@ func TestUnreadBaselineAppliedOnceOnUpgrade(t *testing.T) {
 	putMsg(h2, "c@s.whatsapp.net", "new", "c@s.whatsapp.net", "Alex", "fresh", 200, false)
 	if got := h2.unreadCount("c@s.whatsapp.net"); got != 1 {
 		t.Errorf("new message unread = %d, want 1 (baseline must not re-run)", got)
+	}
+}
+
+// Push endpoints are capability URLs — anyone holding one can wake the phone —
+// so they must round-trip exactly and be removable when the push service says
+// a subscription is gone.
+func TestPushSubscriptionLifecycle(t *testing.T) {
+	h := newHist(t)
+	ep := "https://push.kaiostech.com/wpush/v2/gAAAAABm-longopaquetoken"
+
+	if len(h.listPushSubs()) != 0 {
+		t.Fatal("expected no subscriptions initially")
+	}
+	h.putPushSub(ep, 100)
+	subs := h.listPushSubs()
+	if len(subs) != 1 || subs[0].Endpoint != ep {
+		t.Fatalf("subs = %+v, want the one endpoint", subs)
+	}
+
+	// Re-registering the same endpoint must update, not duplicate.
+	h.putPushSub(ep, 200)
+	if len(h.listPushSubs()) != 1 {
+		t.Errorf("re-registering created a duplicate: %+v", h.listPushSubs())
+	}
+
+	h.deletePushSub(ep)
+	if len(h.listPushSubs()) != 0 {
+		t.Error("delete did not remove the subscription")
+	}
+	// An empty endpoint is not a subscription.
+	h.putPushSub("", 300)
+	if len(h.listPushSubs()) != 0 {
+		t.Error("empty endpoint should not be stored")
+	}
+}
+
+// The endpoint is a secret; logs must not carry the whole thing.
+func TestShortenEndpointHidesTheToken(t *testing.T) {
+	ep := "https://push.kaiostech.com/wpush/v2/gAAAAABm-verylongsecrettokenhere"
+	got := shortenEndpoint(ep)
+	if strings.Contains(got, "verylongsecrettokenhere") {
+		t.Errorf("shortened form still leaks the token: %q", got)
+	}
+	if !strings.Contains(got, "push.kaiostech.com") {
+		t.Errorf("shortened form should keep the host for diagnosis: %q", got)
 	}
 }

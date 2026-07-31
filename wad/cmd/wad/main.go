@@ -171,6 +171,7 @@ func main() {
 	mux.HandleFunc("/media/", mediaHandler(waCli))
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
 	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
+	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, token))
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 
 	go func() {
@@ -378,6 +379,20 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
 			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
 
+	case ws.TPushSub:
+		var d struct {
+			Endpoint string `json:"endpoint"`
+			Remove   bool   `json:"remove"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			return
+		}
+		if d.Remove {
+			waCli.RemovePushSubscription(d.Endpoint)
+		} else if err := waCli.AddPushSubscription(d.Endpoint); err != nil {
+			log.Printf("pushsub: %v", err)
+		}
+
 	case ws.TWatch:
 		var d struct {
 			JID string `json:"jid"`
@@ -454,6 +469,23 @@ func avatarHandler(c *wa.Client) http.HandlerFunc {
 // locThumbHandler serves the map preview WhatsApp embeds in a location message.
 // These are stored bytes, not CDN downloads, so they're always available and
 // need no keys.
+// notifySummaryHandler tells a woken service worker what to say.
+//
+// The push itself carries no payload, so the worker fetches this to turn a bare
+// wake-up into "Alex — 3 new messages". Token-guarded like the socket: it
+// reports who is messaging the user, which isn't public.
+func notifySummaryHandler(c *wa.Client, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		json.NewEncoder(w).Encode(c.SummaryForNotification())
+	}
+}
+
 func locThumbHandler(c *wa.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/locthumb/")

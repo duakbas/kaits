@@ -251,3 +251,44 @@ ongoing: nothing is missing until something newer arrives to reveal it.
 | `WAD_REFETCH_MAX` | `40` | max history requests one refetch run may send |
 | `WAD_PRESENCE` | `available` | `unavailable` = invisible, `off` = send no presence |
 | `WAD_INCLUDE_STATUS` | unset | `1` = keep status/"Updates" posts instead of ignoring them |
+
+## Push notifications (daemon off-device)
+
+The phone can't hold a socket open while the app is closed — on KaiOS there is
+one always-on connection on the whole device, the OS's push channel, shared by
+every app. So the daemon plays the part every other app's backend plays: it
+stays connected to WhatsApp, and when a message arrives it POSTs to the phone's
+push endpoint to wake the app's service worker.
+
+**This only works with the daemon somewhere always-on** — a VPS, a Raspberry
+Pi, a machine that doesn't sleep. A daemon that isn't running received nothing,
+so there is nothing to wake for. (Running the daemon *on* the phone is a
+different architecture that doesn't need push at all: it would hold the
+connection itself and notify directly.)
+
+The push carries **no payload**. KaiOS allows subscribing without an
+`applicationServerKey`, and without VAPID only empty pushes are permitted —
+which suits this design, because the app re-syncs from the daemon on connect
+anyway. The push is a doorbell, not a delivery: message content never passes
+through Mozilla's or KaiOS's push infrastructure, and there are no keys to
+manage.
+
+Flow:
+
+1. the app registers `sw.js` and subscribes, getting an endpoint back;
+2. it hands the endpoint to the daemon (`pushsub`), stored in `push_subs`;
+3. a message arrives while no app is connected → the daemon POSTs to it;
+4. the OS wakes `sw.js`, which fetches `/notify-summary` for the wording and
+   shows a notification;
+5. tapping it focuses or launches the app, which connects and syncs.
+
+Wake-ups are throttled to one per 20s — the app pulls everything once awake, so
+a burst in a busy group doesn't need a POST each. Muted chats never wake the
+phone, and neither do your own messages. Endpoints that return 404/410 are
+dropped, since that means the subscription is dead.
+
+**The endpoints are capability URLs**: anyone holding one can wake the device.
+They live in the gitignored history db, and only a shortened form is logged.
+
+`/notify-summary` is token-guarded like the socket — it reports who is messaging
+you, which isn't public.
