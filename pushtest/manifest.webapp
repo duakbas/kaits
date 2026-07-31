@@ -1,4 +1,5 @@
 {
+  "version": "1.0.0",
   "name": "Push Test",
   "description": "Does a Web Push wake a KaiOS app from standby?",
   "type": "web",
@@ -24,6 +25,13 @@
   "messages": [
     { "serviceworker-notification": "/pushtest/index.html" }
   ],
-  "default_locale": "en",
+  "locales": {
+    "en-US": {
+      "name": "Push Test",
+      "subtitle": "Web Push wake-up test",
+      "description": "Does a Web Push wake a KaiOS app from standby?"
+    }
+  },
+  "default_locale": "en-US",
   "cursor": false
 }

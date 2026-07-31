@@ -58,6 +58,7 @@ cp "$ROOT/wa-kaios/icons/icon-112.png" "$STAGE/icons/"
 # Same permissions as the hosted manifest, root-relative paths.
 cat > "$STAGE/manifest.webapp" <<'JSON'
 {
+  "version": "1.0.0",
   "name": "Push Test",
   "description": "Does a Web Push wake a KaiOS app from standby?",
   "type": "web",
@@ -83,7 +84,14 @@ cat > "$STAGE/manifest.webapp" <<'JSON'
   "messages": [
     { "serviceworker-notification": "/index.html" }
   ],
-  "default_locale": "en",
+  "locales": {
+    "en-US": {
+      "name": "Push Test",
+      "subtitle": "Web Push wake-up test",
+      "description": "Does a Web Push wake a KaiOS app from standby?"
+    }
+  },
+  "default_locale": "en-US",
   "cursor": false
 }
 JSON

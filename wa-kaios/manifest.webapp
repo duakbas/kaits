@@ -1,4 +1,5 @@
 {
+  "version": "1.0.0",
   "name": "WhatsApp",
   "description": "WhatsApp client (thin) — talks to the wad daemon",
   "type": "web",
@@ -24,6 +25,13 @@
   "messages": [
     { "serviceworker-notification": "/index.html" }
   ],
-  "default_locale": "en",
+  "locales": {
+    "en-US": {
+      "name": "WhatsApp",
+      "subtitle": "Thin client for the wad daemon",
+      "description": "WhatsApp client (thin) — talks to the wad daemon"
+    }
+  },
+  "default_locale": "en-US",
   "cursor": false
 }
