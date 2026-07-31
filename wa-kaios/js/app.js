@@ -32,6 +32,7 @@
   var elThreadMsgs = document.getElementById("thread-msgs");
   var elThreadTitle = document.getElementById("thread-title");
   var elInput = document.getElementById("composer");
+  var elAttach = document.getElementById("attach-btn");
   var elReplyBar = document.getElementById("reply-bar");
   var elReplyBarText = document.getElementById("reply-bar-text");
   var elMenu = document.getElementById("action-menu");
@@ -382,7 +383,7 @@
     selectMode = false;
     selectIdx = -1;
     selectMsgID = null;
-    renderThread(); // clear any bubble highlight
+    clearSelection(); // just drop the highlight; no need to rebuild the thread
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
       onLeft: openAttachMenu,         // attachments live off Left from the composer
@@ -391,7 +392,7 @@
       onSoftRight: sendCurrent,       // "Send"
       onEnter: sendCurrent
     });
-    Nav.setSoftkeys("Back", "", "Send");
+    Nav.setSoftkeys("Back", "📎 Left", "Send");
     setTimeout(function () { elInput.focus(); }, 0);
   }
 
@@ -401,7 +402,7 @@
     elInput.blur();
     selectMode = true;
     setSelect(msgs.length - 1); // start at the newest message
-    renderThread();
+    paintSelection();
     Nav.setScreen({
       onUp: function () { moveSelect(-1); },
       onDown: function () { moveSelect(1); },
@@ -422,12 +423,51 @@
       // navigation, so without this, moving up simply stops.
       setSelect(0);
       requestOlderHistory();
-      renderThread();
+      paintSelection();
       return;
     }
     if (next >= msgs.length) { enterComposeMode(); return; } // down off the end
     setSelect(next);
-    renderThread();
+    paintSelection();
+  }
+
+  // paintSelection moves the highlight by editing two class lists.
+  //
+  // This used to call renderThread(), which threw away every bubble and built
+  // them all again for a single D-pad press. On Gecko 48 with a long thread
+  // that is slow on its own, but the visible damage came from innerHTML = ""
+  // resetting scrollTop to 0: the view snapped to the top of the chat and then
+  // scrollIntoView dragged it back. The further into the present you were, the
+  // longer that round trip, which is why it got worse the closer you got to
+  // today's messages.
+  //
+  // Falls back to a full render only if the target bubble isn't on screen —
+  // which shouldn't happen, since the selection can only point at a message
+  // that was rendered.
+  function paintSelection() {
+    var prev = elThreadMsgs.querySelector(".bubble.selected");
+    var next = selectMsgID
+      ? elThreadMsgs.querySelector('.bubble[data-msgid="' + cssEscape(selectMsgID) + '"]')
+      : null;
+    if (selectMsgID && !next) { renderThread(); return; }
+    if (prev === next) { if (next) next.scrollIntoView({ block: "nearest" }); return; }
+    if (prev) prev.className = prev.className.replace(/ ?\bselected\b/, "");
+    if (next) {
+      next.className += " selected";
+      next.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // clearSelection drops the highlight without touching anything else.
+  function clearSelection() {
+    var prev = elThreadMsgs.querySelector(".bubble.selected");
+    if (prev) prev.className = prev.className.replace(/ ?\bselected\b/, "");
+  }
+
+  // WhatsApp message ids are [A-Z0-9] hex-ish, but ours also include local
+  // echo ids we generate, so quote anything that would break the selector.
+  function cssEscape(s) {
+    return String(s).replace(/["\\]/g, "\\$&");
   }
 
   // setSelect moves the selection and remembers WHICH message it is, not just
@@ -458,6 +498,8 @@
     W.send(W.T.GETHISTORY, { jid: currentJID, before: oldestTS, limit: 40 });
     return true;
   }
+
+  if (elAttach) elAttach.onclick = function () { openAttachMenu(); };
 
   // openAttachMenu offers the attachment kinds. Reuses the chat-menu overlay
   // rather than adding another screen.
@@ -1254,7 +1296,10 @@
   // added at the end. Selection changes, edits, deletions and older pages all
   // fail this and take the full rebuild.
   function canAppendOnly(msgs) {
-    if (selectMode) return false;              // the highlight moves between bubbles
+    // Select mode used to force a full rebuild here, because moving the
+    // highlight went through renderThread(). paintSelection() edits the two
+    // class lists directly now, so a message arriving while you're reading
+    // history only needs its own bubble appended.
     if (renderedFor !== currentJID) return false;
     if (!renderedIds.length) return false;
     if (msgs.length <= renderedIds.length) return false;
@@ -1278,7 +1323,9 @@
       lastTS = msgs[i].ts || lastTS;
       renderedIds.push(msgs[i].msgid);
     }
-    if (wasNearBottom) elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
+    // Don't chase the bottom while a bubble is selected — that would yank the
+    // reader away from the message they're standing on.
+    if (wasNearBottom && !selectMode) elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
   }
 
   // buildBubble draws one message (plus any date separator, sender label and
