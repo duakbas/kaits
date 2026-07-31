@@ -2,14 +2,14 @@
 # package.sh — build the KaiStore-submittable zip for the app.
 #
 # A packaged app is a zip with manifest.webapp AT THE ROOT, not inside a folder.
-# Zipping the directory itself produces wa-kaios/manifest.webapp and the portal
+# Zipping the directory itself produces kaits/manifest.webapp and the portal
 # rejects it, so this stages the files and zips their contents.
 #
 # The portal also rejects a build whose version it has already seen, so a
 # re-upload needs a new one.
 #
-#   ./wa-kaios/package.sh            -> wa-kaios/build/kaits.zip  (version 1.0.0)
-#   ./wa-kaios/package.sh 1.0.1      for a re-upload
+#   ./kaits/package.sh            -> kaits/build/kaits.zip  (version 1.0.0)
+#   ./kaits/package.sh 1.0.1      for a re-upload
 #
 # NOTE: js/config.js is baked into the package, and it contains WAD_TOKEN. The
 # zip is a credential. Don't pass it around.

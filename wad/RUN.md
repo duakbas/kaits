@@ -53,7 +53,7 @@ WAD_TOKEN=changeme go run ./cmd/wad
    Connected event.
 2. Send yourself a WhatsApp message from another chat. You should see a
    `message` frame logged.
-3. Now start the app (`python3 -m http.server 8000` in the `wa-kaios/` folder,
+3. Now start the app (`python3 -m http.server 8000` in the `kaits/` folder,
    open localhost:8000). Its header dot goes green and messages show up.
 
 ## What runs vs. not

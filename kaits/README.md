@@ -26,7 +26,7 @@ This is the fastest "does it run" check.
    `TOKEN` to your `WAD_TOKEN`.
 3. Serve the app folder:
    ```
-   cd wa-kaios
+   cd kaits
    python3 -m http.server 8000
    ```
 4. Open `http://localhost:8000` in Firefox or Chrome. Resize the window

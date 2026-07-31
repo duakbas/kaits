@@ -1,4 +1,4 @@
-# whatsapp-kaios
+# Kaits
 
 A self-hosted WhatsApp client for a KaiOS feature phone.
 
@@ -18,9 +18,9 @@ screen driven entirely by a D-pad and two softkeys.
 Two halves, talking over one WebSocket:
 
 ```
- KaiOS phone                    your machine / the phone itself
+ KaiOS phone                    your machine
 ┌──────────────┐   JSON over   ┌──────────────┐   whatsmeow   ┌──────────┐
-│   wa-kaios   │ ◄───────────► │     wad      │ ◄───────────► │ WhatsApp │
+│    kaits     │ ◄───────────► │     wad      │ ◄───────────► │ WhatsApp │
 │  (HTML/JS)   │   WebSocket   │  (Go daemon) │               └──────────┘
 └──────────────┘               └──────────────┘
 ```
@@ -28,7 +28,7 @@ Two halves, talking over one WebSocket:
 **`wad`** — the daemon. Owns the WhatsApp session, all protocol work, and
 persistence. Speaks a small JSON protocol and nothing else.
 
-**`wa-kaios`** — the app. A thin client: it renders UI and speaks that protocol.
+**`kaits`** — the app. A thin client: it renders UI and speaks that protocol.
 It never touches WhatsApp protocol directly, which is what keeps it small enough
 to run on Gecko 48.
 
@@ -51,9 +51,10 @@ wad/                          the daemon
     media.go                  media cache, avatars
   internal/calls/             call signalling (audio is stubbed)
 
-wa-kaios/                     the app
+kaits/                     the app
   index.html                  screens
-  js/config.js                >>> EDIT THIS <<< daemon URL + token
+  js/settings.js              daemon address, entered on the phone
+  js/config.js                defaults only; the phone overrides them
   js/wire.js                  protocol client (mirrors internal/ws/protocol.go)
   js/nav.js                   D-pad + softkey handling
   js/app.js                   screen logic
@@ -96,12 +97,13 @@ Linked devices → Link a device → scan.
 **App:**
 
 ```bash
-cd wa-kaios
+cd kaits
 python3 -m http.server 8000
 ```
 
-Open `localhost:8000`, devtools → device toolbar → 240×320. Defaults in
-`js/config.js` already match the daemon's, so local dev needs no config.
+Open `localhost:8000`, devtools → device toolbar → 240×320. The app asks for
+the daemon's address on first run and remembers it; `js/config.js` only holds
+the defaults it starts from.
 
 **Keys in the browser:** arrows = D-pad, Enter = select/send, **F1/F2 =
 softkeys**, Backspace/Esc = back.
@@ -159,7 +161,7 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | **Send** photos or documents | ✅ 📎 in the composer, or press Left |
 | **Record** a voice note | ❌ playback only |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
-| Settings screen | ❌ planned |
+| Settings screen | ✅ daemon address + token, entered on the phone |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
 | **Send** a location, or share live location | ❌ received ones render + open in maps |
@@ -177,14 +179,33 @@ address book via `mozContacts`, falling back to a `webcontacts/contact` activity
 
 ## Status
 
-Works end to end on the desktop dev setup. **Not yet run on real hardware** —
-the target is an Energizer E282SC+ (MediaTek MT6739, KaiOS 2.5). Questions only
-the device can answer: Opus decoding for voice notes, H.264 video, animated
-stickers, and whether Web Push can wake the app from standby — which decides
-whether background notifications and ringing are possible at all.
+Runs on real hardware. Installed on an Energizer E282SC (KaiOS 2.5) through the
+submission portal's **Test Device** route — an IMEI whitelist that installs via
+KaiStore, needing no debug access, which matters because that handset is
+debug-locked with unauthorised ADB.
 
-Calls need a real audio path (meowcaller plus Opus↔MLOW transcoding) and are
-deliberately deferred.
+**Background push does not work, and it isn't our fault.** KaiOS's own push
+service (`notification.kaiostech.com`) accepts a push with HTTP 200 and never
+delivers it — including for an endpoint that has been explicitly unsubscribed,
+which a service tracking its subscriptions would reject. Keyless subscribe
+works, so the payload-free design is sound; there is simply nothing at the other
+end. See [`pushtest/README.md`](pushtest/README.md) for the full measurement.
+
+The fallback works instead: the app holds its WebSocket and raises notifications
+itself, which needs no push service. That depends on the app staying alive with
+the phone shut — measured at over 20 minutes idle, surviving both the camera and
+a phone call. Backgrounded timers get throttled to minutes, but the app runs at
+full speed the moment anything wakes the device, which is what an arriving
+message does.
+
+Still unanswered on device: Opus decoding for voice notes, H.264 video, animated
+stickers, and real notification latency end to end.
+
+**Calls are blocked, not deferred.** Three independent reasons: `audio-capture`
+is a privileged permission and this is a `web`-type app; the KaiStore agreement
+forbids VoIP over the cellular network; and the most experienced KaiOS app
+developers report voice calls are not achievable on this platform at all. The
+first is the only one that might move.
 
 ## Don't commit the database
 

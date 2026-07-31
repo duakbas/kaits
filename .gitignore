@@ -17,4 +17,4 @@ endpoint.txt
 pushtest/build/
 __pycache__/
 *.pyc
-wa-kaios/build/
+kaits/build/

@@ -57,8 +57,8 @@ if ! grep -q "var CATCHER = \"$CATCHER\";" "$STAGE/index.html"; then
   exit 1
 fi
 cp "$HERE/sw.js" "$STAGE/"
-cp "$ROOT/wa-kaios/icons/icon-56.png"  "$STAGE/icons/"
-cp "$ROOT/wa-kaios/icons/icon-112.png" "$STAGE/icons/"
+cp "$ROOT/kaits/icons/icon-56.png"  "$STAGE/icons/"
+cp "$ROOT/kaits/icons/icon-112.png" "$STAGE/icons/"
 
 # Same permissions as the hosted manifest, root-relative paths.
 cat > "$STAGE/manifest.webapp" <<JSON

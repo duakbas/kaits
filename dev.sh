@@ -53,7 +53,7 @@ echo "==> serving the app on http://localhost:$APP_PORT"
 # exec inside the subshell matters: without it $! is the SUBSHELL's pid, and
 # killing that leaves python reparented and still holding the port. exec
 # replaces the subshell with python itself, so $! is the process we need.
-( cd wa-kaios && exec python3 -m http.server "$APP_PORT" >/dev/null 2>&1 ) &
+( cd kaits && exec python3 -m http.server "$APP_PORT" >/dev/null 2>&1 ) &
 APP_PID=$!
 
 echo "==> starting the daemon (Ctrl-C stops both)"
