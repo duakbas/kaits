@@ -250,3 +250,4 @@ ongoing: nothing is missing until something newer arrives to reveal it.
 | `WAD_REFETCH_MEDIA` | unset | `1` = ask the phone to re-send history so old attachments become downloadable |
 | `WAD_REFETCH_MAX` | `40` | max history requests one refetch run may send |
 | `WAD_PRESENCE` | `available` | `unavailable` = invisible, `off` = send no presence |
+| `WAD_INCLUDE_STATUS` | unset | `1` = keep status/"Updates" posts instead of ignoring them |

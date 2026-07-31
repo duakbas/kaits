@@ -434,6 +434,14 @@ func (c *Client) pushMessage(v *events.Message) { c.handleMsg(v, true) }
 func (c *Client) handleMsg(v *events.Message, live bool) {
 	m := v.Message
 
+	// Status/"Updates" posts arrive as messages in status@broadcast and would
+	// otherwise show up as a chat from a mysterious "~status". They're a
+	// different product surface, not a conversation, so they're dropped unless
+	// explicitly wanted.
+	if isStatusBroadcast(v.Info.Chat) && os.Getenv("WAD_INCLUDE_STATUS") != "1" {
+		return
+	}
+
 	// A reaction is a message about another message, not a message in its own
 	// right — it decorates an existing bubble rather than adding one.
 	if m.GetReactionMessage() != nil {
@@ -806,6 +814,26 @@ func (c *Client) displayNameSourced(jid types.JID, pushName string) (string, boo
 		return n, false
 	}
 	return "", false
+}
+
+// isStatusBroadcast reports whether a chat is WhatsApp's status/Updates feed.
+// Broadcast LISTS are ordinary conversations and deliberately not included.
+func isStatusBroadcast(jid types.JID) bool {
+	return jid.Server == types.BroadcastServer &&
+		jid.User == types.StatusBroadcastJID.User
+}
+
+// PurgeStatusBroadcast removes any status/Updates chat already stored, so
+// turning the filter on also clears what landed before it existed.
+func (c *Client) PurgeStatusBroadcast() bool {
+	jid := types.StatusBroadcastJID.String()
+	for _, row := range c.hist.listChats() {
+		if row["jid"] == jid {
+			c.hist.dropChat(jid)
+			return true
+		}
+	}
+	return false
 }
 
 // tildeUnsaved marks a name the contact chose for themselves with a leading "~",

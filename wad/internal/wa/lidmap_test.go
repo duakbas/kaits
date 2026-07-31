@@ -406,3 +406,24 @@ func TestUnsupportedLabel(t *testing.T) {
 		}
 	}
 }
+
+// Status/"Updates" posts are a separate product surface, not a conversation.
+// Broadcast LISTS are real chats and must not be caught by the same filter.
+func TestIsStatusBroadcast(t *testing.T) {
+	cases := []struct {
+		name string
+		jid  types.JID
+		want bool
+	}{
+		{"status feed", types.StatusBroadcastJID, true},
+		{"broadcast list", types.JID{User: "1234567890", Server: types.BroadcastServer}, false},
+		{"ordinary dm", types.JID{User: "41791234567", Server: types.DefaultUserServer}, false},
+		{"group", types.JID{User: "123-456", Server: types.GroupServer}, false},
+		{"lid", types.JID{User: "104570072096833", Server: types.HiddenUserServer}, false},
+	}
+	for _, c := range cases {
+		if got := isStatusBroadcast(c.jid); got != c.want {
+			t.Errorf("%s: isStatusBroadcast(%s) = %v, want %v", c.name, c.jid, got, c.want)
+		}
+	}
+}

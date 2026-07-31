@@ -105,6 +105,10 @@ func main() {
 		// Previews embed the sender's name, so they must be recomputed last —
 		// after every name pass above has settled.
 		log.Printf("LID migration: %d chat previews rebuilt", waCli.RebuildPreviewsNow())
+		if os.Getenv("WAD_INCLUDE_STATUS") != "1" && waCli.PurgeStatusBroadcast() {
+			log.Printf("LID migration: removed the stored status/Updates chat " +
+				"(WAD_INCLUDE_STATUS=1 to keep it in future)")
+		}
 		return
 	}
 
