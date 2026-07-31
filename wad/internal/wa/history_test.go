@@ -1059,3 +1059,56 @@ func TestDeleteMessageLocalOnly(t *testing.T) {
 		t.Error("the deleted message's reactions should go with it")
 	}
 }
+
+// A message's display name is resolved from the sender JID when it's read, not
+// taken from whatever was written into the row when it arrived. That's what
+// makes saving a contact fix their entire history at once, and it's why the
+// old repair passes existed — rows carried a stale snapshot that nothing
+// updated.
+func TestSenderNamesResolveAtReadTime(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+	chat := "1234@s.whatsapp.net"
+	sender := "9999@s.whatsapp.net"
+
+	// Stored with a name from before the resolver knew any better.
+	putMsg(h, chat, "m1", sender, "999999999", "hello", 100, false)
+
+	// Nothing saved yet: the stored value survives as a floor.
+	got := c.resolveSenderNames(h.history(chat, 0, 10))
+	if len(got) != 1 {
+		t.Fatalf("history returned %d messages, want 1", len(got))
+	}
+	if got[0].SenderName != "999999999" {
+		t.Errorf("with nothing saved = %q, want the stored name to survive", got[0].SenderName)
+	}
+
+	// Save a contact — the message was written long before this happened.
+	h.setLocalContact(sender, "Bulgayrian", 1)
+
+	got = c.resolveSenderNames(h.history(chat, 0, 10))
+	if got[0].SenderName != "Bulgayrian" {
+		t.Errorf("after saving = %q, want %q — the stored row was never rewritten",
+			got[0].SenderName, "Bulgayrian")
+	}
+
+	// The row itself is untouched: resolution happens on the way out.
+	raw := h.history(chat, 0, 10)
+	if raw[0].SenderName != "999999999" {
+		t.Errorf("stored row = %q, want it left alone at %q",
+			raw[0].SenderName, "999999999")
+	}
+}
+
+// Our own messages aren't relabelled — "fromme" has no sender to resolve.
+func TestOwnMessagesKeepTheirName(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+	chat := "1234@s.whatsapp.net"
+	putMsg(h, chat, "m1", "", "You", "hi", 100, true)
+
+	got := c.resolveSenderNames(h.history(chat, 0, 10))
+	if got[0].SenderName != "You" {
+		t.Errorf("own message = %q, want %q", got[0].SenderName, "You")
+	}
+}
