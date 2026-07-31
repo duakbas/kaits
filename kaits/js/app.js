@@ -2228,11 +2228,20 @@
   // a new one. The jid rides in data so sw.js's notificationclick handler opens
   // the right chat.
   function osNotify(title, body, jid) {
+    // Deliberately minimal. On the phone the full option set produced a
+    // vibration and no visible bubble, while Push Test's notification — which
+    // passed body and nothing else — rendered and persisted. Gecko 48 is old
+    // enough that an icon it can't resolve, or an option it doesn't implement,
+    // can leave the notification unrendered without throwing anything.
+    //
+    // tag and data stay because they do real work: tag is what makes a second
+    // message update that conversation's bubble instead of stacking a new one,
+    // and data is how sw.js knows which chat to open when it's tapped. icon and
+    // renotify are cosmetic and are the ones being dropped. KaiOS shows the
+    // app's own icon anyway.
     var opts = {
       body: body || "",
-      icon: "/icons/icon-112.png",
       tag: "wa-" + jid,
-      renotify: true,
       data: { jid: jid }
     };
 
@@ -2339,6 +2348,10 @@
         (c && c.preview) || "",
         m.chat
       );
+      // Buzz separately rather than relying on the notification to do it: the
+      // phone showed a vibration with no bubble, so the two clearly aren't the
+      // same mechanism, and the buzz is the half you never want to lose.
+      buzz();
       return;
     }
 
