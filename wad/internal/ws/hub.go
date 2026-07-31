@@ -37,6 +37,17 @@ func NewHub() *Hub {
 
 func (h *Hub) OnFrame(fn func(Envelope)) { h.handler = fn }
 
+// HasClient reports whether the app is currently attached.
+//
+// Used to decide whether a message needs a push wake-up: if the app is here,
+// the frame it already received is the notification, and waking the phone on
+// top of that would be noise.
+func (h *Hub) HasClient() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sendCh != nil
+}
+
 // Push queues a frame to the current connection. If none is attached, the
 // frame is dropped (the app re-requests on reconnect anyway).
 func (h *Hub) Push(e Envelope) {

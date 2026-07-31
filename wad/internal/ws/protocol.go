@@ -22,23 +22,25 @@ type Envelope struct {
 
 // ---- daemon -> app ----
 const (
-	TReady      = "ready"      // daemon connected & WA session live
-	TPaired     = "paired"     // pairing completed (after QR scan)
-	TQR         = "qr"         // {code: "2@..."} render this as a QR on-screen
-	TMessage    = "message"    // an inbound WA message (see MsgData)
-	TReceipt    = "receipt"    // delivery/read receipt for a message we sent
-	TChatList   = "chatlist"   // reply to "getchats": [{jid,name,ts,preview,unread}]
-	THistory    = "history"    // reply to "gethistory": messages for one chat
-	TPresence   = "presence"   // someone came online / typing
-	TCallOffer  = "calloffer"  // incoming WA call (see CallData) -> app should ring
-	TCallState  = "callstate"  // call lifecycle: ringing/accepted/ended/failed
-	TCallSignal = "callsignal" // WebRTC signalling from pion -> app (sdp/ice)
-	TError      = "error"      // {code, msg}
-	TProfile    = "profile"    // reply to "getprofile"/"savecontact" (ProfileData)
-	TChatUpdate = "chatupdate" // {chat, pinned, muted, archived, removed}
-	TReaction   = "reaction"   // {chat, msgid, reactions:[...]} — the full current set
-	TStatus     = "status"     // {chat, msgid, status} delivery state of a message we sent
-	TTyping     = "typing"     // both ways: {chat, sender, sendername, state} composing/paused
+	TReady        = "ready"        // daemon connected & WA session live
+	TPaired       = "paired"       // pairing completed (after QR scan)
+	TQR           = "qr"           // {code: "2@..."} render this as a QR on-screen
+	TMessage      = "message"      // an inbound WA message (see MsgData)
+	TReceipt      = "receipt"      // delivery/read receipt for a message we sent
+	TChatList     = "chatlist"     // reply to "getchats": [{jid,name,ts,preview,unread}]
+	THistory      = "history"      // reply to "gethistory": messages for one chat
+	TPresence     = "presence"     // someone came online / typing
+	TCallOffer    = "calloffer"    // incoming WA call (see CallData) -> app should ring
+	TCallState    = "callstate"    // call lifecycle: ringing/accepted/ended/failed
+	TCallSignal   = "callsignal"   // WebRTC signalling from pion -> app (sdp/ice)
+	TError        = "error"        // {code, msg}
+	TProfile      = "profile"      // reply to "getprofile"/"savecontact" (ProfileData)
+	TChatUpdate   = "chatupdate"   // {chat, pinned, muted, archived, removed}
+	TReaction     = "reaction"     // {chat, msgid, reactions:[...]} — the full current set
+	TStatus       = "status"       // {chat, msgid, status} delivery state of a message we sent
+	TTyping       = "typing"       // both ways: {chat, sender, sendername, state} composing/paused
+	TSearchResult = "searchresult" // reply to "search": [{msgid,chat,chatname,text,ts}]
+	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
 )
 
 // ---- app -> daemon ----
@@ -59,6 +61,10 @@ const (
 	TGetProfile   = "getprofile"   // {jid} request contact or group info
 	TSaveContact  = "savecontact"  // {jid, name} save a local nickname ("" clears)
 	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
+	TSearch       = "search"       // {q, chat?, limit?} search stored messages
+	TWatch        = "watch"        // {jid} subscribe to a contact's presence
+	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
+	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
 )
 
 // MsgData is an inbound message pushed to the app.
@@ -113,6 +119,8 @@ type SendData struct {
 	// to the quoted author's DM instead of ChatJID, which the daemon resolves
 	// from QuotedID (the app can't — group senders are per-group LIDs).
 	Private bool `json:"private,omitempty"`
+	// FileName labels a document; ignored for other kinds.
+	FileName string `json:"filename,omitempty"`
 }
 
 // ProfileData is everything the contact / group info screen renders.

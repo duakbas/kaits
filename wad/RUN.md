@@ -251,3 +251,90 @@ ongoing: nothing is missing until something newer arrives to reveal it.
 | `WAD_REFETCH_MAX` | `40` | max history requests one refetch run may send |
 | `WAD_PRESENCE` | `available` | `unavailable` = invisible, `off` = send no presence |
 | `WAD_INCLUDE_STATUS` | unset | `1` = keep status/"Updates" posts instead of ignoring them |
+
+## Push notifications (daemon off-device)
+
+The phone can't hold a socket open while the app is closed — on KaiOS there is
+one always-on connection on the whole device, the OS's push channel, shared by
+every app. So the daemon plays the part every other app's backend plays: it
+stays connected to WhatsApp, and when a message arrives it POSTs to the phone's
+push endpoint to wake the app's service worker.
+
+**This only works with the daemon somewhere always-on** — a VPS, a Raspberry
+Pi, a machine that doesn't sleep. A daemon that isn't running received nothing,
+so there is nothing to wake for. (Running the daemon *on* the phone is a
+different architecture that doesn't need push at all: it would hold the
+connection itself and notify directly.)
+
+The push carries **no payload**. KaiOS allows subscribing without an
+`applicationServerKey`, and without VAPID only empty pushes are permitted —
+which suits this design, because the app re-syncs from the daemon on connect
+anyway. The push is a doorbell, not a delivery: message content never passes
+through Mozilla's or KaiOS's push infrastructure, and there are no keys to
+manage.
+
+Flow:
+
+1. the app registers `sw.js` and subscribes, getting an endpoint back;
+2. it hands the endpoint to the daemon (`pushsub`), stored in `push_subs`;
+3. a message arrives while no app is connected → the daemon POSTs to it;
+4. the OS wakes `sw.js`, which fetches `/notify-summary` for the wording and
+   shows a notification;
+5. tapping it focuses or launches the app, which connects and syncs.
+
+### Testing notifications without a phone
+
+**Use Firefox, not Chrome.** Chrome's push goes through FCM and *requires* an
+`applicationServerKey`; our subscribe call deliberately omits one, so Chrome
+throws instead of returning an endpoint and you never get past step 1. Firefox
+uses Mozilla autopush — the same lineage KaiOS's push service descends from —
+and allows keyless subscription exactly as KaiOS does, so the whole loop works
+there: subscribe → endpoint → daemon POSTs → worker wakes → notification.
+
+For the notification rendering itself, there's a shortcut that needs no push at
+all and works in any browser. With the app open, in the console:
+
+```js
+App.testNotify()
+```
+
+That runs the real service-worker path against live unread state, so grouping,
+tag replacement and click-to-open can all be checked without waiting for someone
+to message you.
+
+What still can't be tested off-device: whether KaiOS's notification tray honours
+`tag` replacement and `renotify` buzzing, and whether the OS wakes a genuinely
+closed app.
+
+### One notification per conversation
+
+The phone shows a bubble per chat, tagged with the chat's JID. A second message
+in the same conversation **replaces** that bubble rather than stacking a new
+one, and `renotify` makes the replacement buzz — so an updating notification
+still announces itself. A different conversation gets its own bubble.
+
+The body is the chat's own preview while there's one unread ("Alex: on my way"),
+and switches to a count once there's more than one. So a chat collapses to a
+single line only after it becomes a conversation.
+
+Wake-ups are coalesced **per chat**, not globally: every chat that gets a
+message wakes the phone immediately, and only repeats within the same chat
+inside 3 seconds are folded together (`pushCoalesce` in `internal/wa/push.go`).
+Nothing is lost when they are — the chat's bubble shows the higher count either
+way; you just get one buzz instead of two for messages that arrived nearly
+together.
+
+Tapping a notification opens that conversation, whether the app was already
+running (the worker messages it) or had to be launched (the JID rides in the URL
+fragment).
+
+Muted chats never wake the phone, and neither do your own messages. Bubbles for
+chats that are no longer unread — read on another device — are closed on the
+next wake. Endpoints that return 404/410 are dropped, since that means the
+subscription is dead.
+
+**The endpoints are capability URLs**: anyone holding one can wake the device.
+They live in the gitignored history db, and only a shortened form is logged.
+
+`/notify-summary` is token-guarded like the socket — it reports who is messaging
+you, which isn't public.

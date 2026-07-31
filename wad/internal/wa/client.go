@@ -68,6 +68,9 @@ type Client struct {
 	// contact names. nil if it couldn't be opened — callers must cope.
 	sess *sessionStore
 
+	// push wakes the phone when it isn't connected.
+	push *pusher
+
 	// gapTried remembers which chats we've already asked to backfill this run,
 	// so a long-quiet chat doesn't trigger a request on every message.
 	gapTried map[string]bool
@@ -118,6 +121,7 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		avatars:    make(map[string]avatarEntry),
 		hist:       hist,
 		sess:       sess,
+		push:       newPusher(),
 	}
 	waCli.AddEventHandler(c.handleEvent)
 	return c, nil
@@ -247,10 +251,16 @@ func (c *Client) handleEvent(evt any) {
 		})
 
 	case *events.Presence:
+		// LastSeen is zero when the contact hides it; send 0 rather than a
+		// nonsense 1970 timestamp so the app can tell "hidden" from "ages ago".
+		var lastSeen int64
+		if !v.LastSeen.IsZero() {
+			lastSeen = v.LastSeen.Unix()
+		}
 		c.hub.PushT(ws.TPresence, map[string]any{
-			"jid":         v.From.String(),
+			"jid":         c.canonicalJID(v.From).String(),
 			"unavailable": v.Unavailable,
-			"lastseen":    v.LastSeen.Unix(),
+			"lastseen":    lastSeen,
 		})
 
 	// ---- call events: hand off to the calls package (meowcaller) ----
@@ -395,6 +405,52 @@ func (c *Client) MyReactionTo(chatJID, msgID string) string {
 	return ""
 }
 
+// handleEdit rewrites a stored message's text in place.
+//
+// Deliberately does NOT wake the phone: an edit is a correction to something
+// already delivered, not new news, and buzzing for it would be noise. The app
+// updates the bubble live if it's connected.
+func (c *Client) handleEdit(v *events.Message, targetID, body string, live bool) {
+	chat := c.canonicalJID(v.Info.Chat).String()
+	if targetID == "" {
+		return
+	}
+	if !c.hist.editMessageText(chat, targetID, body) {
+		return // we never had the original; nothing to correct
+	}
+	if live {
+		c.hub.PushT(ws.TEdited, map[string]any{
+			"chat": chat, "msgid": targetID, "text": body,
+			"ts": v.Info.Timestamp.Unix(),
+		})
+	}
+}
+
+// EditMessage rewrites one of the user's own messages.
+//
+// WhatsApp only allows this for a limited window after sending (about 15
+// minutes), and rejects it afterwards — the error is surfaced rather than
+// swallowed so the app can say why nothing happened.
+func (c *Client) EditMessage(ctx context.Context, chatJID, msgID, newText string) error {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(newText) == "" {
+		return fmt.Errorf("an edited message can't be empty")
+	}
+	_, err = c.WA.SendMessage(ctx, jid,
+		c.WA.BuildEdit(jid, types.MessageID(msgID), textMsg(newText)))
+	if err != nil {
+		return err
+	}
+	c.hist.editMessageText(chatJID, msgID, newText)
+	c.hub.PushT(ws.TEdited, map[string]any{
+		"chat": chatJID, "msgid": msgID, "text": newText, "ts": time.Now().Unix(),
+	})
+	return nil
+}
+
 // MarkChatRead tells WhatsApp the user has read a chat's incoming messages, and
 // records it locally so we don't keep re-sending the same receipt.
 func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) {
@@ -427,6 +483,49 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) 
 	return c.hist.markAllRead(chatJID), nil
 }
 
+// Search finds messages matching a query, optionally within one chat, and
+// labels each hit with the conversation it came from.
+func (c *Client) Search(query, chat string, limit int) []map[string]any {
+	hits := c.hist.searchMessages(query, chat, limit)
+	jids := make([]string, 0, len(hits))
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if !seen[h.ChatJID] {
+			seen[h.ChatJID] = true
+			jids = append(jids, h.ChatJID)
+		}
+	}
+	names := c.hist.chatNamesFor(jids)
+
+	out := make([]map[string]any, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, map[string]any{
+			"msgid": h.MsgID, "chat": h.ChatJID, "chatname": names[h.ChatJID],
+			"sendername": h.SenderName, "fromme": h.FromMe,
+			"ts": h.Timestamp, "kind": h.Kind, "text": h.Text,
+		})
+	}
+	return out
+}
+
+// WatchPresence subscribes to someone's online/last-seen updates.
+//
+// WhatsApp only sends presence for users you've explicitly subscribed to, which
+// is why the Presence event handler existed but never fired: nothing ever
+// asked. Subscribing is per-user and resets on reconnect, so the app re-asks
+// each time it opens a chat.
+func (c *Client) WatchPresence(ctx context.Context, chatJID string) error {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	// Groups have no presence, and subscribing to one is an error.
+	if jid.Server != types.DefaultUserServer {
+		return nil
+	}
+	return c.WA.SubscribePresence(ctx, jid)
+}
+
 // UnreadCount is how many incoming messages in a chat are still unread.
 func (c *Client) UnreadCount(chatJID string) int { return c.hist.unreadCount(chatJID) }
 
@@ -451,6 +550,16 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 	// right — it decorates an existing bubble rather than adding one.
 	if m.GetReactionMessage() != nil {
 		c.handleReaction(v, live)
+		return
+	}
+
+	// An edit is likewise about an existing message. It arrives wrapped in a
+	// ProtocolMessage, which we otherwise treat as housekeeping and drop — so
+	// until now an edited message kept showing its ORIGINAL text forever, with
+	// nothing to indicate it had changed. Showing stale text is worse than
+	// showing none.
+	if target, body, ok := editedMessageFrom(m); ok {
+		c.handleEdit(v, target, body, live)
 		return
 	}
 	// Canonicalize LID -> phone JID so a person isn't split across two chats.
@@ -605,6 +714,11 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 	// Only notify the app for live messages; history-sync is pull-based.
 	if live {
 		c.hub.PushT(ws.TMessage, d)
+		// Wake the phone if the app isn't there to receive that push. When it
+		// IS connected the frame above already did the job.
+		if !c.hub.HasClient() {
+			c.notifyPush(msgSummary{Chat: d.ChatJID, FromMe: d.FromMe})
+		}
 	}
 }
 
@@ -978,14 +1092,71 @@ func (c *Client) displayNameForJID(jid types.JID) string {
 	return c.displayName(jid, "")
 }
 
-// DeleteMessage revokes (deletes for everyone) one of the user's own messages.
-func (c *Client) DeleteMessage(ctx context.Context, chatJID, msgID string) error {
+// DeleteMessage removes a message. scope is:
+//
+//	"me"       drop it from our own store only; nobody else is affected.
+//	"everyone" revoke it on WhatsApp.
+//
+// Revoking someone else's message is a group-admin power: WhatsApp wants the
+// original sender's JID, where revoking your own wants an empty one. We look
+// the sender up rather than making the app pass it, since a group sender
+// arrives as a per-group LID the app can't resolve.
+func (c *Client) DeleteMessage(ctx context.Context, chatJID, msgID, scope string) error {
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return err
 	}
-	_, err = c.WA.SendMessage(ctx, jid, c.WA.BuildRevoke(jid, types.EmptyJID, msgID))
-	return err
+	if scope == "me" {
+		// Local only. WhatsApp has no "delete for me" that syncs, so this is
+		// honestly just our copy — said plainly in the app's confirmation.
+		c.hist.deleteMessage(chatJID, msgID)
+		return nil
+	}
+
+	sender := types.EmptyJID
+	if s, _, _, ok := c.lookupMessage(msgID); ok {
+		if own := c.WA.Store.ID; own == nil || s.User != own.User {
+			// Someone else's message — name them, which is what makes an admin
+			// revoke work. WhatsApp rejects it if we aren't an admin.
+			sender = c.canonicalJID(s)
+		}
+	}
+	if _, err := c.WA.SendMessage(ctx, jid, c.WA.BuildRevoke(jid, sender, msgID)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CanDeleteForEveryone reports whether the user may revoke a given message:
+// their own always, someone else's only as an admin of that group.
+func (c *Client) CanDeleteForEveryone(ctx context.Context, chatJID, msgID string, fromMe bool) bool {
+	if fromMe {
+		return true
+	}
+	jid, err := types.ParseJID(chatJID)
+	if err != nil || jid.Server != types.GroupServer {
+		return false // you can't revoke someone else's message in a DM
+	}
+	return c.isGroupAdmin(ctx, jid)
+}
+
+// isGroupAdmin checks whether we hold admin in a group.
+func (c *Client) isGroupAdmin(ctx context.Context, group types.JID) bool {
+	own := c.WA.Store.ID
+	if own == nil {
+		return false
+	}
+	info, err := c.WA.GetGroupInfo(ctx, group)
+	if err != nil || info == nil {
+		return false
+	}
+	ownUser := own.ToNonAD().User
+	for _, p := range info.Participants {
+		if p.JID.User == ownUser || c.canonicalJID(p.JID).User == ownUser {
+			return p.IsAdmin || p.IsSuperAdmin
+		}
+	}
+	return false
 }
 
 // ForwardMessage re-sends a previously seen message's content to another chat.

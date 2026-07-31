@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"wad/internal/ws"
 
@@ -125,6 +126,13 @@ func openHistStore(path string) (*histStore, error) {
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(chat, fromme, status)`)
 	// Small key/value table for one-time upgrade steps.
 	db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`)
+	// Push endpoints the phone has registered. These are capability URLs —
+	// holding one lets you wake the device — so they live here with the rest of
+	// the gitignored state, never in the repo.
+	db.Exec(`CREATE TABLE IF NOT EXISTS push_subs (
+		endpoint TEXT PRIMARY KEY,
+		created  INTEGER
+	)`)
 
 	// Every message stored before read-tracking existed has an empty status,
 	// which the unread count would read as "never read" — surfacing tens of
@@ -216,6 +224,82 @@ func (h *histStore) listChats() []map[string]any {
 	return out
 }
 
+// searchMessages finds messages whose text matches a query, newest first.
+//
+// A plain LIKE over the messages table: with tens of thousands of rows this is
+// a scan, but it's a scan of one local sqlite file on a query the user typed
+// deliberately, so it stays well inside "instant". chat scopes it to one
+// conversation; empty searches everywhere.
+func (h *histStore) searchMessages(query, chat string, limit int) []ws.MsgData {
+	out := []ws.MsgData{}
+	if h == nil || h.db == nil || strings.TrimSpace(query) == "" {
+		return out
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	// Escape LIKE's own wildcards so searching for "100%" doesn't match
+	// everything.
+	esc := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(query)
+	pattern := "%" + esc + "%"
+
+	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text
+	      FROM messages
+	      WHERE text LIKE ? ESCAPE '\' AND text<>''`
+	args := []any{pattern}
+	if chat != "" {
+		q += ` AND chat=?`
+		args = append(args, chat)
+	}
+	q += ` ORDER BY ts DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := h.db.Query(q, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d ws.MsgData
+		var sender, sname, kind, text sql.NullString
+		var fromme, ts sql.NullInt64
+		if rows.Scan(&d.MsgID, &d.ChatJID, &sender, &sname, &fromme, &ts, &kind, &text) != nil {
+			continue
+		}
+		d.SenderJID, d.SenderName = sender.String, sname.String
+		d.Kind, d.Text = kind.String, text.String
+		d.Timestamp, d.FromMe = ts.Int64, fromme.Int64 == 1
+		out = append(out, d)
+	}
+	return out
+}
+
+// chatNamesFor maps chat JIDs to their display names, so search results can be
+// labelled with the conversation they came from.
+func (h *histStore) chatNamesFor(jids []string) map[string]string {
+	out := map[string]string{}
+	if h == nil || h.db == nil || len(jids) == 0 {
+		return out
+	}
+	args := make([]any, len(jids))
+	for i, j := range jids {
+		args[i] = j
+	}
+	rows, err := h.db.Query(`SELECT jid, COALESCE(name,'') FROM chats
+		WHERE jid IN (?`+repeatPlaceholders(len(jids)-1)+`)`, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jid, name string
+		if rows.Scan(&jid, &name) == nil {
+			out[jid] = name
+		}
+	}
+	return out
+}
+
 // unreadCount is the number of incoming messages in a chat not yet marked read.
 func (h *histStore) unreadCount(chat string) int {
 	if h == nil || h.db == nil {
@@ -282,6 +366,38 @@ func (h *histStore) lastMessage(chat string) (msgid string, ts int64, fromMe boo
 	h.db.QueryRow(`SELECT msgid,ts,fromme,sender FROM messages WHERE chat=?
 		ORDER BY ts DESC LIMIT 1`, chat).Scan(&id, &t, &fm, &snd)
 	return id.String, t.Int64, fm.Int64 == 1, snd.String
+}
+
+// editMessageText rewrites a stored message's body. Returns false when we never
+// had the original — an edit for a message outside our history is nothing to
+// apply, and inventing a row for it would put a bodiless message in the thread.
+func (h *histStore) editMessageText(chat, msgid, body string) bool {
+	if h == nil || h.db == nil || msgid == "" {
+		return false
+	}
+	res, err := h.db.Exec(`UPDATE messages SET text=? WHERE chat=? AND msgid=?`,
+		body, chat, msgid)
+	if err != nil || res == nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return false
+	}
+	// The chat-list preview quotes the message, so it goes stale otherwise.
+	h.db.Exec(`UPDATE chats SET preview=? WHERE jid=? AND last_ts=
+		(SELECT MAX(ts) FROM messages WHERE chat=?)`, body, chat, chat)
+	return true
+}
+
+// deleteMessage removes one message from our own store only. Used for "delete
+// for me", which WhatsApp has no synced equivalent of.
+func (h *histStore) deleteMessage(chat, msgid string) {
+	if h == nil || h.db == nil {
+		return
+	}
+	h.db.Exec(`DELETE FROM messages WHERE chat=? AND msgid=?`, chat, msgid)
+	h.db.Exec(`DELETE FROM reactions WHERE chat=? AND msgid=?`, chat, msgid)
 }
 
 // messageByID finds a stored message by id, across chats.

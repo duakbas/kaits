@@ -270,7 +270,7 @@ header .status.closed { color: var(--danger); }
   padding: 7px 10px;
   font-size: 13px;
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   border: none;
   border-bottom: 1px solid var(--line);
 }
@@ -379,7 +379,7 @@ header .status.closed { color: var(--danger); }
 .profile-status {
   font-size: 11px;
   margin: 6px 4px 0;
-  color: var(--fg);
+  color: var(--text);
   word-break: break-word;
 }
 .profile-actions {
@@ -476,3 +476,67 @@ header .status.closed { color: var(--danger); }
 #sk-left   { flex: 1; text-align: left;   padding-left: 8px; color: var(--muted); }
 #sk-center { flex: 1; text-align: center; color: var(--accent); }
 #sk-right  { flex: 1; text-align: right;  padding-right: 8px; color: var(--accent); }
+
+/* ---- full-screen media viewer ---- */
+#viewer {
+  position: absolute;
+  left: 0; right: 0; top: 30px; bottom: 24px;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+#viewer[hidden] { display: none; }
+#viewer-img {
+  max-width: 100%;
+  max-height: calc(100% - 18px);
+  object-fit: contain;
+}
+#viewer-caption {
+  color: var(--muted);
+  font-size: 10px;
+  padding: 3px 6px;
+  text-align: center;
+  max-height: 30px;
+  overflow: hidden;
+}
+
+/* ---- search ---- */
+#search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--panel);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--line);
+}
+.search-row {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.search-row.focused { background: var(--accent-dim); }
+.search-head {
+  font-size: 9px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-body { font-size: 12px; margin-top: 1px; }
+
+/* archived entry / back row in the chat list */
+.archived-entry {
+  display: block;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.archived-entry.focused { background: var(--accent-dim); color: var(--text); }
+
+/* an unsent draft, shown in place of the chat preview */
+.chat-prev.draft { color: var(--danger); font-style: italic; }
