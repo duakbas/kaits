@@ -2228,17 +2228,36 @@
   // a new one. The jid rides in data so sw.js's notificationclick handler opens
   // the right chat.
   function osNotify(title, body, jid) {
-    if (!navigator.serviceWorker || !navigator.serviceWorker.ready) return;
-    navigator.serviceWorker.ready.then(function (reg) {
-      if (!reg || !reg.showNotification) return;
-      reg.showNotification(title || "Message", {
-        body: body || "",
-        icon: "/icons/icon-112.png",
-        tag: "wa-" + jid,
-        renotify: true,
-        data: { jid: jid }
-      });
-    }).catch(function () { /* no worker; the buzz is all we have */ });
+    var opts = {
+      body: body || "",
+      icon: "/icons/icon-112.png",
+      tag: "wa-" + jid,
+      renotify: true,
+      data: { jid: jid }
+    };
+
+    // Prefer the worker: only a worker notification survives the app being
+    // closed, and only it can reopen the app when tapped.
+    var reg = (window.App && window.App.registration) ? window.App.registration() : null;
+    if (reg && reg.showNotification) {
+      try {
+        reg.showNotification(title || "Message", opts);
+        return;
+      } catch (e) { /* fall through */ }
+    }
+
+    // No worker yet. Registration is asynchronous and can fail outright, and
+    // waiting on navigator.serviceWorker.ready is what made this silently do
+    // nothing — that promise never resolves when nothing registered. A plain
+    // page notification is worse (it dies with the page) but it is visible.
+    if (window.Notification && Notification.permission === "granted") {
+      try {
+        new Notification(title || "Message", opts);
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    toast("Can't show a notification: no worker, permission " +
+      (window.Notification ? Notification.permission : "unsupported"));
   }
 
   function buzz() {
@@ -2743,9 +2762,11 @@
     lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
     lines.push("notifications: " +
       (window.Notification ? Notification.permission : "unsupported"));
+    var reg = (window.App && window.App.registration) ? window.App.registration() : null;
     lines.push("service worker: " +
-      (("serviceWorker" in navigator) ? "supported" : "unsupported"));
-    var ps = (window.App && App.pushState) ? App.pushState() : null;
+      (!("serviceWorker" in navigator) ? "unsupported"
+        : reg ? "registered" : "NOT registered"));
+    var ps = (window.App && window.App.pushState) ? window.App.pushState() : null;
     if (ps) lines.push("push: " + ps.state);
     lines.push(versionLabel());
     elSetupDiag.textContent = lines.join("\n");

@@ -166,7 +166,7 @@ type msgSummary struct {
 // and a count once there's more than one — which is what makes a chat collapse
 // into one line only after it becomes a conversation.
 func (c *Client) SummaryForNotification() map[string]any {
-	chats := c.hist.listChats()
+	chats := c.chatListWithFlags()
 	out := make([]map[string]any, 0, 8)
 	total := 0
 

@@ -746,7 +746,7 @@ func (c *Client) handleHistorySync(v *events.HistorySync) {
 	if total > 0 {
 		log.Printf("wa: history sync stored %d messages across %d chats", total, len(convs))
 		// nudge the app to refresh its chat list now that new history landed
-		c.hub.PushT(ws.TChatList, c.hist.listChats())
+		c.hub.PushT(ws.TChatList, c.chatListWithFlags())
 	}
 }
 
@@ -1293,7 +1293,42 @@ func (c *Client) BackfillChatNamesNow() int {
 
 // ListChats returns the persisted chat list for the app's getchats.
 func (c *Client) ListChats() []map[string]any {
-	return c.hist.listChats()
+	return c.chatListWithFlags()
+}
+
+// chatListWithFlags overlays the account's synced pin/mute/archive state onto
+// the stored chat list.
+//
+// Our own columns are written only when the user acts from THIS app, so a chat
+// archived on the phone months ago still read as unarchived here — which made
+// the archived count zero and the Archived view impossible to open. The truth
+// lives in whatsmeow's ChatSettings, synced from the account, and ChatFlags
+// already used it for the profile screen. The chat list simply never did.
+//
+// Where a chat has no synced settings the stored values stand, so a flag set
+// from this app before it syncs back isn't lost.
+func (c *Client) chatListWithFlags() []map[string]any {
+	rows := c.hist.listChats()
+	if c == nil || c.WA == nil || c.WA.Store == nil || c.WA.Store.ChatSettings == nil {
+		return rows
+	}
+	ctx := context.Background()
+	now := time.Now()
+	for _, row := range rows {
+		jidStr, _ := row["jid"].(string)
+		jid, err := types.ParseJID(jidStr)
+		if err != nil {
+			continue
+		}
+		s, err := c.WA.Store.ChatSettings.GetChatSettings(ctx, jid)
+		if err != nil || !s.Found {
+			continue
+		}
+		row["pinned"] = s.Pinned
+		row["muted"] = s.MutedUntil.After(now)
+		row["archived"] = s.Archived
+	}
+	return rows
 }
 
 // History returns stored messages for a chat (oldest->newest), paginated by

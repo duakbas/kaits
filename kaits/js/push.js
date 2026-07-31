@@ -69,6 +69,10 @@
       });
   }
 
+  // The registration, once it exists. Notifications are raised through it, so
+  // it's exposed rather than kept inside the promise chain.
+  var registration = null;
+
   function register() {
     if (!supported()) {
       log("not supported here — the app still works, it just won't wake itself");
@@ -77,6 +81,7 @@
     log("registering service worker…");
     withTimeout(navigator.serviceWorker.register("sw.js"), 20000, "worker registration")
       .then(function (reg) {
+        registration = reg;
         log("service worker registered");
         // The worker can't read window.CONFIG, so give it what it needs to
         // reach the daemon for notification text.
@@ -87,7 +92,9 @@
             if (!sub) { log("no subscription returned"); return; }
             var endpoint = (sub.endpoint || (sub.toJSON && sub.toJSON().endpoint));
             if (!endpoint) { log("subscription has no endpoint"); return; }
-            log("subscribed; handed the endpoint to the daemon");
+            log("subscribed; handing the endpoint to the daemon");
+            // The socket may not be up yet — wire queues this and flushes it on
+            // connect, so it doesn't need to be waited for here.
             W.send(W.T.PUSHSUB, { endpoint: endpoint });
           });
         });
@@ -187,11 +194,13 @@
   // Register only once the socket is up, so the endpoint has somewhere to go.
   // Re-registering on later reconnects is harmless — the daemon upserts, and
   // an unchanged endpoint is a no-op.
-  var done = false;
-  W.onStatus(function (s) {
-    if (s !== "open" || done) return;
-    done = true;
-    // Slightly after connect, so the app's own startup traffic goes first.
-    setTimeout(register, 1200);
-  });
+  // Register immediately. The socket is needed to HAND OVER the endpoint, not
+  // to register the worker or to show a notification — and gating registration
+  // on the socket meant that with no daemon reachable there was no worker, so
+  // navigator.serviceWorker.ready never resolved and every notification
+  // silently did nothing.
+  register();
+
+  window.App = window.App || {};
+  window.App.registration = function () { return registration; };
 })();
