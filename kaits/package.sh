@@ -8,15 +8,15 @@
 # The portal also rejects a build whose version it has already seen, so a
 # re-upload needs a new one.
 #
-#   ./kaits/package.sh            -> kaits/build/kaits.zip  (version 0.0.1)
-#   ./kaits/package.sh 0.0.2      for a re-upload
+#   ./kaits/package.sh            -> kaits/build/kaits.zip  (version 0.0.2)
+#   ./kaits/package.sh 0.0.3      for a re-upload
 #
 # NOTE: js/config.js is baked into the package, and it contains WAD_TOKEN. The
 # zip is a credential. Don't pass it around.
 
 set -euo pipefail
 
-VERSION="${1:-0.0.1}"
+VERSION="${1:-0.0.2}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$HERE/build"
