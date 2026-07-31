@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "name": "WhatsApp",
-  "description": "WhatsApp client (thin) — talks to the wad daemon",
+  "name": "Kaits",
+  "description": "Chat client - talks to your own wad daemon",
   "type": "web",
   "launch_path": "/index.html",
   "icons": {
@@ -27,9 +27,9 @@
   ],
   "locales": {
     "en-US": {
-      "name": "WhatsApp",
-      "subtitle": "Thin client for the wad daemon",
-      "description": "WhatsApp client (thin) — talks to the wad daemon"
+      "name": "Kaits",
+      "subtitle": "Chat client for a self-hosted daemon",
+      "description": "Chat client - talks to your own wad daemon"
     }
   },
   "default_locale": "en-US",
