@@ -104,10 +104,23 @@
         if (isEditing()) break;
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
         break;
+      // On real hardware the red key is the back/exit key, and which name Gecko
+      // gives it varies by device and build — "EndCall" on some, "Escape" or
+      // "GoBack" on others. Accept them all; preventDefault also stops the
+      // system from treating it as "close the app".
       case "EndCall":
       case "Escape":
+      case "GoBack":
+      case "BrowserBack":
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
         break;
+      default:
+        // Which key names a given phone actually emits is the sort of thing
+        // only the device can tell you. Set DEBUG_KEYS in config.js and press
+        // the key to find out, instead of guessing at a keymap.
+        if (window.CONFIG && window.CONFIG.DEBUG_KEYS) {
+          console.log("nav: unhandled key", JSON.stringify(e.key), "code", e.code);
+        }
     }
   });
 
