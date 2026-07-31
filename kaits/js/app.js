@@ -2686,6 +2686,24 @@
       };
     },
     version: versionLabel,
+    // Push a fake INCOMING message through the same path a real one takes, so
+    // the notification decision, the buzz and the bar are all exercised.
+    // Messaging yourself can't test this: those arrive as fromme, which is
+    // skipped on purpose.
+    testIncoming: function (name, text) {
+      pushMsg({
+        chat: "testincoming@s.whatsapp.net",
+        chatname: name || "Test contact",
+        msgid: "test-" + Date.now(),
+        sender: "testincoming@s.whatsapp.net",
+        sendername: name || "Test contact",
+        fromme: false,
+        ts: Math.floor(Date.now() / 1000),
+        kind: "text",
+        text: text || "Testing an incoming message"
+      });
+      return "sent — if the app is backgrounded you should get a notification";
+    },
     testBanner: function (title, body) {
       pendingNotif = { jid: currentJID || "test@s.whatsapp.net",
                        title: title || "Test chat", body: body || "A message" };
