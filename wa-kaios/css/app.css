@@ -164,15 +164,41 @@ header .status.closed { color: var(--danger); }
 #thread { display: flex; flex-direction: column; }
 #thread-title {
   flex: 0 0 auto;
-  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+}
+#thread-avatar {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  font-size: 10px;
+  margin-right: 6px;
+}
+/* min-width:0 is what lets the text actually ellipsize inside a flex row —
+   without it the child refuses to shrink below its content width. */
+#thread-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#thread-name {
   font-weight: 700;
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#thread-sub {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#thread-sub.typing { color: var(--accent); }
 #thread-msgs {
   flex: 1 1 auto;
   overflow-y: auto;

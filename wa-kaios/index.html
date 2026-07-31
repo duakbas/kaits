@@ -26,7 +26,16 @@
 
     <!-- thread -->
     <div id="thread" class="screen" hidden>
-      <div id="thread-title"></div>
+      <!-- Avatar, name, and a second line for typing/presence — the same shape
+           the official client uses, and the presence line is information we
+           already receive but previously crammed into the name with a dash. -->
+      <div id="thread-title">
+        <div id="thread-avatar" class="avatar"></div>
+        <div id="thread-head-text">
+          <div id="thread-name"></div>
+          <div id="thread-sub"></div>
+        </div>
+      </div>
       <div id="thread-msgs"></div>
       <div id="reply-bar" hidden>
         <div id="reply-bar-text"></div>

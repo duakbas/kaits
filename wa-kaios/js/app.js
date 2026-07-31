@@ -31,6 +31,9 @@
   var elThread = document.getElementById("thread");
   var elThreadMsgs = document.getElementById("thread-msgs");
   var elThreadTitle = document.getElementById("thread-title");
+  var elThreadAvatar = document.getElementById("thread-avatar");
+  var elThreadName = document.getElementById("thread-name");
+  var elThreadSub = document.getElementById("thread-sub");
   var elInput = document.getElementById("composer");
   var elAttach = document.getElementById("attach-btn");
   var elNotifBar = document.getElementById("notif-bar");
@@ -280,11 +283,32 @@
   // to the phone and every other linked device. Delete is not undoable, so it
   // asks for confirmation first.
   var chatMenuJID = null;
+  var chatMenuReturn = null;  // where Cancel goes: the list, or back into a chat
 
-  function openChatMenu(jid) {
+  // openThreadOptions is the "•••" softkey inside a chat: the same pin / mute /
+  // archive / info / delete menu the list offers, but returning to the chat
+  // instead of dumping you back on the list.
+  function openThreadOptions() {
+    if (!currentJID) return;
+    openChatMenu(currentJID, returnToThread);
+  }
+
+  // returnToThread, not enterComposeMode: "Contact info" swaps to the profile
+  // screen, and show() hides every other screen, so coming back has to put the
+  // thread on screen again — not merely re-bind the keys.
+  function returnToThread() {
+    if (!currentJID) { enterListScreen(); return; }
+    show(elThread);
+    enterComposeMode();
+  }
+
+  // returnTo is where Cancel and a completed action go back to. Defaults to the
+  // chat list, which is where this menu was originally only ever opened from.
+  function openChatMenu(jid, returnTo) {
     if (!jid) return;
     var c = chats[jid] || { jid: jid };
     chatMenuJID = jid;
+    chatMenuReturn = returnTo || enterListScreen;
     elChatMenuTitle.textContent = c.name || jid;
     elChatMenuList.innerHTML = "";
     [
@@ -318,24 +342,29 @@
   function closeChatMenu() {
     elChatMenu.hidden = true;
     chatMenuJID = null;
-    enterListScreen();
+    var back = chatMenuReturn || enterListScreen;
+    chatMenuReturn = null;
+    back();
   }
 
   function runChatAction(action) {
     var jid = chatMenuJID;
     if (!jid) { closeChatMenu(); return; }
     var c = chats[jid] || {};
+    var back = chatMenuReturn || enterListScreen;
     if (action === "info") {
       elChatMenu.hidden = true;
-      openProfile(jid, enterListScreen);
+      openProfile(jid, back);
       return;
     }
     if (action === "delete") {
       elChatMenu.hidden = true;
+      // Deleting always lands on the list: going "back" into a chat that no
+      // longer exists would be nonsense.
       confirmPrompt("Delete chat?",
         "Deletes it on WhatsApp and every linked device. Cannot be undone.",
         function () { W.send(W.T.CHATACTION, { chat: jid, action: "delete" }); enterListScreen(); },
-        function () { openChatMenu(jid); });
+        function () { openChatMenu(jid, back); });
       return;
     }
     // pin / mute / archive: flip the current state, and echo it locally so the
@@ -370,7 +399,7 @@
     loadingOlder = false;
     pendingOlderFor = null;
     prependAnchor = null;
-    elThreadTitle.textContent = c.name || jid;
+    setThreadHeader(jid, c.name || jid);
     show(elThread);
     clearReply();
     forceScrollBottom = true;
@@ -402,10 +431,14 @@
       // otherwise. The red hardware key goes back either way, which is what
       // freed this one up.
       onSoftLeft: checkNotif,
-      onSoftRight: sendCurrent,       // "Send"
+      // Right softkey is the options menu, matching the platform convention:
+      // the CENTRE key advertises what Enter does, and the right one is "•••".
+      // Send moved to the centre label accordingly — Enter already sent, so the
+      // old right-softkey Send was the odd one out.
+      onSoftRight: openThreadOptions,
       onEnter: sendCurrent
     });
-    Nav.setSoftkeys(notifSoftLabel(), "📎 Left", "Send");
+    Nav.setSoftkeys(notifSoftLabel(), "SEND", "•••");
     setTimeout(function () { elInput.focus(); }, 0);
   }
 
@@ -424,7 +457,9 @@
       onSoftRight: openActionMenu,    // "Actions"
       onBack: enterComposeMode
     });
-    Nav.setSoftkeys("Cancel", "", "Actions");
+    // Centre advertises the Enter action here too; "•••" does the same thing,
+    // so the options key means the same in both thread modes.
+    Nav.setSoftkeys("Cancel", "ACTIONS", "•••");
   }
 
   function moveSelect(delta) {
@@ -814,13 +849,34 @@
   }
 
   function refreshTypingUI(chat) {
-    if (currentJID === chat) {
-      // Typing outranks presence: it's the more immediate fact.
-      var label = typingLabel(chat) || presenceLabel(chat);
-      var c = chats[chat] || {};
-      elThreadTitle.textContent = label ? (c.name || chat) + " — " + label : (c.name || chat);
-    }
+    if (currentJID === chat) setThreadSub(chat);
     if (!elList.hidden) renderChatList();
+  }
+
+  // setThreadSub writes the second header line. Typing outranks presence: it's
+  // the more immediate fact, and it gets the accent colour so a live "typing…"
+  // reads differently from a stale "last seen".
+  function setThreadSub(chat) {
+    var typed = typingLabel(chat);
+    elThreadSub.className = typed ? "typing" : "";
+    elThreadSub.textContent = typed || presenceLabel(chat);
+  }
+
+  // setThreadHeader fills the avatar and name when a chat opens. The avatar
+  // goes through the same lazy queue as the list rows, so it obeys the same
+  // rate limit — profile-picture requests are what tripped WhatsApp before.
+  function setThreadHeader(jid, name) {
+    elThreadName.textContent = name;
+    elThreadAvatar.textContent = initialsFor(name);
+    elThreadAvatar.style.background = colorFor(name);
+    // Reset the lazy-load bookkeeping, or switching chats keeps the previous
+    // contact's photo.
+    var old = elThreadAvatar.querySelector("img");
+    if (old) elThreadAvatar.removeChild(old);
+    elThreadAvatar.removeAttribute("data-avatar-done");
+    elThreadAvatar.setAttribute("data-avatar-jid", jid);
+    enqueueAvatar(elThreadAvatar);
+    setThreadSub(jid);
   }
 
   // presenceLabel renders "online" or "last seen ...". A zero lastseen means
@@ -2222,7 +2278,7 @@
   function refreshNotifSoftkey() {
     if (elThread.hidden || selectMode || menuOpen) return;
     if (!elChatMenu.hidden || !elMenu.hidden) return;
-    Nav.setSoftkeys(notifSoftLabel(), "📎 Left", "Send");
+    Nav.setSoftkeys(notifSoftLabel(), "SEND", "•••");
   }
 
   // ---------- wire up events ----------
