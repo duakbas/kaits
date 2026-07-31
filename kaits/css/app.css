@@ -9,9 +9,9 @@
   --line: #263230;
   --text: #e8efec;
   --muted: #7d8b88;
-  --accent: #2ec4b6;      /* the one accent — call/send affordances */
-  --accent-dim: #1b6e66;
-  --me: #05403c;          /* my message bubble */
+  --accent: #25d366;      /* the one accent — call/send affordances */
+  --accent-dim: #1b7a3d;
+  --me: #054d33;          /* my message bubble */
   --them: #202826;        /* their message bubble */
   --danger: #e5484d;
 }
