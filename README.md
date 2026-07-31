@@ -66,6 +66,22 @@ Change one, change the other.
 
 ## Running it
 
+Both halves at once:
+
+```bash
+./dev.sh --pull
+```
+
+That updates from git, serves the app on `localhost:8000`, and runs the daemon
+in the foreground — which is where the pairing QR and every useful log line
+appears. Ctrl-C stops both. Environment variables pass through, so the one-shot
+modes still work (`WAD_MIGRATE_LIDS=1 ./dev.sh`).
+
+Open it in **Firefox**: Chrome refuses to subscribe for push without an
+`applicationServerKey`, which KaiOS doesn't use, so push looks broken there.
+
+To run the two halves separately:
+
 **Daemon:**
 
 ```bash
