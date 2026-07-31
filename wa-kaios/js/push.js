@@ -9,7 +9,36 @@
   var W = window.Wire;
   var C = window.CONFIG || {};
 
-  function log(msg) { console.log("push: " + msg); }
+  // state is a one-line summary of how far push setup got, readable on the
+  // phone via App.pushState(). Worth having because every failure here is
+  // silent by design — the app works fine without push — and "no notifications"
+  // otherwise gives you nothing to go on.
+  var state = "not started";
+
+  function log(msg) { console.log("push: " + msg); state = msg; }
+
+  // withTimeout guards against a promise that never settles. A rejection is
+  // easy to see; a hang looks exactly like success and leaves no trace. Reports
+  // of KaiOS's push service misbehaving make that the failure to plan for —
+  // apps hanging at their splash screen is what a stuck subscribe looks like
+  // from the outside.
+  function withTimeout(p, ms, label) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error(label + " did not respond within " + (ms / 1000) + "s"));
+      }, ms);
+      p.then(function (v) {
+        if (settled) return;
+        settled = true; clearTimeout(timer); resolve(v);
+      }, function (e) {
+        if (settled) return;
+        settled = true; clearTimeout(timer); reject(e);
+      });
+    });
+  }
 
   function supported() {
     return ("serviceWorker" in navigator) && ("PushManager" in window);
@@ -32,10 +61,12 @@
     // which is exactly what we want. The push is a doorbell; the app pulls the
     // actual messages from the daemon once it's awake, so nothing sensitive
     // travels through the push service and there are no keys to manage.
-    return reg.pushManager.getSubscription().then(function (existing) {
-      if (existing) return existing;
-      return reg.pushManager.subscribe({ userVisibleOnly: true });
-    });
+    return withTimeout(reg.pushManager.getSubscription(), 10000, "getSubscription")
+      .then(function (existing) {
+        if (existing) return existing;
+        return withTimeout(
+          reg.pushManager.subscribe({ userVisibleOnly: true }), 30000, "subscribe");
+      });
   }
 
   function register() {
@@ -43,7 +74,8 @@
       log("not supported here — the app still works, it just won't wake itself");
       return;
     }
-    navigator.serviceWorker.register("sw.js")
+    log("registering service worker…");
+    withTimeout(navigator.serviceWorker.register("sw.js"), 20000, "worker registration")
       .then(function (reg) {
         log("service worker registered");
         // The worker can't read window.CONFIG, so give it what it needs to
@@ -55,12 +87,18 @@
             if (!sub) { log("no subscription returned"); return; }
             var endpoint = (sub.endpoint || (sub.toJSON && sub.toJSON().endpoint));
             if (!endpoint) { log("subscription has no endpoint"); return; }
-            log("subscribed; handing the endpoint to the daemon");
+            log("subscribed; handed the endpoint to the daemon");
             W.send(W.T.PUSHSUB, { endpoint: endpoint });
           });
         });
       })
-      .catch(function (e) { log("registration failed: " + e); });
+      .catch(function (e) {
+        log("FAILED: " + (e && e.message ? e.message : e));
+        // Let a later reconnect try again. The first attempt failing doesn't
+        // mean the next one will — especially if the push service itself is
+        // having a bad day.
+        done = false;
+      });
   }
 
   function sendConfig(reg) {
@@ -120,6 +158,18 @@
   // tag replacement and click-to-open can be checked without waiting for
   // someone to message you, and without a working push subscription.
   window.App = window.App || {};
+
+  // App.pushState() — how far push setup got, and whether the pieces exist at
+  // all. The first thing to check on the phone when notifications don't arrive.
+  window.App.pushState = function () {
+    return {
+      state: state,
+      hasServiceWorker: ("serviceWorker" in navigator),
+      hasPushManager: ("PushManager" in window),
+      permission: (window.Notification && Notification.permission) || "no Notification API"
+    };
+  };
+
   window.App.testNotify = function () {
     if (!navigator.serviceWorker) { console.log("push: no service worker here"); return; }
     navigator.serviceWorker.ready.then(function (reg) {
