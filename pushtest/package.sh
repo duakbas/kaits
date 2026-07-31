@@ -96,7 +96,12 @@ echo
 echo "contents (manifest.webapp must be at the top, with no folder prefix):"
 unzip -l "$OUT" | sed 's/^/  /'
 echo
-if unzip -l "$OUT" | grep -qE ' manifest\.webapp$'; then
+# Check names, not the formatted table. Matching against `unzip -l` output means
+# depending on its column layout and trailing whitespace, which differ between
+# macOS and GNU unzip — and a false "PROBLEM" on a perfectly good package is
+# worse than no check at all.
+NAMES="$(unzip -Z1 "$OUT" 2>/dev/null || unzip -l "$OUT" | awk 'NF>=4 {print $NF}')"
+if printf '%s\n' "$NAMES" | tr -d '\r' | grep -qx 'manifest.webapp'; then
   echo "OK: manifest.webapp is at the zip root."
 else
   echo "PROBLEM: manifest.webapp is not at the zip root; the portal will reject this."
