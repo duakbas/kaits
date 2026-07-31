@@ -852,8 +852,12 @@ func (c *Client) canonicalJID(jid types.JID) types.JID {
 		return types.JID{User: pn, Server: types.DefaultUserServer}
 	}
 
-	if pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD()); err == nil && !pn.IsEmpty() {
-		return pn.ToNonAD()
+	// Guarded like every other source here: an absent store should mean no
+	// mapping, not a crash.
+	if c.WA != nil && c.WA.Store != nil && c.WA.Store.LIDs != nil {
+		if pn, err := c.WA.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD()); err == nil && !pn.IsEmpty() {
+			return pn.ToNonAD()
+		}
 	}
 
 	if pn := c.hist.resolvePN(jid.ToNonAD().String()); pn != "" {
@@ -1342,9 +1346,43 @@ func (c *Client) resolveSenderNames(msgs []ws.MsgData) []ws.MsgData {
 		}
 		if name != "" {
 			msgs[i].SenderName = name
+			continue
 		}
+		// Nothing resolved: every source is exhausted, so this is someone we
+		// genuinely have no name for.
+		msgs[i].SenderName = c.unknownSenderLabel(msgs[i].SenderJID, msgs[i].SenderName)
 	}
 	return msgs
+}
+
+// unknownSenderLabel is what a group shows for someone no name could be found
+// for. The tilde means "not in your contacts" — the same mark an unsaved person
+// with a push name gets — so a bare number reads as a stranger rather than as a
+// name that happens to be digits.
+//
+// Only reached once displayName has tried everything: saved nickname, address
+// book, push name, whatsmeow's contact tables, and names learned from traffic.
+// No network lookup happens here; fetching per message at render time would be
+// both slow and a good way to get rate-limited. WAD_RESYNC=1 is the bulk pass
+// that asks WhatsApp for names we're missing.
+func (c *Client) unknownSenderLabel(senderJID, stored string) string {
+	if isNumeric(stored) {
+		return "~" + stored
+	}
+	if stored != "" {
+		return stored
+	}
+	// No stored name at all. A phone JID's user part is the number and worth
+	// showing; a LID's is an opaque id that tells the reader nothing, so it's
+	// only used when it maps back to a real number.
+	jid, err := types.ParseJID(senderJID)
+	if err != nil {
+		return stored
+	}
+	if canon := c.canonicalJID(jid); canon.Server == types.DefaultUserServer && isNumeric(canon.User) {
+		return "~" + canon.User
+	}
+	return stored
 }
 
 // RequestHistorySync asks the phone to re-send more history (on-demand). This
