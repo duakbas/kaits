@@ -43,7 +43,7 @@
       log("not supported here — the app still works, it just won't wake itself");
       return;
     }
-    navigator.serviceWorker.register("/sw.js")
+    navigator.serviceWorker.register("sw.js")
       .then(function (reg) {
         log("service worker registered");
         // The worker can't read window.CONFIG, so give it what it needs to
@@ -114,6 +114,25 @@
       if (window.App && window.App.openChat) window.App.openChat(jid);
     });
   }
+
+  // Exposed for testing from the console: App.testNotify(). Shows the same
+  // notifications a real push would, using live unread state — so grouping,
+  // tag replacement and click-to-open can be checked without waiting for
+  // someone to message you, and without a working push subscription.
+  window.App = window.App || {};
+  window.App.testNotify = function () {
+    if (!navigator.serviceWorker) { console.log("push: no service worker here"); return; }
+    navigator.serviceWorker.ready.then(function (reg) {
+      var target = reg.active || (navigator.serviceWorker.controller);
+      if (!target) { console.log("push: no active worker yet"); return; }
+      target.postMessage({
+        type: "config",
+        config: { DAEMON_WS: C.DAEMON_WS, TOKEN: C.TOKEN }
+      });
+      target.postMessage({ type: "testnotify" });
+      console.log("push: asked the worker to show notifications");
+    });
+  };
 
   // Register only once the socket is up, so the endpoint has somewhere to go.
   // Re-registering on later reconnects is harmless — the daemon upserts, and

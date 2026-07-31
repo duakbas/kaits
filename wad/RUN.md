@@ -282,6 +282,30 @@ Flow:
    shows a notification;
 5. tapping it focuses or launches the app, which connects and syncs.
 
+### Testing notifications without a phone
+
+**Use Firefox, not Chrome.** Chrome's push goes through FCM and *requires* an
+`applicationServerKey`; our subscribe call deliberately omits one, so Chrome
+throws instead of returning an endpoint and you never get past step 1. Firefox
+uses Mozilla autopush — the same lineage KaiOS's push service descends from —
+and allows keyless subscription exactly as KaiOS does, so the whole loop works
+there: subscribe → endpoint → daemon POSTs → worker wakes → notification.
+
+For the notification rendering itself, there's a shortcut that needs no push at
+all and works in any browser. With the app open, in the console:
+
+```js
+App.testNotify()
+```
+
+That runs the real service-worker path against live unread state, so grouping,
+tag replacement and click-to-open can all be checked without waiting for someone
+to message you.
+
+What still can't be tested off-device: whether KaiOS's notification tray honours
+`tag` replacement and `renotify` buzzing, and whether the OS wakes a genuinely
+closed app.
+
 ### One notification per conversation
 
 The phone shows a bubble per chat, tagged with the chat's JID. A second message

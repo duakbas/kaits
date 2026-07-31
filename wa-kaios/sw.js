@@ -21,8 +21,15 @@ var CONFIG = null;
 // The worker can't read window.CONFIG, so the page hands its settings over at
 // registration time and they're kept for the next wake-up.
 self.addEventListener("message", function (ev) {
-  if (ev.data && ev.data.type === "config") {
+  if (!ev.data) return;
+  if (ev.data.type === "config") {
     CONFIG = ev.data.config;
+  } else if (ev.data.type === "testnotify") {
+    // Dev hook: run the real push path without a real push. Chrome refuses to
+    // subscribe without an applicationServerKey, so this is the only way to
+    // exercise notification rendering there — and it's still the fastest way to
+    // check grouping anywhere, since it needs no incoming message.
+    showSummaryNotification();
   }
 });
 
