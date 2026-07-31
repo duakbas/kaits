@@ -156,10 +156,13 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Save a contact (in-app; phone address book on KaiOS) | ✅ |
 | Pin / mute / archive / delete chat | ✅ syncs to the account |
 | Mentions, avatars, per-person colours in groups | ✅ |
-| **Send** photos or documents | ❌ planned |
+| **Send** photos or documents | ✅ 📎 in the composer, or press Left |
 | **Record** a voice note | ❌ playback only |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
-| Settings screen, search | ❌ planned |
+| Settings screen | ❌ planned |
+| Polls | ❌ not rendered at all, let alone votable |
+| Contact cards | ❌ not rendered at all |
+| **Send** a location, or share live location | ❌ received ones render + open in maps |
 
 Pin, mute, archive and delete are **real account changes**, not local
 preferences: they sync to your phone and every other linked device, and delete
