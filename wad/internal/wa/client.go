@@ -230,6 +230,22 @@ func (c *Client) handleEvent(evt any) {
 	case *events.Receipt:
 		c.handleReceipt(v)
 
+	case *events.ChatPresence:
+		// Someone is typing (or stopped). Named here rather than in the app,
+		// because a group participant arrives as a per-group LID the app can't
+		// resolve on its own.
+		name := c.displayName(v.Sender, "")
+		if name == "" {
+			name = c.canonicalJID(v.Sender).User
+		}
+		c.hub.PushT(ws.TTyping, map[string]any{
+			"chat":       c.canonicalJID(v.Chat).String(),
+			"sender":     c.canonicalJID(v.Sender).String(),
+			"sendername": name,
+			"state":      string(v.State),
+			"media":      string(v.Media),
+		})
+
 	case *events.Presence:
 		c.hub.PushT(ws.TPresence, map[string]any{
 			"jid":         v.From.String(),
@@ -488,9 +504,42 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		d.Mime = dm.GetMimetype()
 		d.MediaURL = "/media/" + v.Info.ID
 		c.cacheMedia(v.Info.ID, dm, dm.GetMimetype())
+	case m.GetLocationMessage() != nil:
+		lm := m.GetLocationMessage()
+		d.Kind = "location"
+		d.Lat, d.Lon = lm.GetDegreesLatitude(), lm.GetDegreesLongitude()
+		d.LocName, d.LocAddress = lm.GetName(), lm.GetAddress()
+		d.Text = c.resolveMentions(lm.GetComment(), lm.GetContextInfo())
+		// WhatsApp ships a rendered map preview in the message itself, so the
+		// app can show a real map with no external request and no API key.
+		if thumb := lm.GetJPEGThumbnail(); len(thumb) > 0 {
+			c.hist.putLocationThumb(v.Info.ID, thumb)
+			d.MediaURL = "/locthumb/" + v.Info.ID
+			d.Mime = "image/jpeg"
+		}
+	case m.GetLiveLocationMessage() != nil:
+		ll := m.GetLiveLocationMessage()
+		d.Kind = "location"
+		d.Lat, d.Lon = ll.GetDegreesLatitude(), ll.GetDegreesLongitude()
+		d.LocName = "Live location"
+		d.Text = c.resolveMentions(ll.GetCaption(), ll.GetContextInfo())
+		if thumb := ll.GetJPEGThumbnail(); len(thumb) > 0 {
+			c.hist.putLocationThumb(v.Info.ID, thumb)
+			d.MediaURL = "/locthumb/" + v.Info.ID
+			d.Mime = "image/jpeg"
+		}
+
 	default:
-		// stickers, reactions, etc. — skip for v1
-		return
+		// Anything we don't render yet — contact cards, polls, view-once,
+		// system notices. Storing a labelled placeholder beats the old
+		// behaviour of dropping it: a silently missing message leaves an
+		// unexplained hole in the thread, which looks like data loss.
+		label := unsupportedLabel(m)
+		if label == "" {
+			return // genuinely nothing to show (empty protocol messages)
+		}
+		d.Kind = "unsupported"
+		d.Text = label
 	}
 
 	// If this message is itself a reply, surface a preview of what it quotes.
@@ -608,6 +657,23 @@ func (c *Client) cacheMedia(id string, dl whatsmeow.DownloadableMessage, mime st
 }
 
 // mimeFor returns the cached mime type for a media id.
+// LocationThumb returns the stored map preview for a location message.
+func (c *Client) LocationThumb(msgID string) []byte { return c.hist.locationThumb(msgID) }
+
+// SendTyping tells a chat we're composing (or have stopped). Best-effort: a
+// typing indicator failing is not worth interrupting the user over.
+func (c *Client) SendTyping(ctx context.Context, chatJID string, composing bool) error {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return err
+	}
+	state := types.ChatPresencePaused
+	if composing {
+		state = types.ChatPresenceComposing
+	}
+	return c.WA.SendChatPresence(ctx, jid, state, types.ChatPresenceMediaText)
+}
+
 // MimeFor returns the content type for a media id, falling back to what we
 // stored — the in-memory table doesn't survive a restart either.
 func (c *Client) MimeFor(id string) string {

@@ -166,6 +166,7 @@ func main() {
 	mux.HandleFunc("/ws", hub.ServeHTTP(token))
 	mux.HandleFunc("/media/", mediaHandler(waCli))
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
+	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 
 	go func() {
@@ -323,6 +324,19 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			Data: mustJSON(waCli.SaveContact(d.JID, d.Name))})
 		hub.PushT(ws.TChatList, waCli.ListChats())
 
+	case ws.TTyping:
+		var d struct {
+			Chat  string `json:"chat"`
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			return
+		}
+		// Silent on failure: a typing indicator is not worth an error frame.
+		if err := waCli.SendTyping(ctx, d.Chat, d.State == "composing"); err != nil {
+			log.Printf("typing %s: %v", d.Chat, err)
+		}
+
 	case ws.TSendReaction:
 		var d struct {
 			Chat  string `json:"chat"`
@@ -389,6 +403,23 @@ func avatarHandler(c *wa.Client) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(data)
+	}
+}
+
+// locThumbHandler serves the map preview WhatsApp embeds in a location message.
+// These are stored bytes, not CDN downloads, so they're always available and
+// need no keys.
+func locThumbHandler(c *wa.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/locthumb/")
+		data := c.LocationThumb(id)
+		if len(data) == 0 {
+			http.Error(w, "no thumbnail", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "private, max-age=86400")
 		w.Write(data)
 	}

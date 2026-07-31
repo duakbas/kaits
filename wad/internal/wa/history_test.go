@@ -817,3 +817,57 @@ func TestUnreadMessageIDsAndMarking(t *testing.T) {
 		t.Errorf("after marking, unread = %v, want none", left)
 	}
 }
+
+// Location coordinates and labels must survive a round trip, since the map card
+// and the "open in maps" action both depend on them.
+func TestLocationRoundTrip(t *testing.T) {
+	h := newHist(t)
+	chat := "c@s.whatsapp.net"
+	h.putMessage(ws.MsgData{
+		MsgID: "LOC1", ChatJID: chat, Timestamp: 100, Kind: "location",
+		Lat: 41.0082, Lon: 28.9784,
+		LocName: "Sultanahmet", LocAddress: "Fatih/İstanbul",
+		MediaURL: "/locthumb/LOC1", Mime: "image/jpeg",
+	})
+
+	msgs := h.history(chat, 0, 10)
+	if len(msgs) != 1 {
+		t.Fatalf("stored %d messages, want 1", len(msgs))
+	}
+	m := msgs[0]
+	if m.Kind != "location" {
+		t.Errorf("kind = %q, want location", m.Kind)
+	}
+	if m.Lat < 41.008 || m.Lat > 41.009 || m.Lon < 28.978 || m.Lon > 28.979 {
+		t.Errorf("coords = %v,%v — precision lost", m.Lat, m.Lon)
+	}
+	if m.LocName != "Sultanahmet" || m.LocAddress != "Fatih/İstanbul" {
+		t.Errorf("labels = %q / %q", m.LocName, m.LocAddress)
+	}
+}
+
+// The map preview is stored bytes rather than a CDN download, so it must always
+// be retrievable — that's what makes locations work with no keys and no network.
+func TestLocationThumbRoundTrip(t *testing.T) {
+	h := newHist(t)
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+	h.putLocationThumb("LOC1", jpeg)
+
+	got := h.locationThumb("LOC1")
+	if string(got) != string(jpeg) {
+		t.Errorf("thumb = %v, want %v", got, jpeg)
+	}
+	if h.locationThumb("NOPE") != nil {
+		t.Error("unknown id should have no thumbnail")
+	}
+	// Re-receiving the message must replace, not fail on the primary key.
+	h.putLocationThumb("LOC1", []byte{1, 2})
+	if len(h.locationThumb("LOC1")) != 2 {
+		t.Error("thumbnail did not update")
+	}
+	// An empty thumbnail is not worth a row.
+	h.putLocationThumb("LOC2", nil)
+	if h.locationThumb("LOC2") != nil {
+		t.Error("empty thumbnail should not be stored")
+	}
+}

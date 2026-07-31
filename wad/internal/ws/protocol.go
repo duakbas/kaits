@@ -38,6 +38,7 @@ const (
 	TChatUpdate = "chatupdate" // {chat, pinned, muted, archived, removed}
 	TReaction   = "reaction"   // {chat, msgid, reactions:[...]} — the full current set
 	TStatus     = "status"     // {chat, msgid, status} delivery state of a message we sent
+	TTyping     = "typing"     // both ways: {chat, sender, sendername, state} composing/paused
 )
 
 // ---- app -> daemon ----
@@ -83,6 +84,12 @@ type MsgData struct {
 	// "delivered" | "read" | "played". Meaningless on incoming messages.
 	Status    string         `json:"status,omitempty"`
 	Reactions []ReactionData `json:"reactions,omitempty"`
+	// Location payload, set when Kind == "location". Lat/Lon are 0,0 only when
+	// genuinely unknown — the app checks Kind, not the coordinates.
+	Lat        float64 `json:"lat,omitempty"`
+	Lon        float64 `json:"lon,omitempty"`
+	LocName    string  `json:"locname,omitempty"`
+	LocAddress string  `json:"locaddress,omitempty"`
 }
 
 // ReactionData is one person's reaction to one message. The app groups these by

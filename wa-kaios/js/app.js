@@ -93,7 +93,9 @@
         (c.archived ? "🗄 " : "") + (c.name || c.jid);
       var prev = document.createElement("div");
       prev.className = "chat-prev";
-      prev.textContent = c.preview || "";
+      var typed = typingLabel(c.jid);
+      if (typed) { prev.className += " typing"; prev.textContent = typed; }
+      else prev.textContent = c.preview || "";
       col.appendChild(name);
       col.appendChild(prev);
 
@@ -166,6 +168,7 @@
   }
 
   function enterListScreen() {
+    stopTyping();
     currentJID = null;
     show(elList);
     Nav.setScreen({
@@ -339,7 +342,9 @@
     // Build the rows that actually apply to THIS message. "Reply privately"
     // and "Message directly" only make sense for someone else's message in a
     // group; deleting for everyone only works on your own.
-    var items = [{ action: "reply", label: "Reply" }];
+    var items = [];
+    if (m.kind === "location") items.push({ action: "openmap", label: "Open in maps" });
+    items.push({ action: "reply", label: "Reply" });
     var mine = myReactionTo(m);
     items.push({ action: "react", label: mine ? "Change reaction " + mine : "React" });
     if (mine) items.push({ action: "unreact", label: "Remove my reaction" });
@@ -429,6 +434,13 @@
       menuOpen = false;
       elMenu.hidden = true;
       enterComposeMode();
+    } else if (action === "openmap") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      openLocation(m);
+      enterSelectMode();
+      selectIdx = keepSelection(m);
+      renderThread();
     } else if (action === "react") {
       menuOpen = false;
       elMenu.hidden = true;
@@ -466,6 +478,73 @@
       var back = currentJID;
       openProfileForMessage(m, function () { openThread(back); });
     }
+  }
+
+  // ---------- typing indicators ----------
+  // Incoming: chat JID -> {names:{sender:name}, timer}. WhatsApp doesn't always
+  // send a "paused" to close a "composing", so each entry self-expires.
+  var typing = {};
+  var TYPING_TTL = 8000;
+
+  function setTyping(chat, sender, name, composing) {
+    var entry = typing[chat] || (typing[chat] = { names: {} });
+    if (composing) {
+      entry.names[sender] = name || "Someone";
+    } else {
+      delete entry.names[sender];
+    }
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(function () {
+      delete typing[chat];
+      refreshTypingUI(chat);
+    }, TYPING_TTL);
+    refreshTypingUI(chat);
+  }
+
+  function typingLabel(chat) {
+    var entry = typing[chat];
+    if (!entry) return "";
+    var names = Object.keys(entry.names).map(function (k) { return entry.names[k]; });
+    if (!names.length) return "";
+    if (names.length === 1) {
+      // In a DM the name is redundant — you know who you're talking to.
+      return (chats[chat] && chats[chat].group) ? names[0] + " is typing…" : "typing…";
+    }
+    return names.length + " people are typing…";
+  }
+
+  function refreshTypingUI(chat) {
+    if (currentJID === chat) {
+      var label = typingLabel(chat);
+      var c = chats[chat] || {};
+      elThreadTitle.textContent = label ? (c.name || chat) + " — " + label : (c.name || chat);
+    }
+    if (!elList.hidden) renderChatList();
+  }
+
+  // ---------- outgoing typing ----------
+  // Send "composing" while the user types, and "paused" once they stop. Rate
+  // limited: WhatsApp wants an occasional refresh, not one per keystroke.
+  var typingSentAt = 0;
+  var typingStopTimer = null;
+  var TYPING_REFRESH = 4000;
+
+  function noteTyping() {
+    if (!currentJID) return;
+    var now = Date.now();
+    if (now - typingSentAt > TYPING_REFRESH) {
+      W.send(W.T.TYPING, { chat: currentJID, state: "composing" });
+      typingSentAt = now;
+    }
+    if (typingStopTimer) clearTimeout(typingStopTimer);
+    typingStopTimer = setTimeout(stopTyping, 3000);
+  }
+
+  function stopTyping() {
+    if (typingStopTimer) { clearTimeout(typingStopTimer); typingStopTimer = null; }
+    if (!currentJID || !typingSentAt) return;
+    W.send(W.T.TYPING, { chat: currentJID, state: "paused" });
+    typingSentAt = 0;
   }
 
   // ---------- time formatting ----------
@@ -782,6 +861,13 @@
       stk.src = url;
       stk.alt = "sticker";
       b.appendChild(stk);
+    } else if (m.kind === "location") {
+      renderLocationBubble(b, m);
+    } else if (m.kind === "unsupported") {
+      var un = document.createElement("div");
+      un.className = "media-file unsupported";
+      un.textContent = m.text || "[unsupported message]";
+      b.appendChild(un);
     } else if (m.kind === "doc") {
       var doc = document.createElement("div");
       doc.className = "media-file";
@@ -790,6 +876,89 @@
     } else {
       b.textContent = "[" + m.kind + "]";
     }
+  }
+
+  // A location renders as WhatsApp's own map preview (shipped inside the
+  // message, so no tiles are fetched and no API key is needed) plus whatever
+  // name/address came with it. Selecting it offers to open a real map app.
+  function renderLocationBubble(b, m) {
+    var card = document.createElement("div");
+    card.className = "loc-card";
+
+    if (m.media) {
+      var img = document.createElement("img");
+      img.className = "loc-map";
+      img.src = mediaBase() + m.media;
+      img.alt = "map";
+      card.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "loc-map placeholder";
+      ph.textContent = "📍";
+      card.appendChild(ph);
+    }
+
+    var title = document.createElement("div");
+    title.className = "loc-title";
+    title.textContent = m.locname || "Location";
+    card.appendChild(title);
+
+    if (m.locaddress) {
+      var addr = document.createElement("div");
+      addr.className = "loc-addr";
+      addr.textContent = m.locaddress;
+      card.appendChild(addr);
+    }
+    if (m.lat || m.lon) {
+      var co = document.createElement("div");
+      co.className = "loc-addr dim";
+      co.textContent = m.lat.toFixed(5) + ", " + m.lon.toFixed(5);
+      card.appendChild(co);
+    }
+    b.appendChild(card);
+    if (m.text) {
+      var cap = document.createElement("div");
+      cap.className = "caption";
+      cap.textContent = m.text;
+      b.appendChild(cap);
+    }
+  }
+
+  // openLocation hands the coordinates to whatever map app the phone has.
+  //
+  // A geo: URI is the standard Android/KaiOS way and lets the OS show its own
+  // "open with" chooser, which is what we want rather than hardcoding a
+  // provider. Desktop browsers don't handle geo:, so there we fall back to
+  // OpenStreetMap in a new tab.
+  function openLocation(m) {
+    if (!m || (!m.lat && !m.lon)) { toast("No coordinates on this message"); return; }
+    var label = m.locname || m.locaddress || "Location";
+    var geo = "geo:" + m.lat + "," + m.lon + "?q=" +
+      m.lat + "," + m.lon + "(" + encodeURIComponent(label) + ")";
+    var osm = "https://www.openstreetmap.org/?mlat=" + m.lat +
+      "&mlon=" + m.lon + "#map=16/" + m.lat + "/" + m.lon;
+
+    if (window.MozActivity) {
+      try {
+        var act = new window.MozActivity({ name: "view", data: { type: "url", url: geo } });
+        // No map app registered for geo: — fall back to the web map.
+        act.onerror = function () { openURL(osm); };
+        return;
+      } catch (e) {
+        // fall through
+      }
+    }
+    openURL(osm);
+  }
+
+  function openURL(url) {
+    if (window.MozActivity) {
+      try {
+        new window.MozActivity({ name: "view", data: { type: "url", url: url } });
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    window.open(url, "_blank");
   }
 
   function renderThread() {
@@ -932,6 +1101,7 @@
       toast("Sent privately");
     }
     elInput.value = "";
+    stopTyping();
     clearReply();
   }
 
@@ -1320,6 +1490,11 @@
     }
   });
 
+  W.on(W.T.TYPING, function (d) {
+    if (!d || !d.chat || !d.sender) return;
+    setTyping(d.chat, d.sender, d.sendername, d.state === "composing");
+  });
+
   W.on(W.T.REACTION, function (d) {
     if (!d || !d.chat || !d.msgid) return;
     var arr = threads[d.chat] || [];
@@ -1399,6 +1574,10 @@
 
   // ---------- boot ----------
   document.getElementById("reply-bar-x").onclick = clearReply;
+
+  // Typing signal comes off real input events, not keydown, so D-pad and
+  // softkey presses don't register as composing.
+  elInput.addEventListener("input", noteTyping);
 
   // scroll to top of a thread -> load an older page of history
   var loadingOlder = false;

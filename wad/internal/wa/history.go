@@ -109,6 +109,17 @@ func openHistStore(path string) (*histStore, error) {
 	db.Exec(`ALTER TABLE messages ADD COLUMN forwarded INTEGER DEFAULT 0`)
 	// Delivery state for our own outgoing messages: "" (sent) -> delivered -> read.
 	db.Exec(`ALTER TABLE messages ADD COLUMN status TEXT DEFAULT ''`)
+	// Location payload, kept on the message rather than in a side table since
+	// it's four small scalars and always wanted with the message.
+	for _, col := range []string{"lat REAL", "lon REAL", "loc_name TEXT", "loc_address TEXT"} {
+		db.Exec(`ALTER TABLE messages ADD COLUMN ` + col)
+	}
+	// WhatsApp ships a rendered map preview with every location message, so the
+	// app can show a real map with no external request and no API key.
+	db.Exec(`CREATE TABLE IF NOT EXISTS location_thumbs (
+		msgid TEXT PRIMARY KEY,
+		jpeg  BLOB
+	)`)
 	return &histStore{db: db}, nil
 }
 
@@ -125,11 +136,11 @@ func (h *histStore) putMessage(d ws.MsgData) {
 	}
 	_, err := h.db.Exec(`
 		INSERT OR REPLACE INTO messages
-		(msgid, chat, sender, sendername, fromme, ts, kind, text, media, mime, quoted_id, quoted_text, quoted_name, forwarded)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(msgid, chat, sender, sendername, fromme, ts, kind, text, media, mime, quoted_id, quoted_text, quoted_name, forwarded, lat, lon, loc_name, loc_address)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		d.MsgID, d.ChatJID, d.SenderJID, d.SenderName, boolToInt(d.FromMe), d.Timestamp,
 		d.Kind, d.Text, d.MediaURL, d.Mime, d.QuotedID, d.QuotedText, d.QuotedName,
-		boolToInt(d.Forwarded))
+		boolToInt(d.Forwarded), d.Lat, d.Lon, d.LocName, d.LocAddress)
 	if err != nil {
 		return
 	}
@@ -247,6 +258,27 @@ func (h *histStore) dropChat(jid string) {
 	}
 	h.db.Exec(`DELETE FROM messages WHERE chat=?`, jid)
 	h.db.Exec(`DELETE FROM chats WHERE jid=?`, jid)
+}
+
+// putLocationThumb stores the map preview WhatsApp ships with a location.
+func (h *histStore) putLocationThumb(msgid string, jpeg []byte) {
+	if h == nil || h.db == nil || msgid == "" || len(jpeg) == 0 {
+		return
+	}
+	h.db.Exec(`INSERT INTO location_thumbs (msgid, jpeg) VALUES (?,?)
+		ON CONFLICT(msgid) DO UPDATE SET jpeg=excluded.jpeg`, msgid, jpeg)
+}
+
+// locationThumb returns a stored map preview, or nil.
+func (h *histStore) locationThumb(msgid string) []byte {
+	if h == nil || h.db == nil || msgid == "" {
+		return nil
+	}
+	var jpeg []byte
+	if h.db.QueryRow(`SELECT jpeg FROM location_thumbs WHERE msgid=?`, msgid).Scan(&jpeg) != nil {
+		return nil
+	}
+	return jpeg
 }
 
 // mediaRef is the persisted form of a downloadable attachment.
@@ -570,7 +602,7 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	if limit <= 0 {
 		limit = 40
 	}
-	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name,COALESCE(forwarded,0),COALESCE(status,'')
+	q := `SELECT msgid,chat,sender,sendername,fromme,ts,kind,text,media,mime,quoted_id,quoted_text,quoted_name,COALESCE(forwarded,0),COALESCE(status,''),COALESCE(lat,0),COALESCE(lon,0),COALESCE(loc_name,''),COALESCE(loc_address,'')
 	      FROM messages WHERE chat=?`
 	args := []any{chat}
 	if beforeTS > 0 {
@@ -591,11 +623,16 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 		var d ws.MsgData
 		var fromme, ts, fwd sql.NullInt64
 		var sender, sname, text, media, mime, qid, qtext, qname, kind, status sql.NullString
+		var locName, locAddr sql.NullString
+		var lat, lon sql.NullFloat64
 		if err := rows.Scan(&d.MsgID, &d.ChatJID, &sender, &sname, &fromme,
 			&ts, &kind, &text, &media, &mime,
-			&qid, &qtext, &qname, &fwd, &status); err != nil {
+			&qid, &qtext, &qname, &fwd, &status,
+			&lat, &lon, &locName, &locAddr); err != nil {
 			continue
 		}
+		d.Lat, d.Lon = lat.Float64, lon.Float64
+		d.LocName, d.LocAddress = locName.String, locAddr.String
 		d.Forwarded = fwd.Int64 == 1
 		d.Status = status.String
 		d.SenderJID = sender.String

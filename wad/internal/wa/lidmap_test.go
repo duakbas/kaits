@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -368,6 +370,39 @@ func TestTildeUnsaved(t *testing.T) {
 	for _, c := range cases {
 		if got := tildeUnsaved(c.name, c.saved); got != c.want {
 			t.Errorf("tildeUnsaved(%q, %v) = %q, want %q", c.name, c.saved, got, c.want)
+		}
+	}
+}
+
+// Message types the app can't render must produce a labelled placeholder rather
+// than vanishing — a silently dropped message leaves an unexplained hole in the
+// thread. Protocol housekeeping is the one thing that should stay invisible.
+func TestUnsupportedLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *waE2E.Message
+		want string
+	}{
+		{"contact with name", &waE2E.Message{
+			ContactMessage: &waE2E.ContactMessage{DisplayName: proto.String("Alex")},
+		}, "[contact: Alex]"},
+		{"contact without name", &waE2E.Message{
+			ContactMessage: &waE2E.ContactMessage{},
+		}, "[contact card]"},
+		{"poll", &waE2E.Message{
+			PollCreationMessageV3: &waE2E.PollCreationMessage{Name: proto.String("Lunch?")},
+		}, "[poll: Lunch?]"},
+		{"view once", &waE2E.Message{
+			ViewOnceMessage: &waE2E.FutureProofMessage{},
+		}, "[view-once message]"},
+		{"protocol housekeeping stays hidden", &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{},
+		}, ""},
+		{"unknown falls back", &waE2E.Message{}, "[unsupported message]"},
+	}
+	for _, c := range cases {
+		if got := unsupportedLabel(c.msg); got != c.want {
+			t.Errorf("%s: unsupportedLabel = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

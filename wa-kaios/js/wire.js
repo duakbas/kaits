@@ -14,7 +14,7 @@
     CALLOFFER: "calloffer", CALLSTATE: "callstate", CALLSIGNAL: "callsignal",
     ERROR: "error",
     PROFILE: "profile", CHATUPDATE: "chatupdate",
-    REACTION: "reaction", STATUS: "status",
+    REACTION: "reaction", STATUS: "status", TYPING: "typing",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",

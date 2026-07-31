@@ -78,6 +78,43 @@ func replyTextMsg(body, quotedID string, sender types.JID, quoted *waE2E.Message
 	}
 }
 
+// unsupportedLabel names a message type the app can't render yet, so it can be
+// shown as a placeholder instead of vanishing. Returns "" for message types that
+// legitimately have nothing to display — protocol housekeeping the user never
+// sent and shouldn't see.
+func unsupportedLabel(m *waE2E.Message) string {
+	switch {
+	case m.GetContactMessage() != nil:
+		if n := m.GetContactMessage().GetDisplayName(); n != "" {
+			return "[contact: " + n + "]"
+		}
+		return "[contact card]"
+	case m.GetContactsArrayMessage() != nil:
+		return "[contact cards]"
+	case m.GetPollCreationMessageV3() != nil:
+		if n := m.GetPollCreationMessageV3().GetName(); n != "" {
+			return "[poll: " + n + "]"
+		}
+		return "[poll]"
+	case m.GetPollUpdateMessage() != nil:
+		return "[poll vote]"
+	case m.GetEventMessage() != nil:
+		return "[event]"
+	case m.GetProductMessage() != nil:
+		return "[product]"
+	case m.GetGroupInviteMessage() != nil:
+		return "[group invite]"
+	case m.GetViewOnceMessage() != nil, m.GetViewOnceMessageV2() != nil,
+		m.GetViewOnceMessageV2Extension() != nil:
+		return "[view-once message]"
+	case m.GetPtvMessage() != nil:
+		return "[video note]"
+	case m.GetProtocolMessage() != nil, m.GetSenderKeyDistributionMessage() != nil:
+		return "" // housekeeping, not a message the user sent
+	}
+	return "[unsupported message]"
+}
+
 // markForwarded stamps a message as a forward, so the recipient's client shows
 // the "Forwarded" label instead of presenting it as freshly written.
 //
