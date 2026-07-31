@@ -120,6 +120,22 @@ func openHistStore(path string) (*histStore, error) {
 		msgid TEXT PRIMARY KEY,
 		jpeg  BLOB
 	)`)
+	// Unread counts are derived from messages lacking a "read" status, so this
+	// index keeps the per-chat count cheap over a large history.
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(chat, fromme, status)`)
+	// Small key/value table for one-time upgrade steps.
+	db.Exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`)
+
+	// Every message stored before read-tracking existed has an empty status,
+	// which the unread count would read as "never read" — surfacing tens of
+	// thousands of unread messages the moment counts appeared. Treat existing
+	// history as already seen, once.
+	var done sql.NullString
+	db.QueryRow(`SELECT value FROM meta WHERE key='unread_baseline'`).Scan(&done)
+	if done.String == "" {
+		db.Exec(`UPDATE messages SET status='read' WHERE fromme=0 AND COALESCE(status,'')=''`)
+		db.Exec(`INSERT OR REPLACE INTO meta (key,value) VALUES ('unread_baseline','1')`)
+	}
 	return &histStore{db: db}, nil
 }
 
@@ -169,8 +185,15 @@ func (h *histStore) listChats() []map[string]any {
 	if h == nil || h.db == nil {
 		return out
 	}
-	rows, err := h.db.Query(`SELECT jid,name,is_group,pinned,last_ts,preview,
-		COALESCE(muted,0),COALESCE(archived,0) FROM chats ORDER BY last_ts DESC`)
+	// Unread is derived, not stored: it's the incoming messages this chat has
+	// that we never marked read. That means it survives restarts and browser
+	// refreshes for free, and can't drift out of step with the read receipts we
+	// actually sent.
+	rows, err := h.db.Query(`SELECT c.jid,c.name,c.is_group,c.pinned,c.last_ts,c.preview,
+		COALESCE(c.muted,0),COALESCE(c.archived,0),
+		(SELECT COUNT(*) FROM messages m
+		   WHERE m.chat=c.jid AND m.fromme=0 AND COALESCE(m.status,'')<>'read')
+		FROM chats c ORDER BY c.last_ts DESC`)
 	if err != nil {
 		return out
 	}
@@ -178,17 +201,48 @@ func (h *histStore) listChats() []map[string]any {
 	for rows.Next() {
 		var jid string
 		var name, preview sql.NullString
-		var isGroup, pinned, ts, muted, archived sql.NullInt64
-		if err := rows.Scan(&jid, &name, &isGroup, &pinned, &ts, &preview, &muted, &archived); err != nil {
+		var isGroup, pinned, ts, muted, archived, unread sql.NullInt64
+		if err := rows.Scan(&jid, &name, &isGroup, &pinned, &ts, &preview,
+			&muted, &archived, &unread); err != nil {
 			continue
 		}
 		out = append(out, map[string]any{
 			"jid": jid, "name": name.String, "group": isGroup.Int64 == 1,
 			"pinned": pinned.Int64 == 1, "ts": ts.Int64, "preview": preview.String,
 			"muted": muted.Int64 == 1, "archived": archived.Int64 == 1,
+			"unread": unread.Int64,
 		})
 	}
 	return out
+}
+
+// unreadCount is the number of incoming messages in a chat not yet marked read.
+func (h *histStore) unreadCount(chat string) int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	var n int
+	h.db.QueryRow(`SELECT COUNT(*) FROM messages
+		WHERE chat=? AND fromme=0 AND COALESCE(status,'')<>'read'`, chat).Scan(&n)
+	return n
+}
+
+// markAllRead flags every incoming message in a chat as read.
+//
+// Separate from the receipts we send: WhatsApp's read receipt means "everything
+// up to here", so acknowledging the most recent handful covers the chat — but
+// locally every message has to be flagged or the unread count won't reach zero.
+func (h *histStore) markAllRead(chat string) int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	res, _ := h.db.Exec(`UPDATE messages SET status='read'
+		WHERE chat=? AND fromme=0 AND COALESCE(status,'')<>'read'`, chat)
+	if res == nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
 }
 
 // setChatFlag updates one boolean column on a chat row. The column name is

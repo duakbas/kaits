@@ -369,6 +369,9 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			log.Printf("markread %s: %v", d.JID, err)
 		} else if n > 0 {
 			log.Printf("markread: %d messages in %s", n, d.JID)
+			// Tell the app the badge is clear. It clears optimistically too,
+			// but this is what makes it stick across a refresh.
+			hub.PushT(ws.TChatUpdate, map[string]any{"chat": d.JID, "unread": 0})
 		}
 
 	case ws.TGetChats:

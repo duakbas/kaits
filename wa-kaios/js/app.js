@@ -101,10 +101,13 @@
 
       row.appendChild(av);
       row.appendChild(col);
-      if (c.unread) {
-        var dot = document.createElement("span");
-        dot.className = "unread";
-        row.appendChild(dot);
+      if (c.unread > 0) {
+        var badge = document.createElement("span");
+        badge.className = "unread";
+        // Past 9 the exact number stops mattering and starts costing width on
+        // a 240px screen.
+        badge.textContent = c.unread > 9 ? "9+" : String(c.unread);
+        row.appendChild(badge);
       }
       elList.appendChild(row);
     });
@@ -272,6 +275,8 @@
   function openThread(jid) {
     currentJID = jid;
     var c = chats[jid] || { jid: jid, name: jid };
+    // Clear optimistically; the daemon confirms with a chatupdate once the read
+    // receipt has actually gone out.
     c.unread = 0;
     elThreadTitle.textContent = c.name || jid;
     show(elThread);
@@ -1483,7 +1488,10 @@
           archived: (typeof c.archived === "boolean") ? c.archived : ex.archived,
           ts: Math.max(c.ts || 0, ex.ts || 0),
           preview: c.preview || ex.preview || "",
-          unread: ex.unread || 0
+          // The daemon derives this from messages we never marked read, so it
+          // is the authority — a local counter would reset on every refresh,
+          // which is exactly the bug this replaces.
+          unread: (typeof c.unread === "number") ? c.unread : (ex.unread || 0)
         };
       });
       renderChatList(); // always render — list may be the visible screen after refresh
@@ -1549,6 +1557,7 @@
     if (typeof d.pinned === "boolean") c.pinned = d.pinned;
     if (typeof d.muted === "boolean") c.muted = d.muted;
     if (typeof d.archived === "boolean") c.archived = d.archived;
+    if (typeof d.unread === "number") c.unread = d.unread;
     if (!elList.hidden) renderChatList();
   });
 

@@ -402,6 +402,9 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) 
 	if err != nil {
 		return 0, err
 	}
+	// Receipts go out for the most recent batch — WhatsApp reads that as
+	// "everything up to here" — but the local flag has to cover every message
+	// or the unread badge never reaches zero.
 	ids, lastSender := c.hist.unreadMessageIDs(chatJID, 50)
 	if len(ids) == 0 {
 		return 0, nil
@@ -421,9 +424,11 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string) (int, error) 
 	if err := c.WA.MarkRead(ctx, msgIDs, time.Now(), jid, sender); err != nil {
 		return 0, err
 	}
-	c.hist.markMessagesRead(chatJID, ids)
-	return len(ids), nil
+	return c.hist.markAllRead(chatJID), nil
 }
+
+// UnreadCount is how many incoming messages in a chat are still unread.
+func (c *Client) UnreadCount(chatJID string) int { return c.hist.unreadCount(chatJID) }
 
 // pushMessage handles a live incoming message: build, persist, and notify app.
 func (c *Client) pushMessage(v *events.Message) { c.handleMsg(v, true) }
