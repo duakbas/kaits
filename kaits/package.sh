@@ -45,6 +45,12 @@ cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" "$ST
 sed 's|"version": "[^"]*"|"version": "'"$VERSION"'"|' "$HERE/manifest.webapp" > "$STAGE/manifest.webapp"
 python3 -c "import json,sys; d=json.load(open('$STAGE/manifest.webapp')); assert d['version']=='$VERSION', d['version']; print('manifest ok:', d['name'], d['version'])"
 
+# Editor leftovers get copied in with the directories and would otherwise be
+# uploaded — a config.js.bak sitting next to config.js is exactly the sort of
+# thing that ships a stale token or a half-edited file to a store.
+find "$STAGE" \( -name '*.bak' -o -name '*.orig' -o -name '*.rej' -o -name '*~' \
+  -o -name '*.swp' -o -name '.DS_Store' \) -delete
+
 ( cd "$STAGE" && zip -q -r "$OUT" . -x ".*" )
 
 echo "built $OUT"
