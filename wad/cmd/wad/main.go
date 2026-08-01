@@ -173,6 +173,7 @@ func main() {
 	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
 	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, token))
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
+	mux.HandleFunc("/debug/message", fakeMessageHandler(hub, token))
 
 	go func() {
 		log.Printf("wad: listening on %s (ws at /ws?token=...)", addr)
@@ -489,6 +490,55 @@ func avatarHandler(c *wa.Client) http.HandlerFunc {
 // The push itself carries no payload, so the worker fetches this to turn a bare
 // wake-up into "Alex — 3 new messages". Token-guarded like the socket: it
 // reports who is messaging the user, which isn't public.
+// fakeMessageHandler pushes a made-up INCOMING message to the phone.
+//
+// Testing notifications properly needs a message you didn't send, arriving
+// while the phone is shut — and messaging yourself doesn't work, because those
+// come back as fromme and are skipped on purpose. Asking someone to text you on
+// demand doesn't scale to debugging.
+//
+// This sends the same frame a real message sends, so the app can't tell the
+// difference: it goes through pushMsg, alertForMessage, and the notification
+// decision exactly as it would at 3am.
+//
+//	curl "http://localhost:8080/debug/message?token=$WAD_TOKEN"
+//	curl "http://localhost:8080/debug/message?token=$WAD_TOKEN&name=Mum&text=call+me"
+//
+// Nothing is stored: the app shows it until the next chat list arrives from the
+// daemon, and it never touches the database.
+func fakeMessageHandler(hub *ws.Hub, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			name = "Test contact"
+		}
+		text := r.URL.Query().Get("text")
+		if text == "" {
+			text = "Test message from the daemon"
+		}
+		now := time.Now()
+		msg := ws.MsgData{
+			MsgID:      fmt.Sprintf("debug-%d", now.UnixNano()),
+			ChatJID:    "debug@s.whatsapp.net",
+			ChatName:   name,
+			SenderJID:  "debug@s.whatsapp.net",
+			SenderName: name,
+			FromMe:     false,
+			Timestamp:  now.Unix(),
+			Kind:       "text",
+			Text:       text,
+		}
+		hub.PushT(ws.TMessage, msg)
+		log.Printf("debug: pushed a fake message from %q", name)
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "sent %q from %q\n", text, name)
+	}
+}
+
 func notifySummaryHandler(c *wa.Client, token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != token {
