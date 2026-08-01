@@ -40,17 +40,6 @@ window.CONFIG = {
   NOTIFY_VIBRATE: "auto",
   NOTIFY_SOUND: "auto",
 
-  // Make an inaudible tone while backgrounded, so the platform counts the app
-  // as doing something and moves it up the process priority list.
-  //
-  // On. Measured: it does not save the app from ANOTHER app — YouTube evicts
-  // it in about a minute regardless — but it does help when the phone is
-  // sitting idle waiting for a message, which is the case this app lives in.
-  //
-  // This is a master switch: the per-phone setting cannot turn it on if this
-  // is false.
-  KEEPALIVE: true,
-
   // Which audio channel the keepalive plays on. This is the one knob that
   // decides whether the trick works AND whether it is antisocial:
   //
