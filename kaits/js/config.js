@@ -38,5 +38,42 @@ window.CONFIG = {
   // Fallbacks when nothing is known: vibrate yes, beep no. A missed buzz beats
   // a browser tab beeping at you in a meeting.
   NOTIFY_VIBRATE: "auto",
-  NOTIFY_SOUND: "auto"
+  NOTIFY_SOUND: "auto",
+
+  // Make an inaudible tone while backgrounded, so the platform counts the app
+  // as doing something and moves it up the process priority list.
+  //
+  // On. Measured: it does not save the app from ANOTHER app — YouTube evicts
+  // it in about a minute regardless — but it does help when the phone is
+  // sitting idle waiting for a message, which is the case this app lives in.
+  //
+  // This is a master switch: the per-phone setting cannot turn it on if this
+  // is false.
+  KEEPALIVE: true,
+
+  // Which audio channel the keepalive plays on. This is the one knob that
+  // decides whether the trick works AND whether it is antisocial:
+  //
+  //   "normal"  — non-exclusive. Should not stop your music or any other
+  //               sound. May or may not be enough for the platform to count
+  //               the app as busy; if kills continue with the keepalive on and
+  //               playing, that is what this being too polite looks like.
+  //   "content" — the media channel. Certain to count, and certain to stop
+  //               whatever else is using it every time you leave the app.
+  //
+  // Start on "normal". Only reach for "content" if the Settings screen shows
+  // the keepalive playing and the kill rate has not moved.
+  KEEPALIVE_CHANNEL: "normal",
+
+  // Playback volume for the keepalive loop, on top of a file that is already
+  // 1% of full scale. 0.01 puts -80 dBFS at the output — about 20 dB SPL on
+  // headphones at maximum volume, against a hearing threshold of roughly
+  // 78 dB SPL at the loop's 20 Hz. Nearly 60 dB of margin, and headphones are
+  // the demanding case: a phone speaker cannot reproduce 20 Hz at all.
+  //
+  // Do NOT set this to 0. Zero volume, a muted element and digital silence are
+  // the three ways to be counted INAUDIBLE, and an inaudible app is precisely
+  // the one the priority manager ignores — it would make the keepalive silent
+  // and useless rather than silent and working.
+  KEEPALIVE_VOLUME: 0.01
 };
