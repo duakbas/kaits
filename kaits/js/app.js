@@ -813,17 +813,14 @@
       onEnter: function (e, el) {
         if (!el) return;
         elChatMenu.hidden = true;
-        runAttach(el.getAttribute("data-attach"));
-        enterComposeMode();
+        if (!runAttach(el.getAttribute("data-attach"))) enterComposeMode();
       },
       onSoftLeft: close, onBack: close,
       onSoftRight: function () {
         var el = Nav.focusedEl();
-        if (el) {
-          elChatMenu.hidden = true;
-          runAttach(el.getAttribute("data-attach"));
-          enterComposeMode();
-        }
+        if (!el) return;
+        elChatMenu.hidden = true;
+        if (!runAttach(el.getAttribute("data-attach"))) enterComposeMode();
       }
     });
     Nav.setSoftkeys("Cancel", "", "OK");
@@ -2317,9 +2314,11 @@
     endsAt: 0, last: null, lastSentAt: 0
   };
 
+  // Returns whether it took the screen: opening the duration chooser does,
+  // stopping a running share does not.
   function startLiveLocation() {
-    if (!currentJID) return;
-    if (liveShare.active) { stopLiveLocation("Stopped sharing"); return; }
+    if (!currentJID) return false;
+    if (liveShare.active) { stopLiveLocation("Stopped sharing"); return false; }
     var chat = currentJID;
     chooseFromList("Share live location for…",
       LIVE_DURATIONS.map(function (d) { return d.label; }),
@@ -2327,6 +2326,7 @@
         if (idx < 0) return;
         beginLiveShare(chat, LIVE_DURATIONS[idx].secs);
       });
+    return true;
   }
 
   function beginLiveShare(chat, secs) {
@@ -2401,13 +2401,22 @@
     bar.hidden = false;
   }
 
+  // Returns TRUE when the action has taken over the screen itself.
+  //
+  // The caller puts the composer back afterwards, and that is right for a pick
+  // activity or a one-shot location — those hand control to the system or
+  // finish asynchronously. It is wrong for anything that opens a menu of its
+  // own: the duration chooser appeared and the keypad was immediately rebound
+  // to the composer underneath it, so the list was on screen and completely
+  // dead. Anything that owns the screen says so, and the caller leaves it be.
   function runAttach(action) {
-    if (action === "photo") return pickAndSend("image");
-    if (action === "video") return pickAndSend("video");
-    if (action === "audio") return pickAndSend("audio");
-    if (action === "location") return sendLocation();
+    if (action === "location") { sendLocation(); return false; }
     if (action === "livelocation") return startLiveLocation();
-    return pickAndSend("doc");
+    if (action === "photo") { pickAndSend("image"); return false; }
+    if (action === "video") { pickAndSend("video"); return false; }
+    if (action === "audio") { pickAndSend("audio"); return false; }
+    pickAndSend("doc");
+    return false;
   }
 
   // ---------- sending attachments ----------
