@@ -580,6 +580,7 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		SenderName: c.senderName(v),
 		ChatName:   c.chatName(chat, isGroup),
 		Pinned:     c.isPinned(chat),
+		Muted:      c.isMuted(chat),
 	}
 
 	switch {
@@ -1248,6 +1249,18 @@ func (c *Client) ForwardMessage(ctx context.Context, srcMsgID, destChatJID strin
 // state. Read-only: reflects pins you set on your phone. (Setting pins from
 // here goes through SendAppState, which is fragile on linked devices, so it's
 // intentionally not wired.)
+// isMuted travels with every message so the app never has to remember it. The
+// app drops all its state when it goes out of sight, and a mute table was the
+// last thing it could not drop — a muted chat buzzing at 3am is a worse bug
+// than any amount of memory saved.
+func (c *Client) isMuted(chat types.JID) bool {
+	settings, err := c.WA.Store.ChatSettings.GetChatSettings(context.Background(), chat)
+	if err != nil || !settings.Found {
+		return false
+	}
+	return settings.MutedUntil.After(time.Now())
+}
+
 func (c *Client) isPinned(chat types.JID) bool {
 	settings, err := c.WA.Store.ChatSettings.GetChatSettings(context.Background(), chat)
 	if err != nil {

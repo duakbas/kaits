@@ -463,17 +463,27 @@ survived for hours on the same handset because it was a few kilobytes of page
 holding one socket, make the app *become* that when nobody is looking.
 
 So it does. On going out of sight it drops the chat list, the message DOM, the
-menus, the search and forward lists, the profile pane, every loaded message,
-and — explicitly, because clearing a parent does not reliably free a decoded
-copy — the `src` of every image and video. What survives is the socket and a
-trimmed chat table: name, group, mute and unread, which is precisely what a
-notification needs and nothing more. Losing the mute flag would mean a muted
-chat buzzing at 3am, so that one is tested by name.
+menus, the search and forward lists, the profile pane, and — explicitly,
+because clearing a parent does not reliably free a decoded copy — the `src` of
+every image and video. The avatar observer and queue are stopped rather than
+left watching rows that no longer exist.
 
-Nothing is lost by dropping the rest, because the daemon is the source of truth
-for all of it. Waking asks for the chat list again and reopens whichever chat
-was open, through the same path a normal open takes. The renderers no-op while
+**The data stays.** Messages and chat metadata are plain objects: a message is
+a few hundred bytes, and a thousand of them cost less than a third of one
+decoded photo. Dropping them would save nothing measurable while costing a
+refetch, a visible pause and the scroll position. What is expensive is DOM
+nodes and decoded bitmaps, and that is exactly what goes.
+
+Waking is therefore a repaint from state still held, not a reload. The chat
+list is re-requested because it may have moved on — unread counts, new chats,
+order — but the screen does not wait for the answer. The renderers no-op while
 dormant, so an arriving message cannot quietly rebuild what was just freed.
+
+One thing did move to the daemon: `muted` now travels with every message. The
+app used to answer "should this buzz?" from its local chat table, which fails
+for a chat that is not in it yet — a new conversation, or one arriving before
+the chat list did, would alert through a mute. Either source silencing it is
+enough now.
 
 "Shrink when hidden" on the Settings screen, on by default.
 

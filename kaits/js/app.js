@@ -3168,28 +3168,22 @@
       if (el) el.innerHTML = "";
     });
 
-    // Loaded history is the other big holding, and every message of it is on
-    // the daemon. Chat metadata is trimmed rather than dropped: a notification
-    // still needs a name, and a muted chat must stay silent.
-    threads = {};
-    var lean = {};
-    for (var jid in chats) {
-      if (!Object.prototype.hasOwnProperty.call(chats, jid)) continue;
-      var c = chats[jid];
-      lean[jid] = { jid: jid, name: c.name, group: c.group,
-                    muted: c.muted, unread: c.unread };
-    }
-    chats = lean;
-
+    // The DATA stays. Messages and chat metadata are plain objects — a message
+    // is a few hundred bytes, and a thousand of them cost less than a third of
+    // one decoded photo. Throwing them away would save almost nothing while
+    // costing a full refetch, a visible pause and the scroll position. What is
+    // expensive here is DOM nodes and decoded bitmaps, and those are exactly
+    // what was freed above.
     if (typeof stopAvatarWork === "function") stopAvatarWork();
   }
 
   function wakeUp() {
     if (!dormant) return;
     dormant = false;
-    // Everything below was thrown away, so ask for it again. The chat list
-    // comes back on its own; the thread is rebuilt by reopening it, which is
-    // the same path a normal open takes.
+    // Only the rendering was thrown away, so this is a repaint from state we
+    // still hold rather than a refetch. The chat list is still requested
+    // because it may have moved on while we were away — unread counts, new
+    // chats, order — but the screen does not wait for the answer.
     W.send(W.T.GETCHATS, null);
     try {
       if (dormantJID) openThread(dormantJID);
@@ -3310,7 +3304,12 @@
     // records that the socket delivered something while we were out of sight,
     // which is a fact about the connection rather than about the UI.
     if (appHidden()) hiddenMsgCount++;
-    if (c && c.muted) return;   // a mute means silence, not a smaller icon
+    // Either source is enough to stay quiet. The local chat table is the usual
+    // one, but a message can arrive for a chat that is not in it yet — a new
+    // conversation, or one that arrived before the chat list did — and that
+    // used to alert regardless of the mute. The daemon now sends the flag with
+    // the message, which answers it without needing anything remembered.
+    if ((c && c.muted) || m.muted) return;
 
     if (currentJID === m.chat) {
       // You are reading this very chat.
