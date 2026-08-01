@@ -84,10 +84,33 @@
 
   // With DEBUG_KEYS on, show every key the page sees. "!" means nothing
   // handled it. Nothing appearing at all means the key never reached us.
-  if (window.CONFIG && CONFIG.DEBUG_KEYS && elKeyLog) {
-    elKeyLog.hidden = false;
-    Nav.onKeyLog = function (text) { elKeyLog.textContent = text; };
-    elKeyLog.textContent = "keys: (press one)";
+  // The key log is a debugging tool, so it's off unless asked for. Pressing *
+  // three times in a row toggles it — a sequence you can't hit by accident on
+  // a D-pad, and one that works with no console and no way to edit config on
+  // the phone. Errors are separate and always shown.
+  var keyLogOn = !!(window.CONFIG && CONFIG.DEBUG_KEYS);
+  var starRun = 0;
+
+  if (elKeyLog) {
+    elKeyLog.hidden = !keyLogOn;
+    if (keyLogOn) elKeyLog.textContent = "keys: (press one)";
+    Nav.onKeyLog = function (text, key) {
+      // A null key means the same press being re-reported, so it neither
+      // counts nor breaks the run.
+      if (key === "*") starRun++;
+      else if (key) starRun = 0;
+      if (starRun >= 3) {
+        starRun = 0;
+        keyLogOn = !keyLogOn;
+        elKeyLog.hidden = !keyLogOn;
+        elKeyLog.style.color = "";          // clear any error colour
+        toast(keyLogOn ? "Key log on" : "Key log off");
+      }
+      if (keyLogOn) {
+        elKeyLog.style.color = "";
+        elKeyLog.textContent = text;
+      }
+    };
   }
   var elSearchInput = document.getElementById("search-input");
   var elSearchResults = document.getElementById("search-results");
