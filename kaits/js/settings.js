@@ -19,7 +19,20 @@
   var prefDefaults = {
     // Off by default: the eased scroll is a matter of taste, and the taste that
     // matters here found it worse than an instant jump.
-    smoothscroll: false
+    smoothscroll: false,
+    // ON by default, on the evidence — which took three goes to establish.
+    //
+    // It does NOT save the app from another app. YouTube evicts it in about a
+    // minute either way, and Shorts takes the phone's own UI down too; against
+    // that the system is reclaiming everything it can reach and priority is
+    // irrelevant. That was measured with the switch both ways.
+    //
+    // But the case this app actually lives in is a phone sitting idle waiting
+    // for a message, and there it does help. That is the case worth defaulting
+    // for. The cost is an audio pipeline held open; the switch is on the
+    // Settings screen next to the kill rate for anyone who would rather have
+    // the battery.
+    keepalive: true
   };
 
   function loadPrefs() {
