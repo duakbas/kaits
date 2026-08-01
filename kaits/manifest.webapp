@@ -5,8 +5,13 @@
   "type": "web",
   "launch_path": "/index.html",
   "icons": {
+    "32": "/icons/icon-32.png",
+    "48": "/icons/icon-48.png",
     "56": "/icons/icon-56.png",
-    "112": "/icons/icon-112.png"
+    "64": "/icons/icon-64.png",
+    "112": "/icons/icon-112.png",
+    "128": "/icons/icon-128.png",
+    "256": "/icons/icon-256.png"
   },
   "developer": {
     "name": "you"

@@ -118,6 +118,10 @@ def write_png(path, size):
 
 if __name__ == "__main__":
     out = sys.argv[1]
-    for s in (56, 112):
+    # More sizes than the manifest strictly needs. The notification tray asks
+    # for whatever size it wants, and a size that is not declared is a lookup
+    # that can fail — which renders as a grey placeholder square in the middle
+    # of the notification rather than as nothing. Declaring the common ladder
+    # costs a few kilobytes and removes the question.
+    for s in (32, 48, 56, 64, 112, 128, 256):
         write_png("%s/icon-%d.png" % (out, s), s)
-    write_png("%s/preview-256.png" % out, 256)   # just to eyeball it large
