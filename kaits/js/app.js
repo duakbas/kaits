@@ -2726,16 +2726,18 @@
   // whole notification design failing. Two responses, in this order: record
   // what actually happens, and make the app a less attractive thing to kill.
   function wireLifecycle() {
-    var on = CONFIG.KEEPALIVE !== false;
-    Keepalive.setEnabled(on);
+    // config.js is the default; the phone's own setting is the answer, and
+    // applyOptions() has already applied it by the time this runs.
+    Keepalive.setEnabled(Settings.pref("keepalive") && CONFIG.KEEPALIVE !== false);
 
     // The audio element has to be unlocked by a user gesture, and going to the
     // background is not one. Any keypress will do, and there is always one
-    // before the app can be backgrounded.
-    document.addEventListener("keydown", function primeOnce() {
-      Keepalive.prime();
-      document.removeEventListener("keydown", primeOnce, false);
-    }, false);
+    // before the app can be backgrounded. The listener stays installed rather
+    // than removing itself after the first press: a blocked attempt doesn't
+    // throw, it just leaves the element paused, and giving up after one try
+    // would mean a single early failure costs the whole session. prime()
+    // returns immediately once it has actually worked.
+    document.addEventListener("keydown", function () { Keepalive.prime(); }, false);
 
     function onVis() {
       if (appHidden()) Keepalive.start();
@@ -3278,17 +3280,51 @@
       "Connect to your daemon — " + versionLabel();
     elSetupHost.value = cur.host || "";
     elSetupToken.value = cur.token || "";
+    paintOptions();
     updateSetupPreview();
     updateSetupDiag();
     show(elSetup);
 
-    var field = 0;                       // 0 = host, 1 = token
-    var fields = [elSetupHost, elSetupToken];
+    // Rows, not fields: two text inputs followed by the preference toggles. A
+    // toggle is not a text field, so focusing one has to hand the keypad BACK
+    // — leaving the input method attached to an input that is no longer
+    // focused is what makes the D-pad appear dead on this phone.
+    var rows = [
+      { el: elSetupHost, input: true },
+      { el: elSetupToken, input: true }
+    ];
+    OPTIONS.forEach(function (o) {
+      var el = document.getElementById("opt-" + o.key);
+      if (el) rows.push({ el: el, input: false, opt: o });
+    });
+
+    var field = 0;
     function focusField(i) {
-      field = (i + fields.length) % fields.length;
-      fields.forEach(function (f) { f.className = ""; });
-      fields[field].className = "focused";
-      fields[field].focus();
+      field = (i + rows.length) % rows.length;
+      rows.forEach(function (r) {
+        if (r.input) r.el.className = "";
+        else r.el.classList.remove("focused");
+      });
+      var row = rows[field];
+      if (row.input) {
+        row.el.className = "focused";
+        row.el.focus();
+      } else {
+        row.el.classList.add("focused");
+        try { elSetupHost.blur(); elSetupToken.blur(); } catch (e) {}
+        releaseInput(elSetup);
+      }
+      Nav.ensureVisible(row.el, elSetup);
+    }
+
+    function toggleFocused() {
+      var row = rows[field];
+      if (!row || row.input) return false;
+      var on = Settings.togglePref(row.opt.key);
+      row.opt.apply(on);
+      paintOptions();
+      toast(row.opt.label + ": " + (on ? "on" : "off"));
+      return true;
     }
 
     function saveAndGo() {
@@ -3307,7 +3343,13 @@
     Nav.setScreen({
       onUp: function () { focusField(field - 1); return true; },
       onDown: function () { focusField(field + 1); return true; },
-      onEnter: saveAndGo,
+      // Left/Right flip a toggle. On a text row they do nothing here, which
+      // leaves the caret movement to the input as it should.
+      onLeft: function () { return toggleFocused() ? true : false; },
+      onRight: function () { return toggleFocused() ? true : false; },
+      // Enter on a toggle flips it; Enter anywhere else saves, which is what
+      // it has always done.
+      onEnter: function () { if (!toggleFocused()) saveAndGo(); },
       onSoftRight: saveAndGo,
       // No way out on first run: without an address there's nothing to show.
       // Left is the notification test rather than Cancel: the red key already
@@ -3318,6 +3360,38 @@
     });
     Nav.setSoftkeys("Test notif", "SAVE", "Save");
     focusField(0);
+  }
+
+  // ---------- preferences ----------
+  // One table, so a preference is declared once and the settings screen, the
+  // startup pass and the label all read the same row. Adding a switch means
+  // adding an entry here and a div in index.html, nothing else.
+  var OPTIONS = [
+    {
+      key: "smoothscroll",
+      label: "Scroll animation",
+      apply: function (on) { Nav.setSmoothScroll(on); }
+    },
+    {
+      key: "keepalive",
+      label: "Stay alive in background",
+      apply: function (on) { Keepalive.setEnabled(on); }
+    }
+  ];
+
+  function paintOptions() {
+    OPTIONS.forEach(function (o) {
+      var val = document.getElementById("opt-" + o.key + "-val");
+      if (val) val.textContent = Settings.pref(o.key) ? "On" : "Off";
+    });
+  }
+
+  // Apply every stored preference. Called at boot, before anything can depend
+  // on one being in effect.
+  function applyOptions() {
+    OPTIONS.forEach(function (o) {
+      try { o.apply(Settings.pref(o.key)); } catch (e) {}
+    });
   }
 
   // The running build's version, stamped in at package time. Answers "did the
@@ -3423,6 +3497,7 @@
   // Start the recorder before anything else can fail: a session that dies
   // during boot is exactly the kind we want on the record.
   Life.start(window.KAITS_VERSION || "dev");
+  applyOptions();
   wireLifecycle();
 
   // Boot. An unconfigured app has nowhere to connect, so it asks first and

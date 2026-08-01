@@ -10,7 +10,28 @@
 
 (function () {
   var KEY = "kaits.daemon";
+  var PREFS = "kaits.prefs";
   var DEFAULT_PORT = "8080";
+
+  // Preferences that belong to the person holding the phone, not to the build.
+  // config.js is the default; this is the answer, and it survives an update
+  // because it lives on the phone rather than in the package.
+  var prefDefaults = {
+    // Off by default: the eased scroll is a matter of taste, and the taste that
+    // matters here found it worse than an instant jump.
+    smoothscroll: false,
+    // On by default: with push dead, an app that gets reaped stops delivering
+    // messages at all. Turn it off to measure what it costs.
+    keepalive: true
+  };
+
+  function loadPrefs() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(PREFS) || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch (e) { return {}; }
+  }
+  var prefs = loadPrefs();
 
   function load() {
     try {
@@ -88,6 +109,23 @@
     clear: function () {
       stored = null;
       try { localStorage.removeItem(KEY); } catch (e) {}
+    },
+
+    // ---- preferences ----
+    pref: function (name) {
+      return Object.prototype.hasOwnProperty.call(prefs, name)
+        ? !!prefs[name]
+        : !!prefDefaults[name];
+    },
+
+    setPref: function (name, on) {
+      prefs[name] = !!on;
+      try { localStorage.setItem(PREFS, JSON.stringify(prefs)); } catch (e) {}
+      return prefs[name];
+    },
+
+    togglePref: function (name) {
+      return window.Settings.setPref(name, !window.Settings.pref(name));
     },
 
     // Exposed for the setup screen's preview line, so what will be connected to

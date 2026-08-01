@@ -64,6 +64,13 @@
   function scrollBoxFor(el) {
     var box = screen.list;
     if (!box) return null;
+    // If the list itself scrolls, it IS the scroller. Walking up from the row
+    // in that case can land on something nearer — a bubble, a row wrapper —
+    // that reports more content than it shows for reasons of its own (floats,
+    // an absolutely positioned badge), and scrolling THAT moves nothing. The
+    // walk exists only for overlays, which fill the screen without scrolling
+    // while a box inside them does the scrolling.
+    if (box.scrollHeight > box.clientHeight + 1) return box;
     var n = el;
     for (var hops = 0; n && n !== box && hops < 12; hops++) {
       if (n.scrollHeight > n.clientHeight + 1) return n;
@@ -93,9 +100,14 @@
   // glide reads as movement. 200ms is what other KaiOS clients use on this
   // same hardware, so it's known to be affordable here.
   var SCROLL_MS = 200;
+  // Whether to ease at all. Off means set scrollTop and be done — which is what
+  // this did before the glide was added, and what some people simply prefer on
+  // a small screen. The setting lives on the phone; this is just the switch.
+  var smooth = false;
   var glideFrom = 0, glideTo = 0, glideStart = 0, glideBox = null, gliding = false;
 
   function glide(box, target) {
+    if (!smooth) { box.scrollTop = target; return; }
     if (!window.requestAnimationFrame || !Date.now) {
       box.scrollTop = target;      // no animation available; just be correct
       return;
@@ -261,6 +273,8 @@
     // Scroll an element into view within its container, the way
     // scrollIntoView({block:"nearest"}) would if Gecko 48 accepted it.
     ensureVisible: ensureVisible,
+    setSmoothScroll: function (on) { smooth = !!on; },
+    smoothScroll: function () { return smooth; },
     recentKeys: function () { return recent.join(" "); },
     setScreen: function (handlers) {
       screen = {

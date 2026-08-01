@@ -34,6 +34,7 @@ window.Keepalive = (function () {
   function build() {
     if (el) return el;
     el = document.createElement("audio");
+    el.id = "keepalive-audio";
     el.src = "audio/keepalive.wav";
     el.loop = true;
     // Volume low as well as the file being near-silent: two independent reasons
@@ -57,15 +58,19 @@ window.Keepalive = (function () {
   // played and immediately paused — which leaves it primed to start later
   // without a gesture of its own.
   function prime() {
-    if (primed || !wanted) return;
+    if (primed || running || !wanted) return;
     var a = build();
     try {
       // play() returns undefined on Gecko 48 rather than a promise, so this
       // must not be chained. That exact assumption has already broken this app
       // once, in the notification beep.
       a.play();
+      // Only count it as primed if playback ACTUALLY started. Blocked autoplay
+      // does not throw — it just leaves the element paused — so latching
+      // primed on the attempt would mean one silent failure at boot disables
+      // the keepalive for the whole session.
+      primed = !a.paused;
       setTimeout(function () { if (!running) { try { a.pause(); } catch (e) {} } }, 60);
-      primed = true;
     } catch (e) {
       lastError = String(e && e.message || e);
     }
