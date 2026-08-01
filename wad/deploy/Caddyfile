@@ -1,0 +1,32 @@
+# /etc/caddy/Caddyfile
+#
+# Caddy rather than nginx purely because it gets a certificate on its own —
+# one less moving part on a box that exists to keep a phone connected.
+#
+#   sudo apt install caddy
+#   sudo cp wad/deploy/Caddyfile /etc/caddy/Caddyfile   # edit the hostname
+#   sudo systemctl reload caddy
+#
+# The phone needs wss://. KaiOS may refuse a plain ws:// to a remote host, and
+# even where it does not, the token would cross the internet in the clear.
+
+wad.example.com {
+	# WebSocket, media, avatars, map tiles — all of it is the one daemon.
+	reverse_proxy 127.0.0.1:8080 {
+		# A WebSocket that carries a 16 MiB attachment must not be cut off
+		# mid-upload. These are generous on purpose: the failure mode of a
+		# short timeout is an attachment that silently never arrives.
+		flush_interval -1
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	# The daemon has no other users. Anything that is not the app is noise, and
+	# on a public host it is usually a scanner.
+	log {
+		output file /var/log/caddy/wad.log
+		level WARN
+	}
+}
