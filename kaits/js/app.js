@@ -67,6 +67,21 @@
   var elSetupDiag = document.getElementById("setup-diag");
   var elKeyLog = document.getElementById("keylog");
 
+  // No console exists on the phone, so an exception is completely silent — the
+  // app just stops doing something and there is nothing to read. Errors go to
+  // the same strip the key log uses, whether or not DEBUG_KEYS is on.
+  function showError(msg) {
+    if (!elKeyLog) return;
+    elKeyLog.hidden = false;
+    elKeyLog.style.color = "#e5484d";
+    elKeyLog.textContent = String(msg).slice(0, 120);
+  }
+
+  window.onerror = function (msg, src, line) {
+    showError(msg + " @" + String(src).split("/").pop() + ":" + line);
+    return false;   // keep the default logging too
+  };
+
   // With DEBUG_KEYS on, show every key the page sees. "!" means nothing
   // handled it. Nothing appearing at all means the key never reached us.
   if (window.CONFIG && CONFIG.DEBUG_KEYS && elKeyLog) {
@@ -528,8 +543,21 @@
     // WhatsApp only sends presence for people you've subscribed to, and the
     // subscription resets on reconnect — so ask each time the chat opens.
     if (!(chats[jid] && chats[jid].group)) W.send(W.T.WATCH, { jid: jid });
-    renderThread();
-    restoreDraft(jid);
+    // Rendering must never prevent the screen from being bound. When something
+    // threw in here, openThread stopped half way: the thread was displayed but
+    // Nav still had the PREVIOUS screen, so the softkeys kept the old labels,
+    // the composer never got focus, and up/down scrolled whatever list the old
+    // screen owned. Three symptoms, one abandoned function.
+    try {
+      renderThread();
+    } catch (e) {
+      showError("render: " + (e && e.message ? e.message : e));
+    }
+    try {
+      restoreDraft(jid);
+    } catch (e) {
+      showError("draft: " + (e && e.message ? e.message : e));
+    }
     enterComposeMode();
   }
 
@@ -1780,7 +1808,8 @@
       onSoftLeft: function () { (profileBack || enterListScreen)(); },
       onBack: function () { (profileBack || enterListScreen)(); }
     });
-    Nav.setSoftkeys("Back", "", "OK");
+    // Back is the red key; the left softkey stays free.
+    Nav.setSoftkeys("", "OK", "OK");
   }
 
   function profileActions(p) {
@@ -2078,7 +2107,7 @@
     elSearchInput.value = "";
     Nav.setScreen({
       list: elSearch,
-      onSoftLeft: enterListScreen,
+      // No Back softkey: the red key goes back. Softkeys are for actions.
       onBack: enterListScreen,
       onEnter: function (e, el) {
         // Enter on a result opens its chat; Enter in the box just searches.
@@ -2090,7 +2119,7 @@
       },
       onSoftRight: runSearch
     });
-    Nav.setSoftkeys("Back", "", "Search");
+    Nav.setSoftkeys("", "SEARCH", "Search");
     setTimeout(function () { elSearchInput.focus(); }, 0);
   }
 
