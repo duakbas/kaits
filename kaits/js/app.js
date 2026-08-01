@@ -97,6 +97,18 @@
   // over the chat list, stealing the keypad because its input still had focus.
   var SCREENS = [elList, elThread, elCall, elProfile, elSearch, elSetup];
 
+  // KaiOS keeps a status bar above the app, so the usable height is less than
+  // the screen's 320. Laying out against 100% overshoots by that much and the
+  // message list runs off the bottom. window.innerHeight is the real number.
+  var elApp = document.getElementById("app");
+  function fitViewport() {
+    if (!elApp || !window.innerHeight) return;
+    elApp.style.height = window.innerHeight + "px";
+  }
+  fitViewport();
+  window.addEventListener("resize", fitViewport);
+  window.addEventListener("orientationchange", fitViewport);
+
   function show(el) {
     SCREENS.forEach(function (s) { if (s) s.hidden = true; });
     el.hidden = false;
@@ -649,11 +661,11 @@
       ? elThreadMsgs.querySelector('.bubble[data-msgid="' + cssEscape(selectMsgID) + '"]')
       : null;
     if (selectMsgID && !next) { renderThread(); return; }
-    if (prev === next) { if (next) next.scrollIntoView({ block: "nearest" }); return; }
+    if (prev === next) { if (next) Nav.ensureVisible(next, elThreadMsgs); return; }
     if (prev) prev.className = prev.className.replace(/ ?\bselected\b/, "");
     if (next) {
       next.className += " selected";
-      next.scrollIntoView({ block: "nearest" });
+      Nav.ensureVisible(next, elThreadMsgs);
     }
   }
 
@@ -1679,7 +1691,7 @@
     // in select mode, scroll the selected bubble into view; else stick to bottom
     if (selectMode) {
       var sel = elThreadMsgs.querySelector(".bubble.selected");
-      if (sel) sel.scrollIntoView({ block: "nearest" });
+      if (sel) Nav.ensureVisible(sel, elThreadMsgs);
     } else if (wasNearBottom) {
       elThreadMsgs.scrollTop = elThreadMsgs.scrollHeight;
     }
