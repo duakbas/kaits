@@ -41,10 +41,18 @@ window.Keepalive = (function () {
     el.id = "keepalive-audio";
     el.src = "audio/keepalive.wav";
     el.loop = true;
-    // Volume low as well as the file being near-silent: two independent reasons
-    // for this to be inaudible, because one of them being wrong on some handset
-    // should not mean a phone quietly humming in someone's pocket.
-    el.volume = 0.01;
+    // Two independent reasons to be inaudible, so one of them being wrong on
+    // some handset doesn't leave a phone humming in a pocket: a file at 1% of
+    // full scale, and this on top of it. What it must NOT be is zero — a muted
+    // or zero-volume element counts as inaudible, and inaudible is exactly
+    // what the priority manager disregards. Clamped above zero for that
+    // reason, because a well-meaning edit to config.js otherwise turns the
+    // whole mechanism off while appearing to leave it on.
+    var vol = (window.CONFIG && typeof CONFIG.KEEPALIVE_VOLUME === "number")
+      ? CONFIG.KEEPALIVE_VOLUME : 0.01;
+    if (!(vol > 0)) vol = 0.01;
+    if (vol > 1) vol = 1;
+    el.volume = vol;
     el.preload = "auto";
     // Channel choice is the whole question, and it is a trade in both
     // directions:

@@ -67,5 +67,15 @@ window.CONFIG = {
   //
   // Start on "normal". Only reach for "content" if the Settings screen shows
   // the keepalive playing and the kill rate has not moved.
-  KEEPALIVE_CHANNEL: "normal"
+  KEEPALIVE_CHANNEL: "normal",
+
+  // Playback volume for the keepalive loop, on top of a file that is already
+  // 1% of full scale. 0.01 puts -80 dBFS at the speaker: inaudible, and at
+  // 110 Hz, which a phone speaker cannot reproduce anyway.
+  //
+  // Do NOT set this to 0. Zero volume, a muted element and digital silence are
+  // the three ways to be counted INAUDIBLE, and an inaudible app is precisely
+  // the one the priority manager ignores — it would make the keepalive silent
+  // and useless rather than silent and working.
+  KEEPALIVE_VOLUME: 0.01
 };
