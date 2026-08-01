@@ -32,7 +32,14 @@
     // for. The cost is an audio pipeline held open; the switch is on the
     // Settings screen next to the kill rate for anyone who would rather have
     // the battery.
-    keepalive: true
+    keepalive: true,
+
+    // Throw the UI away when the app goes out of sight and rebuild it on
+    // return. The system kills whichever backgrounded process is largest, and
+    // nearly all of this app's size is things only a person looking at it
+    // needs — message DOM, chat rows, decoded images, loaded history. The
+    // daemon holds all of it, so dropping it costs a rebuild and nothing else.
+    shrink: true
   };
 
   function loadPrefs() {

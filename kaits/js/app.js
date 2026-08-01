@@ -225,6 +225,7 @@
   }
 
   function renderChatList() {
+    if (dormant) return;
     // Remember before the rebuild destroys the rows.
     var keepFocus = listFocusKey;
     var arr = Object.keys(chats).map(function (j) { return chats[j]; })
@@ -358,6 +359,17 @@
     elList.querySelectorAll("[data-avatar-jid]").forEach(function (el) {
       avatarObserver.observe(el);
     });
+  }
+
+  // Going dormant drops every row the observer was watching, and each queued
+  // entry holds an Image. Stop the machinery rather than leaving it to notice.
+  function stopAvatarWork() {
+    if (avatarObserver) {
+      try { avatarObserver.disconnect(); } catch (e) {}
+      avatarObserver = null;
+    }
+    avatarQueue = [];
+    avatarActive = 0;
   }
 
   function enqueueAvatar(av) {
@@ -1815,6 +1827,7 @@
   }
 
   function renderThread() {
+    if (dormant) return;
     var msgs = threads[currentJID] || [];
     var isGroup = chats[currentJID] && chats[currentJID].group;
     // Was the user near the bottom BEFORE we rebuild? If so we'll auto-scroll
@@ -3092,11 +3105,100 @@
     document.addEventListener("keydown", function () { Keepalive.prime(); }, false);
 
     function onVis() {
-      if (appHidden()) Keepalive.start();
-      else Keepalive.stop();
+      if (appHidden()) {
+        Keepalive.start();
+        // Order matters: start the tone first, because going dormant empties
+        // the DOM and there is no reason to do that before the cheap thing.
+        goDormant();
+      } else {
+        Keepalive.stop();
+        wakeUp();
+      }
     }
     document.addEventListener("visibilitychange", onVis, false);
     document.addEventListener("mozvisibilitychange", onVis, false);
+  }
+
+  // ---------- going dormant ----------
+  //
+  // The system kills whichever backgrounded process is largest, and almost all
+  // of this app's size is things it only needs while someone is looking: the
+  // message DOM, the chat rows, decoded images, loaded history. pushtest
+  // survived for hours on the same phone because it was a few kilobytes of
+  // page holding one socket. So when the app goes out of sight it throws away
+  // everything except that — the socket, enough chat metadata to label a
+  // notification, and nothing else — and rebuilds from the daemon on return.
+  //
+  // The daemon is the source of truth for all of it, so nothing is lost by
+  // dropping it. The only state worth carrying across is which chat was open
+  // and the draft, and the draft already persists.
+
+  var dormant = false;
+  var dormantJID = null;
+
+  // Rendering into a torn-down UI while nobody is watching would rebuild
+  // exactly what was just freed, so the renderers become no-ops. Both check
+  // this rather than every caller having to.
+  function isDormant() { return dormant; }
+
+  function goDormant() {
+    if (dormant || !Settings.pref("shrink")) return;
+    dormant = true;
+    dormantJID = currentJID;
+    try { stashDraft(); } catch (e) {}
+
+    // Images first and explicitly. A decoded bitmap is freed when nothing
+    // references it, and emptying a parent is not always enough to drop the
+    // decoded copy promptly — clearing src is.
+    try {
+      var imgs = document.querySelectorAll("#thread-msgs img, #chatlist img, #viewer img");
+      for (var i = 0; i < imgs.length; i++) imgs[i].src = "";
+      var vids = document.querySelectorAll("#thread-msgs video");
+      for (var v = 0; v < vids.length; v++) {
+        try { vids[v].pause(); } catch (e) {}
+        vids[v].removeAttribute("poster");
+        vids[v].src = "";
+      }
+    } catch (e) {}
+
+    [elList, elThreadMsgs, elActionList, elChatMenuList,
+     document.getElementById("search-results"),
+     document.getElementById("fwd-list"),
+     document.getElementById("profile-body")].forEach(function (el) {
+      if (el) el.innerHTML = "";
+    });
+
+    // Loaded history is the other big holding, and every message of it is on
+    // the daemon. Chat metadata is trimmed rather than dropped: a notification
+    // still needs a name, and a muted chat must stay silent.
+    threads = {};
+    var lean = {};
+    for (var jid in chats) {
+      if (!Object.prototype.hasOwnProperty.call(chats, jid)) continue;
+      var c = chats[jid];
+      lean[jid] = { jid: jid, name: c.name, group: c.group,
+                    muted: c.muted, unread: c.unread };
+    }
+    chats = lean;
+
+    if (typeof stopAvatarWork === "function") stopAvatarWork();
+  }
+
+  function wakeUp() {
+    if (!dormant) return;
+    dormant = false;
+    // Everything below was thrown away, so ask for it again. The chat list
+    // comes back on its own; the thread is rebuilt by reopening it, which is
+    // the same path a normal open takes.
+    W.send(W.T.GETCHATS, null);
+    try {
+      if (dormantJID) openThread(dormantJID);
+      else enterListScreen();
+    } catch (e) {
+      showError("wake: " + (e && e.message ? e.message : e));
+      enterListScreen();
+    }
+    dormantJID = null;
   }
 
   // osNotify raises a real system notification through the service worker.
@@ -3727,6 +3829,14 @@
       key: "smoothscroll",
       label: "Scroll animation",
       apply: function (on) { Nav.setSmoothScroll(on); }
+    },
+    {
+      key: "shrink",
+      label: "Shrink when hidden",
+      // Nothing to apply at startup: it is read at the moment the app goes out
+      // of sight. Listed here so it appears on the Settings screen and stores
+      // like the others.
+      apply: function () {}
     },
     {
       key: "keepalive",
