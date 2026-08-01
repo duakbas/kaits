@@ -155,7 +155,15 @@ func classify(reason string) string {
 }
 
 func (h *Hub) readLoop(c *websocket.Conn) string {
-	c.SetReadLimit(1 << 20)
+	// Big enough for the largest attachment the media path will accept.
+	//
+	// This was 1 MiB while sendmedia caps uploads at 16 MiB, and base64 inflates
+	// by 4/3 — so anything over about 750 KB blew the limit. gorilla does not
+	// reject the frame when that happens, it CLOSES THE CONNECTION, which is why
+	// a video produced "read limit exceeded" and a file or an audio clip simply
+	// vanished with the socket. 24 MiB clears 16 MiB base64'd with room for the
+	// rest of the frame.
+	c.SetReadLimit(24 << 20)
 	for {
 		_, data, err := c.ReadMessage()
 		if err != nil {

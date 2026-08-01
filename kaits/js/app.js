@@ -2466,8 +2466,8 @@
   var LIVE_UPDATE_MS = 30000;   // one update every 30s, not every fix
 
   var liveShare = {
-    active: false, chat: "", watchId: null, timer: null,
-    endsAt: 0, last: null, lastSentAt: 0
+    active: false, pending: false, chat: "", watchId: null, timer: null,
+    confirmTimer: null, endsAt: 0, last: null, lastSentAt: 0
   };
 
   // Returns whether it took the screen: opening the duration chooser does,
@@ -2489,7 +2489,12 @@
     toast("Getting location…");
     getFix(function (pos) {
       var c = pos.coords || {};
-      liveShare.active = true;
+      // Pending, not active. The bar used to appear the instant the frame was
+      // written to the socket, which is why a share that WhatsApp never
+      // accepted still looked like it was running — cosmetic, exactly as
+      // reported. Nothing claims to be sharing until the daemon confirms the
+      // opening message actually went out.
+      liveShare.pending = true;
       liveShare.chat = chat;
       liveShare.endsAt = Date.now() + secs * 1000;
       liveShare.last = c;
@@ -2499,8 +2504,17 @@
         chat: chat, action: "start", secs: secs,
         lat: c.latitude, lon: c.longitude, acc: Math.round(c.accuracy || 0)
       });
-      toast("Sharing live location");
-      paintLiveBar();
+      toast("Starting live location…");
+
+      // If no confirmation arrives, say so rather than leaving a bar up that
+      // means nothing.
+      if (liveShare.confirmTimer) clearTimeout(liveShare.confirmTimer);
+      liveShare.confirmTimer = setTimeout(function () {
+        if (liveShare.pending && !liveShare.active) {
+          liveShare.pending = false;
+          stopLiveLocation("Live location was not accepted");
+        }
+      }, 15000);
 
       // Keep the last fix fresh, but only transmit on the timer.
       try {
@@ -2529,7 +2543,12 @@
   }
 
   function stopLiveLocation(msg) {
-    if (!liveShare.active) return;
+    if (!liveShare.active && !liveShare.pending) return;
+    liveShare.pending = false;
+    if (liveShare.confirmTimer) {
+      clearTimeout(liveShare.confirmTimer);
+      liveShare.confirmTimer = null;
+    }
     W.send(W.T.LIVELOC, { chat: liveShare.chat, action: "stop" });
     if (liveShare.watchId !== null && navigator.geolocation &&
         navigator.geolocation.clearWatch) {
@@ -2832,7 +2851,17 @@
     }
   }
 
+  // The daemon accepts 16 MiB and its socket now allows the base64 of that, but
+  // a file past the cap must be refused HERE. Sending it anyway means a frame
+  // the far end rejects, and the failure mode is the connection dropping rather
+  // than an error — which looks exactly like the app being broken.
+  var MAX_ATTACH_BYTES = 16 * 1024 * 1024;
+
   function blobToBase64AndSend(blob, kind, filename) {
+    if (blob && blob.size > MAX_ATTACH_BYTES) {
+      toast("Too big to send (" + Math.round(blob.size / 1048576) + "MB, limit 16MB)");
+      return;
+    }
     var reader = new FileReader();
     reader.onload = function () {
       // FileReader gives a data: URL; the daemon strips the prefix, but send
@@ -3534,8 +3563,16 @@
       }
       return;
     }
-    if (liveShare.active && liveShare.chat === d.chat && d.until) {
-      liveShare.endsAt = d.until * 1000;
+    if (liveShare.chat !== d.chat) return;
+    // The daemon confirming is what turns a pending share into a real one.
+    if (liveShare.pending || liveShare.active) {
+      liveShare.pending = false;
+      liveShare.active = true;
+      if (liveShare.confirmTimer) {
+        clearTimeout(liveShare.confirmTimer);
+        liveShare.confirmTimer = null;
+      }
+      if (d.until) liveShare.endsAt = d.until * 1000;
       paintLiveBar();
     }
   });
