@@ -611,6 +611,23 @@ func locThumbHandler(c *wa.Client) http.HandlerFunc {
 	}
 }
 
+// thumbHandler serves the small preview shipped inside a message. The app asks
+// for this in a chat bubble and only fetches /media/ when a photo is opened
+// full-screen, which keeps a thread's decoded-image cost in kilobytes.
+func thumbHandler(c *wa.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/thumb/")
+		data := c.Thumb(id)
+		if len(data) == 0 {
+			http.Error(w, "no thumbnail", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(data)
+	}
+}
+
 func mediaHandler(c *wa.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// path is /media/<messageID>

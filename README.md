@@ -246,6 +246,22 @@ It costs battery and it is a demotion of risk, not a guarantee. `KEEPALIVE` in
 that question is settled by running it both ways for a day rather than by
 argument.
 
+**The bigger lever was memory.** Within the same priority class the largest
+process is the one killed, and this app was enormous for what it is: bubbles
+rendered the full-size photo, and CSS `max-width` changes how an image is
+*drawn*, not how it is *decoded*. A 1600×1200 photo in a 160px bubble still
+costs about 7.7 MB of decoded bitmap, so a thread with six photos carried ~46 MB
+of pixels — against a few kilobytes for a page with no images, which is exactly
+why `pushtest/` ran for hours where the real app died in seconds.
+
+WhatsApp ships a small preview inside every media message, and the daemon
+already stored those for locations. It now stores them for photos, video and
+stickers too, serves them at `/thumb/<msgid>`, and the app renders *those* in
+bubbles — fetching the full file only when a photo is opened full-screen. Video
+elements get the preview as a `poster` with `preload="none"`, so nothing of the
+video is decoded until it is played. Messages received before this have no
+stored preview and fall back to the full file exactly as before.
+
 Still unanswered on device: Opus decoding for voice notes, H.264 video, animated
 stickers, and real notification latency end to end.
 

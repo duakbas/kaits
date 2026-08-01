@@ -430,6 +430,20 @@ func (h *histStore) dropChat(jid string) {
 	h.db.Exec(`DELETE FROM chats WHERE jid=?`, jid)
 }
 
+// putThumb stores the small JPEG preview WhatsApp ships inside a message.
+//
+// The table is named location_thumbs for historical reasons — locations were
+// the first thing to need it — but every photo, video and sticker carries one
+// too, and serving those instead of the full-size file is the difference
+// between a chat thread costing tens of megabytes of decoded bitmap and
+// costing a few hundred kilobytes. Renaming the table would mean a migration
+// for no behavioural gain, so the name stays and this comment carries the
+// explanation.
+func (h *histStore) putThumb(msgid string, jpeg []byte) { h.putLocationThumb(msgid, jpeg) }
+
+// thumb returns a stored preview for any message kind, or nil.
+func (h *histStore) thumb(msgid string) []byte { return h.locationThumb(msgid) }
+
 // putLocationThumb stores the map preview WhatsApp ships with a location.
 func (h *histStore) putLocationThumb(msgid string, jpeg []byte) {
 	if h == nil || h.db == nil || msgid == "" || len(jpeg) == 0 {
@@ -820,14 +834,60 @@ func (h *histStore) history(chat string, beforeTS int64, limit int) []ws.MsgData
 	}
 	// Decorate with reactions in one query rather than one per message.
 	byMsg := h.reactionsForChat(chat)
+	// Same for thumbnails: one query for the page, not one per photo. Messages
+	// stored before thumbnails were kept have no row, and those fall back to
+	// the full-size file exactly as they did before.
+	haveThumb := h.thumbsFor(tmp)
 	for i := len(tmp) - 1; i >= 0; i-- {
 		m := tmp[i]
 		if rs, ok := byMsg[m.MsgID]; ok {
 			m.Reactions = rs
 		}
+		if m.ThumbURL == "" && haveThumb[m.MsgID] {
+			m.ThumbURL = "/thumb/" + m.MsgID
+		}
 		out = append(out, m)
 	}
 	return out
+}
+
+// thumbsFor reports which of these messages have a stored preview, in one
+// query. Asking per message would be a round trip per photo on every page of
+// history, which on a 40-message page is 40 queries to answer a question one
+// can answer.
+func (h *histStore) thumbsFor(msgs []ws.MsgData) map[string]bool {
+	found := map[string]bool{}
+	if h.db == nil || len(msgs) == 0 {
+		return found
+	}
+	ids := make([]any, 0, len(msgs))
+	holes := make([]byte, 0, len(msgs)*2)
+	for _, m := range msgs {
+		switch m.Kind {
+		case "image", "video", "gif", "sticker":
+			ids = append(ids, m.MsgID)
+			if len(holes) > 0 {
+				holes = append(holes, ',')
+			}
+			holes = append(holes, '?')
+		}
+	}
+	if len(ids) == 0 {
+		return found
+	}
+	rows, err := h.db.Query(
+		`SELECT msgid FROM location_thumbs WHERE msgid IN (`+string(holes)+`)`, ids...)
+	if err != nil {
+		return found
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			found[id] = true
+		}
+	}
+	return found
 }
 
 func boolToInt(b bool) int {

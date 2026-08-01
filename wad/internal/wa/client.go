@@ -596,6 +596,7 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		d.Text = c.resolveMentions(im.GetCaption(), im.GetContextInfo())
 		d.Mime = im.GetMimetype()
 		d.MediaURL = "/media/" + v.Info.ID
+		d.ThumbURL = storeThumb(c, v.Info.ID, im.GetJPEGThumbnail())
 		c.cacheMedia(v.Info.ID, im, im.GetMimetype())
 	case m.GetAudioMessage() != nil:
 		au := m.GetAudioMessage()
@@ -615,12 +616,14 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		d.Text = c.resolveMentions(vm.GetCaption(), vm.GetContextInfo())
 		d.Mime = vm.GetMimetype()
 		d.MediaURL = "/media/" + v.Info.ID
+		d.ThumbURL = storeThumb(c, v.Info.ID, vm.GetJPEGThumbnail())
 		c.cacheMedia(v.Info.ID, vm, vm.GetMimetype())
 	case m.GetStickerMessage() != nil:
 		st := m.GetStickerMessage()
 		d.Kind = "sticker"
 		d.Mime = st.GetMimetype() // usually image/webp, may be animated
 		d.MediaURL = "/media/" + v.Info.ID
+		d.ThumbURL = storeThumb(c, v.Info.ID, st.GetPngThumbnail())
 		c.cacheMedia(v.Info.ID, st, st.GetMimetype())
 	case m.GetDocumentMessage() != nil:
 		dm := m.GetDocumentMessage()
@@ -788,8 +791,28 @@ func (c *Client) cacheMedia(id string, dl whatsmeow.DownloadableMessage, mime st
 }
 
 // mimeFor returns the cached mime type for a media id.
+// storeThumb keeps the preview WhatsApp shipped inside a message and returns
+// the URL the app should render, or "" when the message carried none.
+//
+// Every photo, video and sticker comes with one. Rendering it instead of the
+// full-size file is the single biggest thing the app can do about its own
+// memory: CSS max-width shrinks how an image is DRAWN, not how it is decoded,
+// so a 1600x1200 photo in a 160px bubble still costs about 7.7 MB of decoded
+// bitmap. On a phone that kills whichever backgrounded app is largest, a
+// handful of photos is the difference between surviving and being reaped.
+func storeThumb(c *Client, msgID string, thumb []byte) string {
+	if len(thumb) == 0 {
+		return ""
+	}
+	c.hist.putThumb(msgID, thumb)
+	return "/thumb/" + msgID
+}
+
 // LocationThumb returns the stored map preview for a location message.
 func (c *Client) LocationThumb(msgID string) []byte { return c.hist.locationThumb(msgID) }
+
+// Thumb returns the stored preview for any message that carried one.
+func (c *Client) Thumb(msgID string) []byte { return c.hist.thumb(msgID) }
 
 // SendTyping tells a chat we're composing (or have stopped). Best-effort: a
 // typing indicator failing is not worth interrupting the user over.

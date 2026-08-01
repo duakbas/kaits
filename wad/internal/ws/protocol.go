@@ -83,6 +83,12 @@ type MsgData struct {
 	Kind       string `json:"kind"`            // "text" | "image" | "audio" | "video" | "doc"
 	Text       string `json:"text,omitempty"`  // body / caption
 	MediaURL   string `json:"media,omitempty"` // http url on the daemon to fetch the blob
+	// ThumbURL is the small preview WhatsApp ships inside the message. The app
+	// renders THIS in a bubble and only fetches MediaURL when you open the
+	// photo full-screen — CSS scaling does not shrink a decoded bitmap, so a
+	// thread of full-size photos costs tens of megabytes of RAM on a phone
+	// that kills whichever backgrounded app is biggest.
+	ThumbURL string `json:"thumb,omitempty"`
 	Mime       string `json:"mime,omitempty"`
 	QuotedID   string `json:"quoted,omitempty"`
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to

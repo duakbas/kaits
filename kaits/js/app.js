@@ -1441,12 +1441,37 @@
     return u.replace(/^ws/, "http").replace(/\/ws.*$/, "");
   }
 
+  // A bubble shows the THUMBNAIL, never the full-size file.
+  //
+  // CSS max-width changes how an image is drawn, not how it is decoded: a
+  // 1600x1200 photo in a 160px bubble still costs about 7.7 MB of decoded
+  // bitmap. A thread with a handful of photos was therefore the largest
+  // backgrounded process on the phone, and KaiOS kills the largest first —
+  // which is why this app died in seconds where a page with no images ran for
+  // hours. WhatsApp ships a small preview inside every media message, so the
+  // daemon stores it and serves it at /thumb/, and the full file is only
+  // fetched when a photo is opened full-screen.
+  function thumbOrFull(m) {
+    return mediaBase() + (m.thumb || m.media || "");
+  }
+
+  // Messages stored before the daemon kept thumbnails have no row to serve, so
+  // a miss falls back to the full file rather than showing a broken image.
+  function withThumbFallback(img, m) {
+    if (!m.thumb || !m.media) return;
+    img.onerror = function () {
+      img.onerror = null;
+      img.src = mediaBase() + m.media;
+    };
+  }
+
   function renderMediaBubble(b, m) {
     var url = mediaBase() + (m.media || "");
     if (m.kind === "image") {
       var img = document.createElement("img");
       img.className = "media-img";
-      img.src = url;
+      img.src = thumbOrFull(m);
+      withThumbFallback(img, m);
       img.alt = m.text || "photo";
       b.appendChild(img);
       if (m.text) {
@@ -1468,6 +1493,7 @@
       // GIF = muted, looping, autoplaying video (that's how WhatsApp stores it).
       var g = document.createElement("video");
       g.className = "media-img";
+      if (m.thumb) g.poster = mediaBase() + m.thumb;
       g.src = url;
       g.autoplay = true;
       g.loop = true;
@@ -1487,7 +1513,12 @@
       vid.className = "media-img";
       vid.src = url;
       vid.controls = true;
-      vid.preload = "metadata";
+      // preload="none" plus a poster: the element shows the small preview and
+      // decodes nothing of the video until it is played. With "metadata" the
+      // engine pulls and decodes a full-size frame for every video in the
+      // thread, which is the same memory problem as the photos.
+      vid.preload = "none";
+      if (m.thumb) vid.poster = mediaBase() + m.thumb;
       b.appendChild(vid);
       if (m.text) {
         var vcap = document.createElement("div");
@@ -1500,7 +1531,8 @@
       // on the browser (desktop animates; Gecko 48 likely shows frame 1).
       var stk = document.createElement("img");
       stk.className = "media-sticker";
-      stk.src = url;
+      stk.src = thumbOrFull(m);
+      withThumbFallback(stk, m);
       stk.alt = "sticker";
       b.appendChild(stk);
     } else if (m.kind === "location") {
