@@ -636,6 +636,7 @@
   }
 
   function enterComposeMode() {
+    if (chooserHasKeys()) return;   // a chooser is up; it owns the keypad
     selectMode = false;
     selectIdx = -1;
     selectMsgID = null;
@@ -660,6 +661,7 @@
   }
 
   function enterSelectMode() {
+    if (chooserHasKeys()) return;
     var msgs = threads[currentJID] || [];
     if (!msgs.length) return;
     elInput.blur();
@@ -1033,10 +1035,14 @@
     } else if (action === "openmap") {
       menuOpen = false;
       elMenu.hidden = true;
-      openLocation(m);
+      // Selection FIRST, then the chooser. openLocation opens a menu of its
+      // own, and restoring the thread afterwards rebinds the keypad on top of
+      // it — the list appears and nothing moves. Same bug as the live location
+      // durations and the attach menu before it.
       enterSelectMode();
       selectIdx = keepSelection(m);
       renderThread();
+      openLocation(m);
     } else if (action === "react") {
       menuOpen = false;
       elMenu.hidden = true;
@@ -2196,7 +2202,16 @@
   // chooseFromList: pick one of a few labels. Reuses the chat-menu overlay the
   // way the attach menu does, rather than adding another screen. onPick gets
   // the index, or -1 if the user backed out.
+  // Guards against the whole family of "the menu appeared but the keys went
+  // somewhere else" bugs. Three separate callers have now opened a chooser and
+  // then immediately rebound Nav to the screen underneath it. Rather than fix
+  // that a fourth time, the chooser refuses to be talked over: while one is
+  // open, the thread's own bindings decline to take the keypad back.
+  var chooserOpen = false;
+  function chooserHasKeys() { return chooserOpen; }
+
   function chooseFromList(title, labels, onPick) {
+    chooserOpen = true;
     elChatMenuTitle.textContent = title;
     elChatMenuList.innerHTML = "";
     labels.forEach(function (label, i) {
@@ -2209,6 +2224,7 @@
     });
     elChatMenu.hidden = false;
     function done(idx) {
+      chooserOpen = false;
       elChatMenu.hidden = true;
       enterComposeMode();
       if (onPick) onPick(idx);
