@@ -125,7 +125,38 @@
     return n;
   }
 
+  // Which chat the highlight is on, so a rebuild can put it back. Anchoring on
+  // the JID rather than the row index is the same lesson the message selection
+  // taught: the list re-sorts whenever a message arrives, so an index points at
+  // a different conversation a moment later.
+  function focusedChatJID() {
+    var el = Nav.focusedEl();
+    if (!el || !el.getAttribute) return "";
+    if (el.getAttribute("data-settings")) return "\u0000settings";
+    if (el.getAttribute("data-archived")) return "\u0000archived";
+    return el.getAttribute("data-jid") || "";
+  }
+
+  function restoreChatFocus(key) {
+    if (elList.hidden) return;
+    var rows = elList.querySelectorAll("[data-nav]");
+    if (!rows.length) return;
+    var want = -1;
+    if (key) {
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        var id = r.getAttribute("data-settings") ? "\u0000settings"
+               : r.getAttribute("data-archived") ? "\u0000archived"
+               : r.getAttribute("data-jid");
+        if (id === key) { want = i; break; }
+      }
+    }
+    Nav.focusIndexAt(want >= 0 ? want : 0);
+  }
+
   function renderChatList() {
+    // Remember before the rebuild destroys the rows.
+    var keepFocus = elList.hidden ? "" : focusedChatJID();
     var arr = Object.keys(chats).map(function (j) { return chats[j]; })
       .filter(function (c) { return !!c.archived === showArchived; });
     arr.sort(function (a, b) {
@@ -219,6 +250,10 @@
     elList.appendChild(cog);
 
     scheduleAvatarLoad();
+    // Put the highlight back. Without this every incoming message wipes it, and
+    // on a busy account that happens faster than you can press a key — which
+    // looks exactly like the D-pad being dead.
+    restoreChatFocus(keepFocus);
   }
 
   // ---- lazy, throttled avatar loading ----
@@ -290,6 +325,16 @@
     enterListScreen();
   }
 
+  // Shared by Right and the Options softkey, falling back to the first row so
+  // an unset focus doesn't silently swallow the keypress.
+  function openMenuForFocusedChat() {
+    var el = Nav.focusedEl() || elList.querySelector("[data-nav]");
+    if (!el) return;
+    if (el.getAttribute("data-settings")) { enterSetupScreen(enterListScreen); return; }
+    var jid = el.getAttribute("data-jid");
+    if (jid) openChatMenu(jid);
+  }
+
   function enterListScreen() {
     stashDraft();
     stopTyping();
@@ -315,6 +360,12 @@
         return false; // not handled: let Nav move focus up as usual
       },
       onEnter: function (e, el) {
+        // Fall back to the first row when nothing is focused. Every action here
+        // used to give up silently in that case, which made the whole list look
+        // dead while Search — the one handler that needs no focus — kept
+        // working. A key that does nothing and says nothing is the worst
+        // possible failure to debug on a device with no console.
+        el = el || elList.querySelector("[data-nav]");
         if (!el) return;
         if (el.getAttribute("data-archived")) { openArchived(); return; }
         if (el.getAttribute("data-archived-back")) { closeArchived(); return; }
@@ -324,14 +375,8 @@
       onSoftLeft: enterSearchScreen,
       // Right on a chat row opens its pin/mute/archive/delete menu. The right
       // softkey does the same, since Right isn't discoverable on its own.
-      onRight: function () {
-        var el = Nav.focusedEl();
-        if (el) openChatMenu(el.getAttribute("data-jid"));
-      },
-      onSoftRight: function () {
-        var el = Nav.focusedEl();
-        if (el) openChatMenu(el.getAttribute("data-jid"));
-      }
+      onRight: function () { openMenuForFocusedChat(); },
+      onSoftRight: function () { openMenuForFocusedChat(); }
     });
     Nav.setSoftkeys("Search", "SELECT", "Options");
     renderChatList();
