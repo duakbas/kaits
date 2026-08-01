@@ -173,8 +173,17 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Settings screen | ✅ daemon address, token, and preference switches |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
+| Open a link in a message | ✅ links are marked in the text; centre key opens, several give a chooser |
 | **Send** a location | ✅ 📍 in the attach menu, GPS with a coarse fallback indoors |
 | **Share live location** | ✅ 15 min / 1 h / 8 h, stoppable; update rendering unverified |
+
+There is no pointer on this phone, so a link cannot be clicked. Links are
+marked in the message text, and selecting the message puts **OPEN** on the
+centre key — the same way selecting a photo puts VIEW there. Several links in
+one message give a chooser rather than a guess. Message text is turned into
+nodes rather than markup, so a message containing HTML stays text: anyone who
+can message you can otherwise inject into the app, and a packaged app is not a
+safe place to be casual about that.
 
 Pin, mute, archive and delete are **real account changes**, not local
 preferences: they sync to your phone and every other linked device, and delete
@@ -192,9 +201,26 @@ so a photo picked through a Files app still arrives as a photo.
 What it deliberately does *not* do is fall through to the media pickers. That
 made "File" open the camera roll, which is a lie about what was picked and
 redundant besides — Photo, Video and Audio are their own entries in the same
-menu. On a stock build there is no answer for a document at `web` level, and
-the honest response is to say so. The real fix is `device-storage:sdcard`,
-which is in the privileged build's permission set for exactly this reason.
+menu.
+
+For documents it now tries five shapes before concluding anything: `*/*`,
+`application/*`, `text/*`, a list of concrete types, and finally a request with
+**no type filter at all** — a handler whose filter cannot fail should match
+that one, which ought to produce the system's own chooser. Wildcards in a
+*request* do not match a handler's filter on this platform, which is why `*/*`
+fails even though Gallery handles `image/*`, so each shape has to be asked
+separately.
+
+If every activity is refused it falls back to a plain `<input type="file">` —
+the ordinary "upload a file" control. That was previously reachable only in a
+desktop browser, because the presence of `MozActivity` was treated as proof the
+better path existed, so the most familiar way to answer this question was never
+tried on the phone at all. Whether Gecko 48 answers it there with a real picker
+or routes it back into the same activity system is untested; it costs nothing
+to try and it is the last thing tried.
+
+`device-storage:sdcard` remains in the privileged build's permission set as the
+route that does not depend on any of this.
 
 Location asks for GPS first and falls back to the coarse provider. GPS indoors
 on a feature phone means no fix at all — you can sit through the entire timeout

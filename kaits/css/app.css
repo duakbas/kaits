@@ -254,6 +254,16 @@ header .status.closed { color: var(--danger); }
   color: var(--accent);
 }
 
+/* Links inside a message. There is no pointer and no hover on this phone, so
+   the only job here is to make it obvious which run of text is an address —
+   the opening happens from the centre key or the action menu. */
+.link {
+  color: var(--accent);
+  text-decoration: underline;
+  word-break: break-all;      /* a long URL must not widen the bubble */
+}
+.bubble.me .link { color: #9fe8bd; }
+
 /* selected bubble (select mode) */
 .bubble.selected {
   outline: 2px solid var(--accent);
