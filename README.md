@@ -219,6 +219,20 @@ tried on the phone at all. Whether Gecko 48 answers it there with a real picker
 or routes it back into the same activity system is untested; it costs nothing
 to try and it is the last thing tried.
 
+### Notification icons
+
+The manifest declares a full ladder — 32, 48, 56, 64, 112, 128 and 256 — rather
+than the two sizes the store minimally wants. The notification tray asks for
+whatever size suits its layout, and a size that isn't declared is a lookup that
+can fail; on this handset that renders as a grey placeholder square in the
+middle of the notification rather than as nothing at all. The whole ladder
+costs about 8 KB.
+
+What is *not* set is `icon` on the notification itself. A fuller option set was
+what made notifications vibrate without rendering on Gecko 48, and dropping
+`icon` and `renotify` is what fixed it — so an icon problem gets solved in the
+manifest, not by putting back the thing that broke it.
+
 **And it now asks for `device-storage:sdcard` at `web` level too.** That is
 normally a privileged permission, so it may simply be refused — but asking
 costs nothing and not asking guarantees the answer is no, exactly as with
