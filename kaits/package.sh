@@ -15,9 +15,10 @@
 # The second argument picks the app type. "web" is the default and is what has
 # been shipping; "privileged" additionally asks for the permissions that gate
 # recording a voice note, reading the phone's ringer profile, reading and
-# writing the address book, and putting our beep on the notification audio
-# channel. All four are already coded against and currently sit dormant behind
-# a feature check.
+# writing the address book, putting our beep on the notification audio channel,
+# and reaching the memory card (the only route to attaching a document on a
+# handset with no Files app). Each is already coded against behind a feature
+# check, so a refusal costs a feature rather than breaking the build.
 #
 # Asking costs a review. If a privileged build is rejected or held, rebuild
 # without the argument and you are back to the fast path — nothing else in the
@@ -56,18 +57,7 @@ esac
 rm -rf "$BUILD"
 mkdir -p "$STAGE"
 
-cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" \
-      "$HERE/audio" "$STAGE/"
-
-# The keepalive loop is generated, not hand-written, and the app is silently
-# less able to survive backgrounding without it — a missing file here would
-# show up as "it still gets killed" rather than as an error.
-if [ ! -f "$STAGE/audio/keepalive.wav" ]; then
-  echo "PROBLEM: audio/keepalive.wav is missing; run kaits/audio/mkkeepalive.py" >&2
-  exit 1
-fi
-# The generator script itself has no business in the package.
-rm -f "$STAGE/audio/mkkeepalive.py"
+cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" "$STAGE/"
 
 # Stamp the build version into the package so the running app can say which
 # build it is. Without this, "did the update land?" is unanswerable from the
@@ -157,9 +147,10 @@ fi
 
 # Editor leftovers get copied in with the directories and would otherwise be
 # uploaded — a config.js.bak sitting next to config.js is exactly the sort of
-# thing that ships a stale token or a half-edited file to a store.
+# thing that ships a stale token or a half-edited file to a store. Asset
+# generators go the same way: mkicon.py builds the icons, it is not one.
 find "$STAGE" \( -name '*.bak' -o -name '*.orig' -o -name '*.rej' -o -name '*~' \
-  -o -name '*.swp' -o -name '.DS_Store' \) -delete
+  -o -name '*.swp' -o -name '.DS_Store' -o -name 'mk*.py' \) -delete
 
 ( cd "$STAGE" && zip -q -r "$OUT" . -x ".*" )
 

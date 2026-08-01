@@ -19,23 +19,7 @@
   var prefDefaults = {
     // Off by default: the eased scroll is a matter of taste, and the taste that
     // matters here found it worse than an instant jump.
-    smoothscroll: false,
-    // OFF by default, on the evidence.
-    //
-    // The keepalive was written for "the app dies seconds after I leave it",
-    // and then the daemon log showed that was never what happened: the app
-    // delivered a message two hours in, and reconnected two seconds after an
-    // earlier drop. Both disconnections were the PHONE leaving the network,
-    // not the app being killed. Meanwhile the thumbnail change cut a photo
-    // thread from tens of megabytes of decoded bitmap to a few hundred
-    // kilobytes, which is the thing the process killer actually chooses on.
-    //
-    // So there is no measured problem for this to solve, and it is not free:
-    // it holds the audio pipeline open on a 1400 mAh phone. Shipping it on by
-    // default was applying a fix ahead of the measurement — exactly what the
-    // flight recorder exists to stop. It stays one switch away, and the kill
-    // rate on the Settings screen is what would justify turning it on.
-    keepalive: false
+    smoothscroll: false
   };
 
   function loadPrefs() {

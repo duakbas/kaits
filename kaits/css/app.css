@@ -547,12 +547,6 @@ header .status.closed { color: var(--danger); }
   user-select: text;
 }
 
-/* The keepalive loop must never occupy layout. Firefox hides a controls-less
-   <audio> by default, but this app has been bitten before by assuming what
-   Gecko 48 does, and a stray 150px media box above the softkeys would look
-   exactly like the composer being too tall. */
-#keepalive-audio { display: none !important; }
-
 /* settings toggles */
 .setup-toggle {
   display: flex;
