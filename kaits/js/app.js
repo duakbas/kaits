@@ -3437,8 +3437,15 @@
       if (kr) lines.push("background kills: " + kr.killed + " of last " + kr.total);
       var ka = Keepalive.state();
       lines.push("keepalive: " + (!ka.wanted ? "off"
+        : ka.interrupted ? "interrupted by the system"
         : ka.running ? "playing" : ka.primed ? "primed" : "not primed yet") +
         (ka.error ? " (" + ka.error + ")" : ""));
+      // The channel is the knob that decides whether this works and whether it
+      // steps on other audio, so the value the engine ACCEPTED is shown, not
+      // the one that was asked for.
+      lines.push("  channel: " + (ka.channel || "?") +
+        (ka.channel !== ka.channelAsked ? " (asked for " + ka.channelAsked + ")" : "") +
+        (ka.interruptions ? ", interrupted " + ka.interruptions + "x" : ""));
       var hist = Life.report();
       if (hist.length) lines.push("— sessions, newest first —");
       for (var i = 0; i < hist.length && i < 8; i++) lines.push("  " + hist[i]);

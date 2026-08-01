@@ -53,5 +53,19 @@ window.CONFIG = {
   // The setup screen reports how long the app actually survived each time it
   // was backgrounded, so this can be judged on measurements instead of faith:
   // turn it off, use the phone for a day, and compare.
-  KEEPALIVE: true
+  KEEPALIVE: true,
+
+  // Which audio channel the keepalive plays on. This is the one knob that
+  // decides whether the trick works AND whether it is antisocial:
+  //
+  //   "normal"  — non-exclusive. Should not stop your music or any other
+  //               sound. May or may not be enough for the platform to count
+  //               the app as busy; if kills continue with the keepalive on and
+  //               playing, that is what this being too polite looks like.
+  //   "content" — the media channel. Certain to count, and certain to stop
+  //               whatever else is using it every time you leave the app.
+  //
+  // Start on "normal". Only reach for "content" if the Settings screen shows
+  // the keepalive playing and the kill rate has not moved.
+  KEEPALIVE_CHANNEL: "normal"
 };
