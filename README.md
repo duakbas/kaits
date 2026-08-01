@@ -365,8 +365,7 @@ one failure that matters, silent and uncounted. It displaces the speaker cone
 while it runs and pops when it stops. A tone below hearing gets the same
 silence without either gamble.
 
-**It ships off, and there is now one confirmed kill against it.** The daemon
-logged this:
+**It ships off, and it is staying off.** The daemon logged this:
 
     ws: read closed: websocket: close 1001 (going away): Child was killed
     ws: phone disconnected after 6m54s
@@ -375,14 +374,16 @@ immediately after YouTube was opened. `Child was killed` is the platform saying
 so in as many words — the phone wanted memory for YouTube and took it from the
 cheapest process available.
 
-That is one kill, under the heaviest memory pressure a phone like this ever
-sees, and it does not establish that the keepalive would have prevented it:
-against YouTube on a 1400 mAh handset a backgrounded app may be doomed whatever
-priority it claims. It stays off by default, because turning it on would again
-be applying a fix ahead of the measurement — but there is now a repeatable
-trigger, which is worth more than a night of waiting. Open the app, background
-it, start YouTube, then read the Settings screen. Do it once with "Stay alive in
-background" off and once with it on. Two minutes, and the answer is real.
+That was tested on the device, both ways, and the answer is that nothing in
+this app can help. YouTube kills it. YouTube *Shorts* takes down the phone's own
+UI as well — the system is reclaiming everything it can reach, and an app that
+politely raises its priority is not going to be spared from that. Reopening the
+app afterwards is the correct response, not a workaround.
+
+So the keepalive stays off and the question is closed. It costs battery, it is
+audible if anything goes wrong with it, and the one situation it was meant for
+turns out to be unwinnable. The code stays because it is written and tested, but
+nothing should be built on top of it.
 
 Against ordinary use the evidence still points the other way: the app was alive
 two hours in, raised a real notification, and reconnected two seconds after an
