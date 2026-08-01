@@ -41,9 +41,33 @@
     if (typeof screen.onFocusChange === "function") {
       try { screen.onFocusChange(items[i]); } catch (e) {}
     }
-    // keep the focused row in view on the tiny screen
-    items[i].scrollIntoView({ block: "nearest" });
+    // Record the index BEFORE scrolling. This line used to come last, and the
+    // scroll below used to throw on Gecko 48 — so focusIndex never updated and
+    // every later keypress recomputed from a stale value. The highlight moved
+    // once and then appeared frozen, which is the bug that ate most of a day.
     focusIndex = i;
+    ensureVisible(items[i]);
+  }
+
+  // "nearest" scrolling, done by hand.
+  //
+  // scrollIntoView({block: "nearest"}) throws a TypeError on Gecko 48: that
+  // value for `block` didn't exist yet. Plain scrollIntoView() would work but
+  // always jumps the row to the top of the view, which makes a list lurch on
+  // every keypress. Comparing rectangles gives the behaviour we wanted with an
+  // API this engine actually has.
+  function ensureVisible(el) {
+    if (!el || !el.getBoundingClientRect) return;
+    var box = screen.list;
+    try {
+      if (!box || !box.getBoundingClientRect) { el.scrollIntoView(); return; }
+      var r = el.getBoundingClientRect();
+      var c = box.getBoundingClientRect();
+      if (r.top < c.top) box.scrollTop -= (c.top - r.top);
+      else if (r.bottom > c.bottom) box.scrollTop += (r.bottom - c.bottom);
+    } catch (e) {
+      // Never let a scroll failure break focus again.
+    }
   }
 
   function moveFocus(delta) {
@@ -60,6 +84,11 @@
 
   // True when the user is typing into a field, so key handling should leave
   // text editing alone.
+  function isEmptyField() {
+    var a = document.activeElement;
+    return !!a && typeof a.value === "string" && a.value.length === 0;
+  }
+
   function isEditing() {
     var a = document.activeElement;
     if (!a) return false;
@@ -121,8 +150,10 @@
       case "Backspace":
         // While a text field has focus, Backspace has to delete a character —
         // stealing it for "back" makes the composer and the contact-name
-        // prompt impossible to correct. The End key and Escape still go back.
-        if (isEditing()) break;
+        // prompt impossible to correct. But an EMPTY field has nothing to
+        // delete, and the End key can't be intercepted on KaiOS (the system
+        // closes the app), so without this the search screen has no way out.
+        if (isEditing() && !isEmptyField()) break;
         if (screen.onBack) { screen.onBack(e); e.preventDefault(); }
         break;
       // On real hardware the red key is the back/exit key, and which name Gecko

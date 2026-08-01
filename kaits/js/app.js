@@ -1384,7 +1384,12 @@
       g.setAttribute("playsinline", "");
       b.appendChild(g);
       // nudge autoplay in case the attribute alone doesn't trigger it
-      g.play && g.play().catch(function () {});
+      // play() returns undefined on Gecko 48 — promises came later — so
+      // .catch() on it throws and takes the whole render down with it.
+      try {
+        var p = g.play && g.play();
+        if (p && p.catch) p.catch(function () {});
+      } catch (e) { /* autoplay refused; the poster frame is fine */ }
     } else if (m.kind === "video") {
       var vid = document.createElement("video");
       vid.className = "media-img";
@@ -2115,6 +2120,14 @@
     elSearchInput.value = "";
     Nav.setScreen({
       list: elSearch,
+      // Arrows move the text caret while the box has focus, so stepping into
+      // the results has to take focus off it — otherwise up and down just run
+      // along the query you typed.
+      onFocusChange: function (el) {
+        if (el && el !== elSearchInput && document.activeElement === elSearchInput) {
+          try { elSearchInput.blur(); } catch (e) {}
+        }
+      },
       // No Back softkey: the red key goes back. Softkeys are for actions.
       onBack: enterListScreen,
       onEnter: function (e, el) {
