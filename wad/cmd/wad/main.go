@@ -175,6 +175,11 @@ func main() {
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 	mux.HandleFunc("/debug/message", fakeMessageHandler(hub, token))
 
+	// A closed laptop lid is the most common reason the phone stops receiving,
+	// and it is indistinguishable from the app being killed unless someone says
+	// so out loud.
+	go watchForSuspend(ctx)
+
 	go func() {
 		log.Printf("wad: listening on %s (ws at /ws?token=...)", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
