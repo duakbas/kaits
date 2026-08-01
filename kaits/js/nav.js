@@ -177,6 +177,9 @@
       if (screen.list) setFocus(0);
     },
     refreshFocus: function () { setFocus(focusIndex < 0 ? 0 : focusIndex); },
+    // Move the highlight to a known row, for callers that rebuilt the list and
+    // know where the selection belongs.
+    focusIndexAt: function (i) { setFocus(i); },
     focusedEl: currentFocusEl,
     // let a screen set the softkey labels shown in the bottom bar
     setSoftkeys: function (left, center, right) {
