@@ -165,12 +165,12 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Pin / mute / archive / delete chat | ✅ syncs to the account |
 | Mentions, avatars, per-person colours in groups | ✅ |
 | **Send** photos or documents | ✅ 📎 in the composer, or press Left |
-| **Record** a voice note | ❌ playback only |
+| **Record** a voice note | ❌ playback only — needs a `privileged` build, see below |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
 | Settings screen | ✅ daemon address + token, entered on the phone |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
-| **Send** a location, or share live location | ❌ received ones render + open in maps |
+| **Send** a location, or share live location | ❌ received ones render + open in maps; `geolocation` is granted at `web` level, so this needs no privilege bump |
 
 Pin, mute, archive and delete are **real account changes**, not local
 preferences: they sync to your phone and every other linked device, and delete
@@ -212,6 +212,38 @@ is a privileged permission and this is a `web`-type app; the KaiStore agreement
 forbids VoIP over the cellular network; and the most experienced KaiOS app
 developers report voice calls are not achievable on this platform at all. The
 first is the only one that might move.
+
+### The privileged build
+
+Four things the app already has code for are dormant because a `web`-type app
+isn't granted the permission: recording a voice note (`audio-capture`), reading
+the phone's ringer profile (`settings`), reading and writing the address book
+(`mozContacts`), and putting the alert tone on the notification audio channel.
+Each is written behind a feature check, so today they simply don't fire.
+
+Only one of the three reasons above applies to any of them. Recording a voice
+note is not VoIP — it's `getUserMedia`, an encode, and an upload — so the
+KaiStore cellular clause has nothing to say about it, and neither does the
+"calls aren't achievable" report. The single gate is the app type, and the app
+type is a request that has never been made.
+
+    ./kaits/package.sh 1.1.9 privileged
+
+builds the same app with `"type": "privileged"` and those permissions declared.
+The zip is otherwise byte-for-byte the same work; if the submission is refused,
+rebuild without the argument and nothing is lost but the round trip. The build
+refuses to produce a privileged package containing an inline `<script>`, an
+inline event handler, or `eval` — a privileged package runs under an enforced
+`script-src 'self'`, and each of those would work in every browser you'd test
+in and be silently dead on the phone.
+
+Whatever the phone can encode is good enough, incidentally: if `MediaRecorder`
+there yields something other than Ogg/Opus, `wad` runs on a real machine and
+can transcode before sending. The encoder is not the gate either.
+
+`geolocation` needs none of this — it's available to a `web`-type app, so it's
+now declared in the manifest and sending a location can be built against the
+build that's already shipping.
 
 ## Prior art worth reading
 
