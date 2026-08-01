@@ -253,6 +253,9 @@ header .status.closed { color: var(--danger); }
   font-size: 12px;
   color: var(--accent);
 }
+/* Media that can never be fetched — stored before keys were kept. Muted
+   rather than accented: it is not an action, it is an absence. */
+.media-file.unavailable { color: var(--muted); font-style: italic; }
 
 /* Links inside a message. There is no pointer and no hover on this phone, so
    the only job here is to make it obvious which run of text is an address —

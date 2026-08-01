@@ -1509,6 +1509,23 @@
   // hours. WhatsApp ships a small preview inside every media message, so the
   // daemon stores it and serves it at /thumb/, and the full file is only
   // fetched when a photo is opened full-screen.
+  // Media the daemon has already said is gone.
+  //
+  // Messages stored before keys were kept can never be fetched — not now, not
+  // later, not by anyone. The app was asking for them again on every render,
+  // which on a busy thread meant two dozen round trips per repaint, a log line
+  // each, and an <img> allocated each time. Remembering the answer turns that
+  // into one request per message per session.
+  var deadMedia = {};
+
+  function mediaIsDead(m) {
+    return !!(m && m.msgid && deadMedia[m.msgid]);
+  }
+
+  function markMediaDead(m) {
+    if (m && m.msgid) deadMedia[m.msgid] = true;
+  }
+
   function thumbOrFull(m) {
     return mediaBase() + (m.thumb || m.media || "");
   }
@@ -1516,16 +1533,49 @@
   // Messages stored before the daemon kept thumbnails have no row to serve, so
   // a miss falls back to the full file rather than showing a broken image.
   function withThumbFallback(img, m) {
-    if (!m.thumb || !m.media) return;
     img.onerror = function () {
       img.onerror = null;
-      img.src = mediaBase() + m.media;
+      // 410 from the daemon means gone for good, but an <img> cannot see the
+      // status code — so any failure of the LAST url we have is treated as
+      // final for this session. Retrying it would only reproduce the storm.
+      if (m.thumb && m.media) {
+        img.src = mediaBase() + m.media;
+        img.onerror = function () { markMediaDead(m); showDeadMedia(img, m); };
+        return;
+      }
+      markMediaDead(m);
+      showDeadMedia(img, m);
     };
+  }
+
+  // A placeholder in the shape of the thing that is missing, rather than a
+  // broken image icon.
+  function showDeadMedia(img, m) {
+    var box = document.createElement("div");
+    box.className = "media-file unavailable";
+    box.textContent = m.kind === "image" ? "🖼 image unavailable"
+      : m.kind === "video" ? "🎬 video unavailable"
+      : m.kind === "sticker" ? "sticker unavailable"
+      : "media unavailable";
+    if (img.parentNode) img.parentNode.replaceChild(box, img);
   }
 
   function renderMediaBubble(b, m) {
     var url = mediaBase() + (m.media || "");
     if (m.kind === "image") {
+      if (mediaIsDead(m)) {
+        var gone = document.createElement("div");
+        gone.className = "media-file unavailable";
+        gone.textContent = "🖼 image unavailable";
+        b.appendChild(gone);
+        if (m.text) {
+          var gcap = document.createElement("div");
+          gcap.className = "caption";
+          appendLinked(gcap, m.text);
+          b.appendChild(gcap);
+        }
+        return;
+      }
       var img = document.createElement("img");
       img.className = "media-img";
       img.src = thumbOrFull(m);
