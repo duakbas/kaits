@@ -98,14 +98,23 @@
     configured: function () { return !!(stored && stored.url); },
 
     current: function () {
+      var u = (stored && stored.url) || "";
       return {
-        url: (stored && stored.url) || "",
+        url: u,
         token: (stored && stored.token) || "",
-        // What to show in the input: the bare host:port, since that's what was
-        // typed and what anyone would want to edit.
-        host: ((stored && stored.url) || "")
-          .replace(/^wss?:\/\//i, "")
-          .replace(/\/ws$/, "")
+        // What to show in the input, and it has to survive being saved again
+        // unchanged. Stripping the scheme is only safe for the address someone
+        // actually typed bare — a LAN "192.168.1.200:8080". For anything else
+        // it is a silent downgrade: normalize() reads a schemeless address as
+        // ws://, so a stored "wss://host:8080/ws" would come back from this
+        // screen as PLAIN ws, and the token would cross the internet in the
+        // clear the next time anyone opened Settings and pressed save.
+        host: (function () {
+          if (!u) return "";
+          var bare = u.replace(/^ws:\/\//i, "").replace(/\/ws$/, "");
+          if (/^ws:\/\//i.test(u) && /^[^\/]+:\d+$/.test(bare)) return bare;
+          return u;
+        })()
       };
     },
 
