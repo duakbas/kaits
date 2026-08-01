@@ -6,6 +6,42 @@ and a phone you actually carry.
 
 Assumes Debian or Ubuntu and a domain you control. Everything here is one-time.
 
+## The short version: one zip, one command
+
+```bash
+./wad/deploy/mkbundle.sh                       # on the laptop, daemon stopped
+scp wad-setup-*.zip you@vps.example.com:
+ssh you@vps.example.com
+unzip wad-setup-*.zip && cd wad-setup && sudo ./install.sh wad.example.com
+```
+
+That is the whole deployment. [`install.sh`](deploy/install.sh) installs Go and
+gcc, builds the daemon, creates the `wad` user and `/opt/wad`, puts your
+**existing session** in place so there is no QR and no resync, installs and
+starts the systemd service with a freshly generated token, installs Caddy and
+gets a certificate for the hostname, and opens 80 and 443 while deliberately
+leaving 8080 shut. It finishes by printing the two lines to type into the
+phone's Settings screen. Re-running it is safe: every step checks first, and an
+existing session or token is kept rather than overwritten.
+
+[`mkbundle.sh`](deploy/mkbundle.sh) is what builds that zip. It refuses to run
+while a local daemon is up, takes every `wa-session.db*` file including the
+`-wal` sidecar, checksums them into the bundle and verifies the copy, and
+vendors the Go dependencies so the server builds the versions that were
+actually tested without needing to reach proxy.golang.org. About 6 MB plus your
+message history. `--no-session` builds a code-only bundle if you would rather
+pair with a QR on the server.
+
+**The zip contains your WhatsApp account.** `wa-session.db` *is* the
+linked-device registration, not a backup of it — anyone who unpacks the zip can
+read and send your messages, and there is no password to change afterwards. Move
+it with `scp`, not through anything that keeps a copy, and delete it from both
+machines once the server is up. `mkbundle.sh` writes it mode `600` for the same
+reason.
+
+The rest of this document is what those two scripts are doing, and what to do
+when the situation doesn't fit them.
+
 ## Which machine: check four things first
 
 A rented VPS and a university box run the same steps. What differs is whether
@@ -70,6 +106,13 @@ WhatsApp device slot and at least one gets logged out, so **stop the local
 daemon before starting the remote one** and don't leave a stray copy running.
 
 Pairing survives the copy, so there's no QR to scan on this path.
+
+## Doing it by hand
+
+Everything below is the same deployment done step by step — useful when the box
+isn't Debian, when you don't want a script touching the firewall, or when
+something in `install.sh` failed and you need to know what it was in the middle
+of.
 
 ## 1. Build
 
