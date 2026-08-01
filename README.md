@@ -359,10 +359,23 @@ one failure that matters, silent and uncounted. It displaces the speaker cone
 while it runs and pops when it stops. A tone below hearing gets the same
 silence without either gamble.
 
-It costs battery and it is a demotion of risk, not a guarantee — so it is a
-switch on the Settings screen ("Stay alive in background"), next to the report
-of how long the app actually survived. Turn it off, use the phone for a day,
-compare the kill rate. That is a measurement, not an argument.
+**It ships off, because the measurement says there is nothing to fix.** The
+keepalive was written for "the app dies seconds after I leave it". Then the
+daemon log showed that was never what happened: the app was alive two hours in,
+raised a real notification, and reconnected two seconds after an earlier drop.
+Both disconnections in that log were the *phone* leaving the network — `read:
+no route to host` — not the app being killed. Nothing has yet been observed
+being reaped.
+
+Meanwhile the thumbnail change took a photo thread from tens of megabytes of
+decoded bitmap to a few hundred kilobytes, and process size is what the killer
+actually chooses on. That is the likelier reason the early "dies in seconds"
+behaviour stopped.
+
+Shipping the keepalive on by default was applying a fix ahead of the
+measurement, which is precisely what the flight recorder exists to prevent. It
+stays one switch away — "Stay alive in background" on the Settings screen, next
+to the kill rate that would justify turning it on.
 
 The other switch there is **Scroll animation**, off by default. The eased glide
 was added because an instant jump makes it hard to tell whether the highlight

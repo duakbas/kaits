@@ -40,20 +40,21 @@ window.CONFIG = {
   NOTIFY_VIBRATE: "auto",
   NOTIFY_SOUND: "auto",
 
-  // Play a near-silent loop while the app is in the background.
+  // Make an inaudible tone while backgrounded, so the platform counts the app
+  // as doing something and moves it up the process priority list.
   //
-  // KaiOS kills a backgrounded app as soon as something else wants the memory,
-  // and with push measured dead the app holding its own socket is the ONLY
-  // thing that delivers a message here — so being reaped is not a cosmetic
-  // problem, it's the notification design failing. An app that is playing
-  // audio is treated as perceptibly doing something and moves up the priority
-  // list, which is how a music player survives backgrounding.
+  // Off, because the measurement says there is nothing to fix. The app was
+  // observed alive two hours in, delivering a notification, and reconnecting
+  // two seconds after a drop; both disconnections in the log were the phone
+  // leaving the network rather than the app being killed. Rendering thumbnails
+  // instead of full-size photos took the app from tens of megabytes of decoded
+  // bitmap to a few hundred kilobytes, and process size is what the killer
+  // actually chooses on.
   //
-  // It costs battery, and it is a demotion of risk rather than a guarantee.
-  // The setup screen reports how long the app actually survived each time it
-  // was backgrounded, so this can be judged on measurements instead of faith:
-  // turn it off, use the phone for a day, and compare.
-  KEEPALIVE: true,
+  // This is a master switch: the per-phone setting cannot turn it on if this
+  // is false. Turn both on only if the kill rate on the Settings screen says
+  // the app is genuinely being reaped.
+  KEEPALIVE: false,
 
   // Which audio channel the keepalive plays on. This is the one knob that
   // decides whether the trick works AND whether it is antisocial:
