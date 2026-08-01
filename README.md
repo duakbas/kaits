@@ -167,13 +167,13 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Pin / mute / archive / delete chat | ✅ syncs to the account |
 | Mentions, avatars, per-person colours in groups | ✅ |
 | **Send** photos, video or audio | ✅ 📎 in the composer, or press Left |
-| **Send** an arbitrary document | ⚠️ only if some app on the phone claims the type |
+| **Send** an arbitrary document | ❌ at `web` level — no app claims the type; needs the `privileged` build's SD-card access |
 | **Record** a voice note | ❌ playback only — needs a `privileged` build, see below |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
 | Settings screen | ✅ daemon address, token, and preference switches |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
-| **Send** a location | ✅ 📍 in the attach menu |
+| **Send** a location | ✅ 📍 in the attach menu, GPS with a coarse fallback indoors |
 | **Share live location** | ✅ 15 min / 1 h / 8 h, stoppable; update rendering unverified |
 
 Pin, mute, archive and delete are **real account changes**, not local
@@ -187,7 +187,22 @@ KaiOS build has no Files app, so nothing answers `*/*` and the picker never
 appears. The attach menu therefore tries a list of types in turn rather than
 asking for `*/*` alone, and says so plainly when the phone genuinely has no
 app that can pick a file. Whatever comes back is sent as what it actually is,
-so a photo picked through "File" still arrives as a photo.
+so a photo picked through a Files app still arrives as a photo.
+
+What it deliberately does *not* do is fall through to the media pickers. That
+made "File" open the camera roll, which is a lie about what was picked and
+redundant besides — Photo, Video and Audio are their own entries in the same
+menu. On a stock build there is no answer for a document at `web` level, and
+the honest response is to say so. The real fix is `device-storage:sdcard`,
+which is in the privileged build's permission set for exactly this reason.
+
+Location asks for GPS first and falls back to the coarse provider. GPS indoors
+on a feature phone means no fix at all — you can sit through the entire timeout
+and get nothing — while cell towers and Wi-Fi answer in a second or two to
+within a few hundred metres. The accuracy travels with the message, so the
+recipient's map draws an honest circle rather than a false pin, and the app
+says "approximate" when that is what it sent. A denied permission stops there
+rather than re-prompting.
 
 Saving a contact is two separate things, because WhatsApp has no contact-write
 API — the address book syncs one way, phone → account. The in-app nickname is

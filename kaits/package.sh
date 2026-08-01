@@ -106,6 +106,15 @@ PRIVILEGED = {
                        "alerting about a new message",
         "access": "readonly",
     },
+    # The only route to an arbitrary file on a handset with no Files app. A
+    # pick activity can only open what some installed app has claimed, and a
+    # stock KaiOS build claims images, video and audio and nothing else — so
+    # "attach a document" is unimplementable at web level, not merely awkward.
+    "device-storage:sdcard": {
+        "description": "Attach a file from the memory card, which no other app "
+                       "on the phone is able to open for us",
+        "access": "readonly",
+    },
 }
 
 if apptype == "privileged":

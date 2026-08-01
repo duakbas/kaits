@@ -2221,38 +2221,63 @@
     return !!(navigator.geolocation && navigator.geolocation.getCurrentPosition);
   }
 
-  // A first fix from cold on this hardware can take a while, and the phone
-  // gives no feedback while it tries — so say something, or it reads as a
-  // dead menu item.
-  var GEO_TIMEOUT_MS = 30000;
+  // Getting a fix, in two stages, because one attempt is the wrong shape for
+  // this hardware.
+  //
+  // enableHighAccuracy means GPS, and GPS indoors on a feature phone means no
+  // fix at all — you can sit through the whole timeout and get nothing. The
+  // coarse provider (cell towers and Wi-Fi) answers indoors in a second or
+  // two and is accurate to a few hundred metres, which is a perfectly good
+  // answer to "where are you" and infinitely better than an error.
+  //
+  // So: ask for GPS first with a short patience, and fall back to coarse. The
+  // accuracy travels with the message either way, so the recipient's map draws
+  // the circle honestly rather than pretending to a precision we don't have.
+  var GEO_GPS_MS = 12000;      // long enough for a warm GPS, short enough to give up
+  var GEO_COARSE_MS = 15000;
 
-  function getFix(onFix, onFail) {
+  function getFix(onFix, onFail, onNote) {
     if (!haveGeolocation()) { onFail("This phone has no location support"); return; }
-    var done = false;
-    var t = setTimeout(function () {
-      if (!done) { done = true; onFail("Couldn't get a location fix"); }
-    }, GEO_TIMEOUT_MS + 2000);
-    try {
-      navigator.geolocation.getCurrentPosition(
-        function (pos) {
-          if (done) return;
-          done = true; clearTimeout(t);
-          onFix(pos);
-        },
-        function (err) {
-          if (done) return;
-          done = true; clearTimeout(t);
-          // PERMISSION_DENIED is 1 and is the one worth naming, because the
-          // fix is a settings change and not "try again".
-          onFail(err && err.code === 1
-            ? "Location permission refused"
-            : "Couldn't get a location fix");
-        },
-        { enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 60000 }
-      );
-    } catch (e) {
-      done = true; clearTimeout(t);
-      onFail("Couldn't get a location fix");
+    attempt(true);
+
+    function attempt(precise) {
+      var done = false;
+      var budget = precise ? GEO_GPS_MS : GEO_COARSE_MS;
+      // A belt-and-braces timer: the platform's own timeout has been known not
+      // to fire, and a menu item that never answers is worse than one that
+      // says no.
+      var t = setTimeout(function () { if (!done) { done = true; give(null); } },
+                         budget + 3000);
+
+      function give(pos, err) {
+        clearTimeout(t);
+        if (pos) { onFix(pos, precise); return; }
+        // A refusal is final — retrying coarse would just prompt again for a
+        // permission that was already declined.
+        if (err && err.code === 1) { onFail("Location permission refused"); return; }
+        if (precise) {
+          if (onNote) onNote("No GPS — using approximate location");
+          attempt(false);
+          return;
+        }
+        onFail("Couldn't get a location fix");
+      }
+
+      try {
+        navigator.geolocation.getCurrentPosition(
+          function (pos) { if (!done) { done = true; give(pos); } },
+          function (err) { if (!done) { done = true; give(null, err); } },
+          {
+            enableHighAccuracy: precise,
+            timeout: budget,
+            // Indoors a minute-old coarse fix is as good as a fresh one and
+            // arrives instantly; for GPS we want something current.
+            maximumAge: precise ? 30000 : 300000
+          }
+        );
+      } catch (e) {
+        if (!done) { done = true; give(null); }
+      }
     }
   }
 
@@ -2262,15 +2287,16 @@
     toast("Getting location…");
     getFix(function (pos) {
       var c = pos.coords || {};
+      var acc = Math.round(c.accuracy || 0);
       W.send(W.T.SEND, {
         chat: chat, kind: "location",
         lat: c.latitude, lon: c.longitude,
-        acc: Math.round(c.accuracy || 0),
+        acc: acc,
         quoted: replyingTo ? replyingTo.msgid : ""
       });
       clearReply();
-      toast("Location sent");
-    }, function (msg) { toast(msg); });
+      toast(acc && acc > 200 ? "Sent (approximate, ±" + acc + "m)" : "Location sent");
+    }, function (msg) { toast(msg); }, function (note) { toast(note); });
   }
 
   // ---------- live location ----------
@@ -2330,7 +2356,7 @@
       } catch (e) { /* the timer still sends the fixes we do get */ }
 
       liveShare.timer = setInterval(pumpLiveShare, LIVE_UPDATE_MS);
-    }, function (msg) { toast(msg); });
+    }, function (msg) { toast(msg); }, function (note) { toast(note); });
   }
 
   function pumpLiveShare() {
@@ -2399,10 +2425,17 @@
     video: [["video/*"], ["video/mp4", "video/3gpp"]],
     audio: [["audio/*"], ["audio/mpeg", "audio/amr", "audio/ogg"]],
     // Documents genuinely have no owner on most builds. Try a Files app if one
-    // is installed, then the concrete types a mail or reader app may claim,
-    // then the media apps — a "file" a phone can actually reach is usually a
-    // photo or a video anyway.
-    doc: [["*/*"], ["application/pdf", "text/plain"], ["image/*"], ["video/*"], ["audio/*"]]
+    // is installed, then the concrete types a mail or reader app might claim —
+    // and then stop.
+    //
+    // This used to fall through to image/video/audio on the theory that a file
+    // a phone can reach is usually a photo anyway. On a handset with no Files
+    // app that made "File" open the camera roll, which is both a lie about
+    // what was picked and redundant: Photo, Video and Audio are their own
+    // entries three rows up. Saying "this phone cannot do that" is more useful
+    // than quietly doing something else.
+    doc: [["*/*"], ["application/pdf", "text/plain", "application/msword",
+                    "application/zip", "text/csv"]]
   };
 
   function pickAndSend(kind) {
