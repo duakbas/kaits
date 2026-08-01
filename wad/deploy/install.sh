@@ -18,6 +18,8 @@
 #   --cert F --key F  use a certificate you already have rather than getting one
 #   --no-tls          no TLS at all: plain ws://, token in the clear (see below)
 #   --no-firewall     don't touch ufw — for a box whose firewall isn't yours
+#   --replace-caddy   take over an existing Caddy config (kept as a .before-wad
+#                     backup) instead of writing ours aside for you to import
 
 set -euo pipefail
 
@@ -30,6 +32,7 @@ CERT=""
 KEYF=""
 TLS=1
 FIREWALL=1
+REPLACE_CADDY=0
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 say() { echo; echo "==> $*"; }
@@ -41,6 +44,7 @@ while [ $# -gt 0 ]; do
     --key)  KEYF="${2:-}"; [ -n "$KEYF" ] || die "--key needs a path"; shift 2 ;;
     --no-tls) TLS=0; shift ;;
     --no-firewall) FIREWALL=0; shift ;;
+    --replace-caddy) REPLACE_CADDY=1; shift ;;
     -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) [ -z "$HOST" ] || die "more than one hostname given"; HOST="$1"; shift ;;
@@ -112,17 +116,27 @@ elif [ -n "$MYIP" ]; then
   echo "    $HOST -> ${HOSTIP:-unresolved}, this box is $MYIP"
 fi
 
+ARCH="$(dpkg --print-architecture)"
+
+# A binary built elsewhere on a matching machine, if the bundle carries one.
+# Worth checking before anything is installed: it removes the Go toolchain, the
+# C compiler and the build cache from this box entirely, which between them are
+# most of a gigabyte on a disk that may not have it.
+PREBUILT="$BUNDLE/wad-linux-$ARCH"
+[ -f "$PREBUILT" ] || PREBUILT=""
+
 say "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl gcc ca-certificates ufw >/dev/null
+apt-get install -y -qq curl ca-certificates ufw >/dev/null
+# gcc is only for building — the SQLite driver is CGO.
+[ -n "$PREBUILT" ] || apt-get install -y -qq gcc >/dev/null
 
 # Debian's golang is too old for this module, so take it from upstream. The
 # download list is authoritative for both the version and its checksum, so this
 # verifies itself rather than trusting a hardcoded hash that rots.
-if ! command -v /usr/local/go/bin/go >/dev/null 2>&1; then
+if [ -z "$PREBUILT" ] && ! command -v /usr/local/go/bin/go >/dev/null 2>&1; then
   say "installing Go"
-  ARCH="$(dpkg --print-architecture)"
   case "$ARCH" in
     amd64) GOARCH=amd64 ;;
     arm64) GOARCH=arm64 ;;
@@ -145,27 +159,45 @@ if ! command -v /usr/local/go/bin/go >/dev/null 2>&1; then
   echo "$SHA  /tmp/go.tgz" | sha256sum -c - >/dev/null || die "Go download failed its checksum"
   rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz
 fi
-export PATH=/usr/local/go/bin:$PATH
-echo "    $(go version)"
+if [ -z "$PREBUILT" ]; then
+  export PATH=/usr/local/go/bin:$PATH
+  echo "    $(go version)"
+fi
 
 say "creating the wad user and $DIR"
 id -u wad >/dev/null 2>&1 || useradd --system --home "$DIR" --shell /usr/sbin/nologin wad
 mkdir -p "$DIR"
 
-say "building"
-rm -rf /tmp/wadsrc && mkdir -p /tmp/wadsrc
-tar -C /tmp/wadsrc -xzf "$BUNDLE/src.tar.gz"
-# The bundle normally carries vendor/, so this builds the exact dependency
-# versions that were tested and needs no access to proxy.golang.org. Without it
-# Go resolves the module graph itself, which needs outbound HTTPS.
-if [ -d /tmp/wadsrc/vendor ]; then
-  echo "    using the vendored dependencies"
-  ( cd /tmp/wadsrc && go build -mod=vendor -o "$DIR/wad" ./cmd/wad )
+if [ -n "$PREBUILT" ]; then
+  say "installing the prebuilt binary"
+  # A binary from a machine with a newer glibc will install perfectly and then
+  # fail to start with a message only visible in the journal. Ask the loader
+  # instead — it names the missing library, before anything depends on it.
+  if ldd "$PREBUILT" 2>&1 | grep -q "not found"; then
+    ldd "$PREBUILT" 2>&1 | grep "not found" | sed 's/^/    /'
+    die "that binary needs libraries this machine does not have.
+    It was built somewhere too new. Delete $(basename "$PREBUILT") from the
+    bundle and re-run to build here instead."
+  fi
+  install -m 755 "$PREBUILT" "$DIR/wad"
+  echo "    $DIR/wad ($(du -h "$DIR/wad" | cut -f1)) — no toolchain installed"
 else
-  echo "    no vendor/ in the bundle — fetching modules"
-  ( cd /tmp/wadsrc && go build -o "$DIR/wad" ./cmd/wad )
+  say "building"
+  rm -rf /tmp/wadsrc && mkdir -p /tmp/wadsrc
+  tar -C /tmp/wadsrc -xzf "$BUNDLE/src.tar.gz"
+  # The bundle normally carries vendor/, so this builds the exact dependency
+  # versions that were tested and needs no access to proxy.golang.org. Without
+  # it Go resolves the module graph itself, which needs outbound HTTPS.
+  if [ -d /tmp/wadsrc/vendor ]; then
+    echo "    using the vendored dependencies"
+    ( cd /tmp/wadsrc && go build -mod=vendor -o "$DIR/wad" ./cmd/wad )
+  else
+    echo "    no vendor/ in the bundle — fetching modules"
+    ( cd /tmp/wadsrc && go build -o "$DIR/wad" ./cmd/wad )
+  fi
+  echo "    $DIR/wad ($(du -h "$DIR/wad" | cut -f1))"
+  rm -rf /tmp/wadsrc
 fi
-echo "    $DIR/wad ($(du -h "$DIR/wad" | cut -f1))"
 
 say "installing the session"
 if ls "$BUNDLE"/session/wa-session.db* >/dev/null 2>&1; then
@@ -217,6 +249,13 @@ else
   # would start it.
   CADDY_WAS_UP=no
   systemctl is-active --quiet caddy 2>/dev/null && CADDY_WAS_UP=yes
+  # Asked to take the box over: the config is ours to write, which also means
+  # ours to be responsible for — including the global block, since we are now
+  # the one running Caddy. The old config is kept as .before-wad below.
+  if [ "$REPLACE_CADDY" -eq 1 ] && [ "$CADDY_WAS_UP" = yes ]; then
+    echo "    taking over the existing Caddy config (--replace-caddy)"
+    CADDY_WAS_UP=no
+  fi
 
   if ! command -v caddy >/dev/null 2>&1; then
     apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https >/dev/null

@@ -28,9 +28,12 @@ WITH_SESSION=1
 die() { echo "ERROR: $*" >&2; exit 1; }
 say() { echo; echo "==> $*"; }
 
+BIN=""
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-session) WITH_SESSION=0; shift ;;
+    --binary) BIN="${2:-}"; [ -n "$BIN" ] || die "--binary needs a path"; shift 2 ;;
     -o) OUT="${2:-}"; [ -n "$OUT" ] || die "-o needs a path"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -109,6 +112,39 @@ fi
 # COPYFILE_DISABLE stops macOS tar from sprinkling ._ files through the archive.
 COPYFILE_DISABLE=1 tar -C "$SRC" -czf "$STAGE/src.tar.gz" .
 echo "    src.tar.gz ($(du -h "$STAGE/src.tar.gz" | cut -f1))"
+
+# A binary built here, when this machine can produce one the server will run.
+# It saves the server the Go toolchain, gcc and the build cache — the better
+# part of a gigabyte, which on a box that is nearly full is the difference
+# between this working and not. The source still ships either way, so the
+# server can fall back to building if the binary turns out to be wrong.
+#
+# CGO rules out cross-compiling: the SQLite driver needs a C toolchain for the
+# target, so a Mac cannot produce a Linux binary without one. Hence "when the
+# builder is already Linux, on the same architecture", and nothing cleverer.
+if [ -n "$BIN" ]; then
+  [ -f "$BIN" ] || die "--binary $BIN does not exist"
+  case "$(file -b "$BIN" 2>/dev/null)" in
+    *x86-64*)  BARCH=amd64 ;;
+    *aarch64*) BARCH=arm64 ;;
+    *) BARCH=amd64; echo "    could not identify the architecture, assuming amd64" ;;
+  esac
+  install -m 755 "$BIN" "$STAGE/wad-linux-$BARCH"
+  echo "    wad-linux-$BARCH ($(du -h "$BIN" | cut -f1)) from $BIN"
+elif command -v go >/dev/null 2>&1 && [ "$(go env GOOS)" = linux ]; then
+  BARCH="$(go env GOARCH)"
+  if ( cd "$SRC" && go build -o "$STAGE/wad-linux-$BARCH" ./cmd/wad 2>/dev/null ); then
+    chmod 755 "$STAGE/wad-linux-$BARCH"
+    echo "    wad-linux-$BARCH ($(du -h "$STAGE/wad-linux-$BARCH" | cut -f1)) built here"
+    echo "    NOTE: this only runs on a server whose glibc is not older than this"
+    echo "    machine's. install.sh checks, and builds from source if it isn't."
+  else
+    rm -f "$STAGE/wad-linux-$BARCH"
+    echo "    could not build here; the server will build from src.tar.gz"
+  fi
+else
+  echo "    not building a binary here (needs Linux); the server will build"
+fi
 
 # ---- 4. session -------------------------------------------------------------
 if [ "$WITH_SESSION" -eq 1 ]; then
