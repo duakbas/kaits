@@ -167,7 +167,7 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Pin / mute / archive / delete chat | ✅ syncs to the account |
 | Mentions, avatars, per-person colours in groups | ✅ |
 | **Send** photos, video or audio | ✅ 📎 in the composer, or press Left |
-| **Send** an arbitrary document | ❌ at `web` level — no app claims the type; needs the `privileged` build's SD-card access |
+| **Send** an arbitrary document | ⚠️ five activity shapes, then the memory card, then a plain file input — see below |
 | **Record** a voice note | ❌ playback only — needs a `privileged` build, see below |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
 | Settings screen | ✅ daemon address, token, and preference switches |
@@ -219,8 +219,22 @@ tried on the phone at all. Whether Gecko 48 answers it there with a real picker
 or routes it back into the same activity system is untested; it costs nothing
 to try and it is the last thing tried.
 
-`device-storage:sdcard` remains in the privileged build's permission set as the
-route that does not depend on any of this.
+**And it now asks for `device-storage:sdcard` at `web` level too.** That is
+normally a privileged permission, so it may simply be refused — but asking
+costs nothing and not asking guarantees the answer is no, exactly as with
+`geolocation`, which turned out to be granted.
+
+Behind it is a real card browser: if the permission lands, the app enumerates
+the memory card itself and offers the newest 150 files, newest first, by
+basename and size. This is the one route that does not depend on which apps
+happen to be installed — no negotiation, nobody to volunteer. If the API is
+absent, the permission refused, the card missing or empty, or the cursor simply
+never answers, it falls through to the next thing; there is a guard timer for
+that last case, because a menu that hangs is worse than one that says no.
+
+The cap matters as much as the feature: this app has already been killed once
+for being the largest process in memory, and enumerating a full card into an
+array is exactly how that happens again.
 
 Location asks for GPS first and falls back to the coarse provider. GPS indoors
 on a feature phone means no fix at all — you can sit through the entire timeout

@@ -23,10 +23,16 @@
     },
     "geolocation": {
       "description": "Attach your location to a message when you choose to"
+    },
+    "device-storage:sdcard": {
+      "description": "Attach a file from the memory card. Nothing else on the phone offers documents to other apps, so this is the only way to reach one.",
+      "access": "readonly"
     }
   },
   "messages": [
-    { "serviceworker-notification": "/index.html" }
+    {
+      "serviceworker-notification": "/index.html"
+    }
   ],
   "locales": {
     "en-US": {
