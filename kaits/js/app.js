@@ -618,6 +618,8 @@
     } catch (e) {
       showError("draft: " + (e && e.message ? e.message : e));
     }
+    // The share belongs to one chat, so the bar appears in that chat only.
+    paintLiveBar();
     enterComposeMode();
   }
 
@@ -783,10 +785,20 @@
     if (!currentJID) return;
     elChatMenuTitle.textContent = "Attach";
     elChatMenuList.innerHTML = "";
-    [
+    var attachItems = [
       { action: "photo", label: "📷  Photo" },
+      { action: "video", label: "🎬  Video" },
+      { action: "audio", label: "🎵  Audio" },
       { action: "file", label: "📎  File" }
-    ].forEach(function (it) {
+    ];
+    if (haveGeolocation()) {
+      attachItems.push({ action: "location", label: "📍  Location" });
+      attachItems.push({
+        action: "livelocation",
+        label: liveShare.active ? "🛑  Stop live location" : "🛰  Live location"
+      });
+    }
+    attachItems.forEach(function (it) {
       var row = document.createElement("div");
       row.className = "menu-item";
       row.setAttribute("data-nav", "");
@@ -801,7 +813,7 @@
       onEnter: function (e, el) {
         if (!el) return;
         elChatMenu.hidden = true;
-        pickAndSend(el.getAttribute("data-attach") === "photo" ? "image" : "doc");
+        runAttach(el.getAttribute("data-attach"));
         enterComposeMode();
       },
       onSoftLeft: close, onBack: close,
@@ -809,7 +821,7 @@
         var el = Nav.focusedEl();
         if (el) {
           elChatMenu.hidden = true;
-          pickAndSend(el.getAttribute("data-attach") === "photo" ? "image" : "doc");
+          runAttach(el.getAttribute("data-attach"));
           enterComposeMode();
         }
       }
@@ -2038,6 +2050,37 @@
     function no() { cleanup(); if (onNo) onNo(); }
   }
 
+  // chooseFromList: pick one of a few labels. Reuses the chat-menu overlay the
+  // way the attach menu does, rather than adding another screen. onPick gets
+  // the index, or -1 if the user backed out.
+  function chooseFromList(title, labels, onPick) {
+    elChatMenuTitle.textContent = title;
+    elChatMenuList.innerHTML = "";
+    labels.forEach(function (label, i) {
+      var row = document.createElement("div");
+      row.className = "menu-item";
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-idx", String(i));
+      row.textContent = label;
+      elChatMenuList.appendChild(row);
+    });
+    elChatMenu.hidden = false;
+    function done(idx) {
+      elChatMenu.hidden = true;
+      enterComposeMode();
+      if (onPick) onPick(idx);
+    }
+    function take(el) { done(el ? parseInt(el.getAttribute("data-idx"), 10) : -1); }
+    Nav.setScreen({
+      list: elChatMenu,
+      onEnter: function (e, el) { take(el); },
+      onSoftRight: function () { take(Nav.focusedEl()); },
+      onSoftLeft: function () { done(-1); },
+      onBack: function () { done(-1); }
+    });
+    Nav.setSoftkeys("Cancel", "", "OK");
+  }
+
   // toast: a brief status line in the header. No notification API assumptions.
   var toastTimer = null;
   var toastPrev = null;
@@ -2131,28 +2174,258 @@
     window.open(url, "_blank");
   }
 
+  // ---------- sending a location ----------
+  //
+  // geolocation is granted to a plain web-type app, so unlike recording audio
+  // this needs no privilege bump — it only needs asking. The phone still
+  // prompts the user the first time.
+  //
+  // Two shapes: a one-shot pin, and a live share that keeps sending until it
+  // expires or is stopped. The daemon owns the live session (it has to — it
+  // holds the WhatsApp connection and the sequence numbering); the app's job is
+  // to produce fixes and forward them.
+
+  function haveGeolocation() {
+    return !!(navigator.geolocation && navigator.geolocation.getCurrentPosition);
+  }
+
+  // A first fix from cold on this hardware can take a while, and the phone
+  // gives no feedback while it tries — so say something, or it reads as a
+  // dead menu item.
+  var GEO_TIMEOUT_MS = 30000;
+
+  function getFix(onFix, onFail) {
+    if (!haveGeolocation()) { onFail("This phone has no location support"); return; }
+    var done = false;
+    var t = setTimeout(function () {
+      if (!done) { done = true; onFail("Couldn't get a location fix"); }
+    }, GEO_TIMEOUT_MS + 2000);
+    try {
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          if (done) return;
+          done = true; clearTimeout(t);
+          onFix(pos);
+        },
+        function (err) {
+          if (done) return;
+          done = true; clearTimeout(t);
+          // PERMISSION_DENIED is 1 and is the one worth naming, because the
+          // fix is a settings change and not "try again".
+          onFail(err && err.code === 1
+            ? "Location permission refused"
+            : "Couldn't get a location fix");
+        },
+        { enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 60000 }
+      );
+    } catch (e) {
+      done = true; clearTimeout(t);
+      onFail("Couldn't get a location fix");
+    }
+  }
+
+  function sendLocation() {
+    if (!currentJID) return;
+    var chat = currentJID;
+    toast("Getting location…");
+    getFix(function (pos) {
+      var c = pos.coords || {};
+      W.send(W.T.SEND, {
+        chat: chat, kind: "location",
+        lat: c.latitude, lon: c.longitude,
+        acc: Math.round(c.accuracy || 0),
+        quoted: replyingTo ? replyingTo.msgid : ""
+      });
+      clearReply();
+      toast("Location sent");
+    }, function (msg) { toast(msg); });
+  }
+
+  // ---------- live location ----------
+  //
+  // Sharing continuously off a 1400 mAh battery is the expensive part, not the
+  // protocol. watchPosition with high accuracy holds the GPS on, so updates go
+  // out on a timer rather than on every fix the chip produces, and the share
+  // stops itself at the chosen duration even if the app is never reopened.
+  var LIVE_DURATIONS = [
+    { label: "15 minutes", secs: 15 * 60 },
+    { label: "1 hour", secs: 60 * 60 },
+    { label: "8 hours", secs: 8 * 60 * 60 }
+  ];
+  var LIVE_UPDATE_MS = 30000;   // one update every 30s, not every fix
+
+  var liveShare = {
+    active: false, chat: "", watchId: null, timer: null,
+    endsAt: 0, last: null, lastSentAt: 0
+  };
+
+  function startLiveLocation() {
+    if (!currentJID) return;
+    if (liveShare.active) { stopLiveLocation("Stopped sharing"); return; }
+    var chat = currentJID;
+    chooseFromList("Share live location for…",
+      LIVE_DURATIONS.map(function (d) { return d.label; }),
+      function (idx) {
+        if (idx < 0) return;
+        beginLiveShare(chat, LIVE_DURATIONS[idx].secs);
+      });
+  }
+
+  function beginLiveShare(chat, secs) {
+    toast("Getting location…");
+    getFix(function (pos) {
+      var c = pos.coords || {};
+      liveShare.active = true;
+      liveShare.chat = chat;
+      liveShare.endsAt = Date.now() + secs * 1000;
+      liveShare.last = c;
+      liveShare.lastSentAt = Date.now();
+
+      W.send(W.T.LIVELOC, {
+        chat: chat, action: "start", secs: secs,
+        lat: c.latitude, lon: c.longitude, acc: Math.round(c.accuracy || 0)
+      });
+      toast("Sharing live location");
+      paintLiveBar();
+
+      // Keep the last fix fresh, but only transmit on the timer.
+      try {
+        liveShare.watchId = navigator.geolocation.watchPosition(
+          function (p) { liveShare.last = p.coords || liveShare.last; },
+          function () { /* a dropped fix is normal indoors; keep the last one */ },
+          { enableHighAccuracy: true, maximumAge: 15000 }
+        );
+      } catch (e) { /* the timer still sends the fixes we do get */ }
+
+      liveShare.timer = setInterval(pumpLiveShare, LIVE_UPDATE_MS);
+    }, function (msg) { toast(msg); });
+  }
+
+  function pumpLiveShare() {
+    if (!liveShare.active) return;
+    if (Date.now() >= liveShare.endsAt) { stopLiveLocation("Live location ended"); return; }
+    var c = liveShare.last;
+    if (!c) return;
+    W.send(W.T.LIVELOC, {
+      chat: liveShare.chat, action: "update",
+      lat: c.latitude, lon: c.longitude, acc: Math.round(c.accuracy || 0)
+    });
+    liveShare.lastSentAt = Date.now();
+    paintLiveBar();
+  }
+
+  function stopLiveLocation(msg) {
+    if (!liveShare.active) return;
+    W.send(W.T.LIVELOC, { chat: liveShare.chat, action: "stop" });
+    if (liveShare.watchId !== null && navigator.geolocation &&
+        navigator.geolocation.clearWatch) {
+      try { navigator.geolocation.clearWatch(liveShare.watchId); } catch (e) {}
+    }
+    if (liveShare.timer) clearInterval(liveShare.timer);
+    liveShare.active = false;
+    liveShare.watchId = null;
+    liveShare.timer = null;
+    liveShare.last = null;
+    paintLiveBar();
+    if (msg) toast(msg);
+  }
+
+  // A share that is running with nothing on screen to say so is a battery leak
+  // the user can't see, so the thread carries a bar while it lasts.
+  function paintLiveBar() {
+    var bar = document.getElementById("live-bar");
+    if (!bar) return;
+    if (!liveShare.active || liveShare.chat !== currentJID) { bar.hidden = true; return; }
+    var left = Math.max(0, liveShare.endsAt - Date.now());
+    var mins = Math.ceil(left / 60000);
+    bar.textContent = "📡 Sharing live location · " +
+      (mins >= 60 ? Math.ceil(mins / 60) + "h left" : mins + "m left");
+    bar.hidden = false;
+  }
+
+  function runAttach(action) {
+    if (action === "photo") return pickAndSend("image");
+    if (action === "video") return pickAndSend("video");
+    if (action === "audio") return pickAndSend("audio");
+    if (action === "location") return sendLocation();
+    if (action === "livelocation") return startLiveLocation();
+    return pickAndSend("doc");
+  }
+
   // ---------- sending attachments ----------
   // The bytes come from the phone's own Camera/Gallery via a pick activity,
   // which is the only way to reach them — an app can't browse the filesystem.
   // On desktop there's a hidden file input instead, so this is testable.
+  // A pick activity only opens if some app on the phone has registered as a
+  // handler for that MIME type. "*/*" matches no handler on a stock KaiOS
+  // build — there is no Files app to answer it — so asking for it fails with
+  // NO_PROVIDER and the picker never appears. Ask for concrete types instead,
+  // and keep a list of fallbacks: which app answers depends on the handset, so
+  // one refusal is not the same as "this phone can't do it".
+  var PICK_TYPES = {
+    image: [["image/jpeg", "image/png"], ["image/*"], ["image/jpeg"]],
+    video: [["video/*"], ["video/mp4", "video/3gpp"]],
+    audio: [["audio/*"], ["audio/mpeg", "audio/amr", "audio/ogg"]],
+    // Documents genuinely have no owner on most builds. Try a Files app if one
+    // is installed, then the concrete types a mail or reader app may claim,
+    // then the media apps — a "file" a phone can actually reach is usually a
+    // photo or a video anyway.
+    doc: [["*/*"], ["application/pdf", "text/plain"], ["image/*"], ["video/*"], ["audio/*"]]
+  };
+
   function pickAndSend(kind) {
     if (!currentJID) return;
     if (window.MozActivity) {
-      try {
-        var act = new window.MozActivity({
-          name: "pick",
-          data: { type: kind === "image" ? ["image/jpeg", "image/png"] : ["*/*"] }
-        });
-        act.onsuccess = function () {
-          var blob = this.result && this.result.blob;
-          if (blob) blobToBase64AndSend(blob, kind, this.result.name || "");
-          else toast("Nothing picked");
-        };
-        act.onerror = function () { toast("Couldn't open the picker"); };
-        return;
-      } catch (e) { /* fall through to the desktop path */ }
+      tryPick(PICK_TYPES[kind] || PICK_TYPES.doc, 0, kind);
+      return;
     }
     desktopFilePick(kind);
+  }
+
+  // Walk the candidate types until one opens. Every failure mode here is
+  // asynchronous except the constructor throwing, so both paths advance.
+  function tryPick(candidates, i, kind) {
+    if (i >= candidates.length) {
+      toast(kind === "doc"
+        ? "No app on this phone can pick a file"
+        : "No app on this phone can pick that");
+      return;
+    }
+    var act, opened = Date.now();
+    try {
+      act = new window.MozActivity({ name: "pick", data: { type: candidates[i] } });
+    } catch (e) {
+      tryPick(candidates, i + 1, kind);
+      return;
+    }
+    act.onsuccess = function () {
+      var blob = this.result && this.result.blob;
+      if (!blob) { toast("Nothing picked"); return; }
+      // What came back decides how it's sent, not what was asked for: pick a
+      // photo from the "File" menu and it should still arrive as a photo.
+      var mime = blob.type || "";
+      var real = kind;
+      if (kind === "doc") {
+        if (mime.indexOf("image/") === 0) real = "image";
+        else if (mime.indexOf("video/") === 0) real = "video";
+        else if (mime.indexOf("audio/") === 0) real = "audio";
+      }
+      blobToBase64AndSend(blob, real, this.result.name || "");
+    };
+    act.onerror = function () {
+      // NO_PROVIDER means nothing handles this type — try the next one. A
+      // cancel must NOT retry, or backing out of the picker would reopen it
+      // four more times. Some builds report a bare error with no name, so when
+      // the name is missing fall back to timing: a refusal comes back at once,
+      // whereas a cancel takes as long as it took the user to press a key.
+      var name = (this.error && this.error.name) || "";
+      var instant = Date.now() - opened < 400;
+      if (name === "NO_PROVIDER" || (name === "" && instant)) {
+        tryPick(candidates, i + 1, kind);
+      } else if (name && name !== "ActivityCanceled") {
+        toast("Picker failed: " + name);
+      }
+    };
   }
 
   // Desktop fallback: a throwaway file input, so attachments can be exercised
@@ -2730,6 +3003,23 @@
   W.on(W.T.TYPING, function (d) {
     if (!d || !d.chat || !d.sender) return;
     setTyping(d.chat, d.sender, d.sendername, d.state === "composing");
+  });
+
+  // The daemon holds the authoritative end time for a live share — its clock
+  // keeps running while the phone's timers are throttled. When it says the
+  // share is over, stop producing fixes, because that's what turns the GPS off.
+  W.on(W.T.LIVELOCSTATE, function (d) {
+    if (!d || !d.chat) return;
+    if (!d.active) {
+      if (liveShare.active && liveShare.chat === d.chat) {
+        stopLiveLocation("Live location ended");
+      }
+      return;
+    }
+    if (liveShare.active && liveShare.chat === d.chat && d.until) {
+      liveShare.endsAt = d.until * 1000;
+      paintLiveBar();
+    }
   });
 
   W.on(W.T.EDITED, function (d) {

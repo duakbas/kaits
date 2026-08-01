@@ -226,6 +226,16 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
 		}
+		if d.Kind == "location" {
+			id, err := waCli.SendLocation(ctx, d.ChatJID, d.Lat, d.Lon, d.Accuracy,
+				d.LocName, d.LocAddress, d.QuotedID)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "sendloc", "msg": err.Error()})
+				return
+			}
+			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
+				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+		}
 		if d.Kind == "image" || d.Kind == "video" || d.Kind == "audio" ||
 			d.Kind == "gif" || d.Kind == "doc" {
 			id, err := waCli.SendMedia(ctx, d.ChatJID, d.Kind, d.MediaB64, d.Mime,
@@ -236,6 +246,42 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			}
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+		}
+
+	case ws.TLiveLoc:
+		var d ws.LiveLocData
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "badliveloc", "msg": err.Error()})
+			return
+		}
+		switch d.Action {
+		case "start":
+			_, endsAt, err := waCli.StartLiveLocation(ctx, d.ChatJID, d.Lat, d.Lon, d.Accuracy, d.Secs)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "liveloc", "msg": err.Error()})
+				return
+			}
+			hub.PushT(ws.TLiveLocState, map[string]any{
+				"chat": d.ChatJID, "active": true, "until": endsAt.Unix()})
+		case "update":
+			// A share that has run out stops the app producing fixes, which is
+			// what turns the GPS back off — so the reply matters even though
+			// there is nothing to report.
+			running, err := waCli.UpdateLiveLocation(ctx, d.ChatJID, d.Lat, d.Lon, d.Accuracy)
+			if err != nil && running {
+				hub.PushT(ws.TError, map[string]string{"code": "liveloc", "msg": err.Error()})
+			}
+			if !running {
+				hub.PushT(ws.TLiveLocState, map[string]any{
+					"chat": d.ChatJID, "active": false, "until": 0})
+			}
+		case "stop":
+			waCli.StopLiveLocation(d.ChatJID)
+			hub.PushT(ws.TLiveLocState, map[string]any{
+				"chat": d.ChatJID, "active": false, "until": 0})
+		default:
+			hub.PushT(ws.TError, map[string]string{
+				"code": "badliveloc", "msg": "unknown action " + d.Action})
 		}
 
 	case ws.TCallAnswer, ws.TCallReject, ws.TCallHangup, ws.TCallSignalA:
