@@ -3936,16 +3936,40 @@
       Promise.resolve(req).then(function (p) {
         updateSetupDiag();
         if (p !== "granted") { toast("Permission " + p); return; }
-        osNotify("Kaits", "Test notification", "test@s.whatsapp.net");
+        raiseComparison();
       }, function (e) {
         updateSetupDiag();
         toast("Can't ask for permission: " + (e && e.message ? e.message : e));
       });
       return;
     }
-    osNotify("Kaits", "Test notification", "test@s.whatsapp.net");
+    raiseComparison();
     buzz();
-    toast("Sent — close the flip and check");
+    toast("Sent 3 — open the tray and compare");
+  }
+
+  // Three notifications, differing only in the options passed, so the tray can
+  // be asked directly which option is producing the big empty banner above the
+  // text. Push Test's notifications render compactly and pass body and nothing
+  // else; ours pass tag and data as well. That is the entire difference, and
+  // guessing between them from a photograph is slower than just looking.
+  //
+  // Whichever of these comes out tall is the answer.
+  function raiseComparison() {
+    var reg = (window.App && window.App.registration) ? window.App.registration() : null;
+    var show = function (title, opts) {
+      try {
+        if (reg && reg.showNotification) reg.showNotification(title, opts);
+        else if (window.Notification) new Notification(title, opts);
+      } catch (e) { showError("notif: " + (e && e.message ? e.message : e)); }
+    };
+    // A: body only — exactly what Push Test sends.
+    show("A body only", { body: "no tag, no data" });
+    // B: body + tag.
+    show("B tag", { body: "tag only", tag: "kaits-test-b" });
+    // C: body + tag + data — what a real message uses.
+    show("C tag+data", { body: "tag and data", tag: "kaits-test-c",
+                         data: { jid: "test@s.whatsapp.net" } });
   }
 
   function updateSetupPreview() {
