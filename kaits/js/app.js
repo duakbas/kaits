@@ -2725,6 +2725,11 @@
   // reaped a few seconds after you leave it isn't a nice-to-have — it's the
   // whole notification design failing. Two responses, in this order: record
   // what actually happens, and make the app a less attractive thing to kill.
+  // Messages that arrived while the app was out of sight. If this is 0 at the
+  // time of death, the app may have been alive and simply not receiving —
+  // which is a socket problem wearing a kill's clothing.
+  var hiddenMsgCount = 0;
+
   function wireLifecycle() {
     // config.js is the default; the phone's own setting is the answer, and
     // applyOptions() has already applied it by the time this runs.
@@ -2852,6 +2857,10 @@
   // alertForMessage decides what a newly arrived message does to the UI.
   function alertForMessage(m, c) {
     if (m.fromme) return;
+    // Counted before the mute check and before anything can return early: this
+    // records that the socket delivered something while we were out of sight,
+    // which is a fact about the connection rather than about the UI.
+    if (appHidden()) hiddenMsgCount++;
     if (c && c.muted) return;   // a mute means silence, not a smaller icon
 
     if (currentJID === m.chat) {
@@ -3503,6 +3512,21 @@
 
   // Start the recorder before anything else can fail: a session that dies
   // during boot is exactly the kind we want on the record.
+  // What to record on every heartbeat, so a post-mortem answers WHY and not
+  // only WHEN. The socket state matters as much as the app's: a live app whose
+  // socket quietly died delivers no messages either, and from the outside the
+  // two are indistinguishable — you just stop getting notifications.
+  Life.watch(function () {
+    var ka = Keepalive.state();
+    return {
+      ka: !ka.wanted ? "off"
+        : ka.interrupted ? "interrupted"
+        : ka.running ? "playing"
+        : ka.primed ? "primed" : "unprimed",
+      sock: W.isOpen() ? "open" : "closed",
+      msgs: hiddenMsgCount
+    };
+  });
   Life.start(window.KAITS_VERSION || "dev");
   applyOptions();
   wireLifecycle();

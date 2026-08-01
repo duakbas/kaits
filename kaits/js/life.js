@@ -33,6 +33,7 @@ window.Life = (function () {
   var cur = null;
   var prev = null;
   var timer = null;
+  var watcher = null;   // supplies the facts worth knowing at time of death
 
   function now() { return Date.now(); }
 
@@ -66,6 +67,7 @@ window.Life = (function () {
     if (rec.bye) out.outcome = "closed";
     else if (rec.hidden) out.outcome = "killed in background";
     else out.outcome = "died in foreground";
+    out.state = rec.st || null;
     return out;
   }
 
@@ -76,9 +78,22 @@ window.Life = (function () {
     }
     if (o.outcome === "killed in background") {
       return "last session: backgrounded, then killed after " + fmt(o.bgFor) +
-             " in the background (ran " + fmt(o.ranFor) + " total)";
+             " in the background (ran " + fmt(o.ranFor) + " total)" +
+             stateLine(o.state);
     }
     return "last session: died while on screen after " + fmt(o.ranFor);
+  }
+
+  // What the app was doing when it stopped. Deliberately terse — this goes on
+  // a 240px screen — but every field here answers a question that would
+  // otherwise need another day of waiting to ask again.
+  function stateLine(st) {
+    if (!st) return "";
+    var bits = [];
+    if (st.ka) bits.push("keepalive " + st.ka);
+    if (st.sock) bits.push("socket " + st.sock);
+    if (typeof st.msgs === "number") bits.push(st.msgs + " msgs while hidden");
+    return bits.length ? "\n  at the time: " + bits.join(", ") : "";
   }
 
   function fmt(secs) {
@@ -90,6 +105,17 @@ window.Life = (function () {
   function beat() {
     if (!cur) return;
     cur.last = now();
+    cur.beats = (cur.beats || 0) + 1;
+    // Stamp the app's state into every heartbeat. "It died after 47 minutes" is
+    // a fact; "it died after 47 minutes with the keepalive playing and the
+    // socket open" is a diagnosis. A killed process writes nothing on the way
+    // out, so whatever we want to know afterwards has to already be on disk.
+    if (watcher) {
+      try {
+        var st = watcher();
+        if (st && typeof st === "object") cur.st = st;
+      } catch (e) { /* never let diagnostics break the thing they measure */ }
+    }
     write(CUR, cur);
   }
 
@@ -141,7 +167,8 @@ window.Life = (function () {
     var o = classify(rec);
     if (!o) return;
     var hist = read(HIST) || [];
-    hist.push({ t: o.boot, ran: o.ranFor, bg: o.bgFor, out: o.outcome, ver: o.version });
+    hist.push({ t: o.boot, ran: o.ranFor, bg: o.bgFor, out: o.outcome,
+                ver: o.version, st: o.state });
     while (hist.length > HIST_MAX) hist.shift();
     write(HIST, hist);
   }
@@ -176,7 +203,9 @@ window.Life = (function () {
          h.out === "killed in background" ? "KILLED  " : "died    ") +
         "ran " + fmt(h.ran) +
         (h.bg ? ", bg " + fmt(h.bg) : "") +
-        "  v" + (h.ver || "?"));
+        "  v" + (h.ver || "?") +
+        (h.st && h.st.ka ? "  ka:" + h.st.ka : "") +
+        (h.st && h.st.sock ? "  " + h.st.sock : ""));
     }
     return lines;
   }
@@ -198,6 +227,10 @@ window.Life = (function () {
   }
 
   return {
+    // watch(fn) registers a supplier of the facts to record on each heartbeat.
+    // Kept as a callback rather than a setter so life.js needs to know nothing
+    // about sockets, audio, or anything else it is recording.
+    watch: function (fn) { watcher = fn; },
     start: start,
     previous: function () { return prev; },
     describe: function () { return describe(prev); },
