@@ -26,6 +26,10 @@ window.Keepalive = (function () {
   var running = false;
   var wanted = true;
   var lastError = "";
+  var interrupted = false;
+  var interruptions = 0;
+  var channelAsked = "";
+  var channelGot = "";
 
   function supported() {
     return typeof Audio !== "undefined" || !!document.createElement("audio").canPlayType;
@@ -42,12 +46,43 @@ window.Keepalive = (function () {
     // should not mean a phone quietly humming in someone's pocket.
     el.volume = 0.01;
     el.preload = "auto";
-    // Channel choice matters. "content" is the media channel, and starting
-    // content playback interrupts whatever else is using it — this app would
-    // pause the user's music every time it went to the background, which is a
-    // far worse bug than the one being fixed. "normal" is the default,
-    // non-exclusive channel and needs no permission at any app type.
-    try { el.mozAudioChannelType = "normal"; } catch (e) { /* not KaiOS */ }
+    // Channel choice is the whole question, and it is a trade in both
+    // directions:
+    //
+    //   "normal"  — the default, non-exclusive channel. It should NOT stop
+    //               anything else playing, which is why it is the default
+    //               here. The risk is that the platform may not count it as
+    //               "this app is doing something for the user", in which case
+    //               the keepalive buys nothing.
+    //   "content" — the media channel. Certain to be counted, and certain to
+    //               interrupt whatever else holds it: your music would stop
+    //               every time you left the app.
+    //
+    // Which of those is true on this handset is a measurement, not a fact I
+    // have. So the channel is configurable, the value the engine actually
+    // accepted is read back, and the Settings screen reports both alongside
+    // the kill rate — change it, use the phone for a day, compare.
+    channelAsked = (window.CONFIG && CONFIG.KEEPALIVE_CHANNEL) || "normal";
+    try {
+      el.mozAudioChannelType = channelAsked;
+      channelGot = el.mozAudioChannelType || "";
+    } catch (e) {
+      channelGot = "(refused)";
+    }
+
+    // The platform interrupts a lower-priority channel when a higher one wants
+    // the speaker — an incoming call, an alarm. Fighting that by restarting
+    // would be exactly the antisocial behaviour this is trying to avoid, so
+    // note it and wait to be told it is over.
+    el.addEventListener("mozinterruptbegin", function () {
+      interrupted = true;
+      interruptions++;
+    }, false);
+    el.addEventListener("mozinterruptend", function () {
+      interrupted = false;
+      if (running && wanted) { try { el.play(); } catch (e) {} }
+    }, false);
+
     el.setAttribute("aria-hidden", "true");
     document.body.appendChild(el);
     return el;
@@ -77,7 +112,7 @@ window.Keepalive = (function () {
   }
 
   function start() {
-    if (!wanted || running) return;
+    if (!wanted || running || interrupted) return;
     var a = build();
     try {
       a.currentTime = 0;
@@ -105,6 +140,10 @@ window.Keepalive = (function () {
       primed: primed,
       running: running,
       supported: supported(),
+      channel: channelGot || channelAsked,
+      channelAsked: channelAsked,
+      interrupted: interrupted,
+      interruptions: interruptions,
       error: lastError
     };
   }
