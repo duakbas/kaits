@@ -57,7 +57,16 @@
     return C.DAEMON_WS + sep + "token=" + encodeURIComponent(C.TOKEN);
   }
 
+  // Exactly one dial may be in flight. Without this, a kick and an already
+  // pending backoff timer both call connect() and the phone ends up with two
+  // sockets — the daemon adopts the newest and closes the older, which logs a
+  // disconnect and looks precisely like the connection dropping on its own.
+  var retryTimer = null;
+
   function connect() {
+    if (ws && (ws.readyState === WebSocket.OPEN ||
+               ws.readyState === WebSocket.CONNECTING)) return;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     setStatus("connecting");
     try {
       ws = new WebSocket(url());
@@ -95,8 +104,43 @@
   }
 
   function scheduleReconnect() {
-    setTimeout(connect, backoff);
+    if (retryTimer) return;            // one pending retry is enough
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      connect();
+    }, backoff);
     backoff = Math.min(backoff * 2, C.RECONNECT_MAX);
+  }
+
+  // Reconnect the moment the phone can plausibly reach the daemon again.
+  //
+  // The socket does not usually fail because the daemon went away — it fails
+  // because the PHONE went away. KaiOS drops Wi-Fi when the screen goes off,
+  // and the daemon then sees "no route to host": the app is still running, its
+  // socket is simply pointed at a network the phone is no longer on. Waiting
+  // out a backoff is the wrong response to that, because the backoff timer is
+  // itself throttled while backgrounded, so the app can sit disconnected long
+  // after the network has come back.
+  //
+  // Both of these mean "something just changed in our favour": the radio
+  // reassociated, or the user woke the phone. Either way, try immediately and
+  // start the backoff over.
+  function kick(why) {
+    if (ws && (ws.readyState === WebSocket.OPEN ||
+               ws.readyState === WebSocket.CONNECTING)) return;
+    console.log("wire: kick (" + why + ")");
+    backoff = C.RECONNECT_MIN;
+    connect();                         // clears any pending retry itself
+  }
+
+  if (window.addEventListener) {
+    window.addEventListener("online", function () { kick("network back"); }, false);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) kick("app visible");
+    }, false);
+    document.addEventListener("mozvisibilitychange", function () {
+      if (!document.mozHidden) kick("app visible");
+    }, false);
   }
 
   // ---- outbox ----
@@ -178,6 +222,9 @@
   window.Wire = {
     T: T,
     connect: connect,
+    // Exposed so the app can nudge a reconnect from anywhere it learns the
+    // situation changed — a keypress after a long sleep, for instance.
+    kick: kick,
     // reconnect drops the current socket and dials again, for when the daemon's
     // ADDRESS changed rather than the connection failing — after setup, the old
     // socket points somewhere that may not exist any more, and waiting for its
@@ -191,6 +238,7 @@
         try { ws.close(); } catch (e) {}
         ws = null;
       }
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       backoff = C.RECONNECT_MIN;
       connect();
     },
