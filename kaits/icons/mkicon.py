@@ -5,18 +5,30 @@ No PIL here, so the PNG is assembled by hand: RGBA rows, deflate, three chunks.
 Supersampled 4x, which matters a lot at 56px.
 
 Two overlapping bubbles — a conversation, not a message. The white one is
-separated from the teal by a gap of background so the shapes stay legible when
-the whole icon is 56 pixels across.
+separated from the teal by a gap so the shapes stay legible when the whole icon
+is 56 pixels across.
+
+No plate behind them: the bubbles are the icon and everything else is
+transparent, including that separating gap. Dropping the rounded square frees
+the margin it was occupying, so the shapes are scaled up to use it — otherwise
+removing the background would just make the icon smaller.
 """
 
 import struct
 import sys
 import zlib
 
-BG = (0x10, 0x14, 0x13)      # near-black, matches the app background
 TEAL = (0x2e, 0xc4, 0xb6)
 WHITE = (0xf2, 0xfb, 0xf9)   # very slightly cool, so it sits with the teal
 SS = 4
+
+# The bubbles were laid out inside a plate that no longer exists, so they sit
+# off-centre in a box of their own. ZOOM fills the margin the plate used to
+# take; CX/CY is where the two bubbles actually balance, which is not (0.5,0.5)
+# — centring on the canvas instead would leave the whole thing sitting low and
+# left of where the eye expects it.
+ZOOM = 1.24
+CX, CY = 0.505, 0.520
 
 
 def in_round_rect(x, y, x0, y0, x1, y1, r):
@@ -66,16 +78,23 @@ WHITE_TAIL = ((0.79, 0.73), (0.64, 0.80), (0.84, 0.89))
 
 
 def colour_at(x, y, s):
-    """Painter's order: teal, then a background gap, then white on top."""
-    if not in_round_rect(x, y, 0, 0, s, s, 0.22 * s):
-        return None
+    """Painter's order: teal, then a transparent gap, then white on top.
+
+    Returning None is a hole, not a colour — which is the whole point. The gap
+    between the bubbles has to be one too: filling it with the old background
+    colour would leave a dark crescent floating against whatever the launcher's
+    wallpaper happens to be.
+    """
+    # Zoom about the bubbles' own centre rather than the canvas's.
+    x = ((x / s - 0.5) / ZOOM + CX) * s
+    y = ((y / s - 0.5) / ZOOM + CY) * s
     if bubble(x, y, s, WHITE_BOX, WHITE_TAIL):
         return WHITE
-    if bubble(x, y, s, WHITE_BOX, WHITE_TAIL, grow=0.038 * s):
-        return BG                     # the separating gap
+    if bubble(x, y, s, WHITE_BOX, WHITE_TAIL, grow=0.034 * s):
+        return None                   # the separating gap
     if bubble(x, y, s, TEAL_BOX, TEAL_TAIL):
         return TEAL
-    return BG
+    return None
 
 
 def render(size):
