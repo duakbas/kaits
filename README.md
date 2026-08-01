@@ -256,6 +256,22 @@ If a higher-priority channel does take the speaker — a call, an alarm — the
 element is interrupted, and the keepalive notes it and waits rather than
 fighting to restart. That count is on the Settings screen too.
 
+**Turning the volume down is not the answer, and turning it to zero is the one
+thing that breaks it.** The platform decides an app is doing something for the
+user from whether it is *audible*, and Gecko works that out from the stream —
+so digital silence, a muted element and volume 0 are three ways to be counted
+inaudible, which is exactly the state the priority manager disregards. Silent
+and working and silent and pointless look identical from the outside.
+
+So the two knobs are set in opposite directions on purpose: the file is 1% of
+full scale (−40 dBFS decoded) so nothing analysing samples mistakes it for
+silence, and `KEEPALIVE_VOLUME` is 0.01 on top, putting −80 dBFS at the
+speaker. That is far under the noise floor of any phone, and the tone is 110 Hz
+— below what a feature-phone speaker can physically reproduce, so even a bug
+that set the volume to full would produce close to nothing audible. The volume
+is clamped above zero in code, because an edit to `config.js` that set it to 0
+would otherwise disable the mechanism while appearing to leave it on.
+
 It costs battery and it is a demotion of risk, not a guarantee — so it is a
 switch on the Settings screen ("Stay alive in background"), next to the report
 of how long the app actually survived. Turn it off, use the phone for a day,
