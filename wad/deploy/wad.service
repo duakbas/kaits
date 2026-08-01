@@ -1,0 +1,48 @@
+# /etc/systemd/system/wad.service
+#
+#   sudo cp wad/deploy/wad.service /etc/systemd/system/
+#   sudo systemctl edit wad          # put WAD_TOKEN in the override, not here
+#   sudo systemctl enable --now wad
+#
+# The token does not live in this file: it is world-readable in /etc/systemd,
+# and anyone holding it can talk to your WhatsApp account. `systemctl edit`
+# writes an override that is not.
+
+[Unit]
+Description=wad — WhatsApp daemon for the Kaits phone client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wad
+Group=wad
+WorkingDirectory=/opt/wad
+ExecStart=/opt/wad/wad
+Environment=WAD_ADDR=127.0.0.1:8080
+# WAD_TOKEN comes from the override — see the note above.
+
+# Bound to localhost above, deliberately: TLS is terminated by the reverse
+# proxy in front, and the phone must not be able to reach the daemon directly.
+# A token travelling over plain ws:// across the internet is a token given away.
+
+Restart=always
+RestartSec=5
+# The session database is the account. Losing it means re-pairing, so make it
+# hard for a runaway process to take the machine down with it rather than
+# letting the OOM killer choose.
+MemoryMax=512M
+TasksMax=256
+
+# It needs its own directory and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wad
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

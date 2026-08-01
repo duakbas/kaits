@@ -98,18 +98,42 @@ Check the VPS's architecture first — `uname -m`, usually `x86_64`, sometimes
 
 ## 2. Move the session
 
-Stop the local daemon first. Then, from your machine:
-
 ```bash
-scp wad/wa-session.db wad/wa-session.db.history.db you@vps:/opt/wad/
+./wad/deploy/move-to-vps.sh you@vps.example.com
 ```
 
-The history file can be large — 35k messages is tens of megabytes. Check it
-arrived intact: `ls -l` on both ends should agree exactly.
+That does the whole step in the one order that is safe, and refuses rather than
+half-doing it. What it is protecting against:
+
+**Two daemons, one account.** `wa-session.db` *is* the linked-device
+registration. A second daemon running against a copy is not a spare — WhatsApp
+sees one device behaving like two, and the usual outcome is the session being
+invalidated. The script refuses to run while a local daemon is up, and the
+local one must stay down afterwards.
+
+**WAL.** SQLite is in WAL mode here, so the database is not one file. A
+`wa-session.db-wal` sidecar can hold committed transactions that are not yet in
+the main file, and copying only `wa-session.db` from a daemon that did not exit
+cleanly gives you a database that opens perfectly and is quietly missing your
+most recent messages. Every `wa-session.db*` file goes across, and the script
+says so when it finds a `-wal`.
+
+**A truncated copy.** Both ends are checksummed and compared before anything is
+started. `ls -l` agreeing is not the same as the bytes agreeing.
+
+The history file can be large — 35k messages is tens of megabytes.
 
 ## 3. Run it as a service
 
-`/etc/systemd/system/wad.service`:
+Ready-made in [`deploy/wad.service`](deploy/wad.service) — copy it, then put the
+token in a `systemctl edit` override rather than in the unit file, which is
+world-readable. Anyone holding that token can talk to your WhatsApp account.
+
+It binds the daemon to `127.0.0.1:8080` deliberately: TLS is terminated by the
+proxy in front, and the phone must not be able to reach the daemon directly. A
+token crossing the internet over plain `ws://` is a token given away.
+
+For reference, the unit is:
 
 ```ini
 [Unit]
@@ -149,6 +173,13 @@ openssl rand -hex 24
 ```
 
 ## 4. TLS, because the phone needs wss://
+
+[`deploy/Caddyfile`](deploy/Caddyfile) is ready to use — edit the hostname and
+reload. Caddy rather than nginx purely because it obtains the certificate on
+its own, which is one less moving part on a box whose whole job is staying up.
+Its proxy timeouts there are deliberately generous: the failure mode of a short
+one is a 16 MiB attachment that silently never arrives.
+
 
 Plain `ws://` sends your token in the clear on every connect, and KaiOS may
 refuse a mixed-content socket outright. Caddy is the least work — it gets and
