@@ -3485,7 +3485,7 @@
       // The channel is the knob that decides whether this works and whether it
       // steps on other audio, so the value the engine ACCEPTED is shown, not
       // the one that was asked for.
-      lines.push("  channel: " + (ka.channel || "?") +
+      lines.push("  " + ka.engine + ", channel: " + (ka.channel || "?") +
         (ka.channel !== ka.channelAsked ? " (asked for " + ka.channelAsked + ")" : "") +
         (ka.interruptions ? ", interrupted " + ka.interruptions + "x" : ""));
       var hist = Life.report();
