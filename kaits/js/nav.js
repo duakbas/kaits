@@ -13,7 +13,7 @@
   var screen = {
     onUp: null, onDown: null, onLeft: null, onRight: null,
     onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null,
-    onFocusChange: null,
+    onFocusChange: null, onKey: null,
     // container element whose [nav] children are focusable, if using
     // built-in list focus:
     list: null
@@ -175,6 +175,14 @@
 
   document.addEventListener("keydown", function (e) {
     note(e.key, true);
+    // A screen may claim any key before the D-pad routing sees it, by
+    // returning true. Used for keys that have no softkey to live on — a
+    // diagnostic shortcut, say — and ignored by every screen that doesn't
+    // set it.
+    if (screen.onKey && screen.onKey(e) === true) {
+      e.preventDefault();
+      return;
+    }
     switch (e.key) {
       // A screen's own onUp/onDown wins, EXCEPT when it returns false — that's
       // the handler saying "not mine, do the normal thing". Without that escape

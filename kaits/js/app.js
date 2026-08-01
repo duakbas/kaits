@@ -3850,6 +3850,15 @@
       // goes back, and a notification you cannot trigger is one you cannot
       // debug without a console you don't have.
       onSoftLeft: testNotification,
+      // Anything typed here goes to a field, so a plain key is free only on
+      // the toggle rows. # is unambiguous and does nothing else.
+      onKey: function (e) {
+        if (e.key !== "#" || !W.clearOutbox) return false;
+        var n = W.clearOutbox();
+        toast(n ? "Discarded " + n + " stuck message(s)" : "Nothing was waiting");
+        updateSetupDiag();
+        return true;
+      },
       onBack: returnTo || null
     });
     Nav.setSoftkeys("Test notif", "SAVE", "Save");
@@ -3921,6 +3930,13 @@
       lines.push("   notifications need https, localhost, or the packaged app");
     }
     lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
+    // A stuck outbox is invisible otherwise, and it used to be unfixable
+    // without reinstalling: the queue persists, so a frame the daemon refuses
+    // is replayed on every reconnect forever.
+    if (W.queuedCount) {
+      var q = W.queuedCount();
+      if (q) lines.push("waiting to send: " + q + "  (press # to discard)");
+    }
     lines.push("notifications: " +
       (window.Notification ? Notification.permission : "unsupported"));
     var reg = (window.App && window.App.registration) ? window.App.registration() : null;
@@ -4033,6 +4049,14 @@
   // only WHEN. The socket state matters as much as the app's: a live app whose
   // socket quietly died delivers no messages either, and from the outside the
   // two are indistinguishable — you just stop getting notifications.
+  // A frame too big to ever send is refused rather than queued; say so, or it
+  // looks like the message simply vanished.
+  if (W.onOversize) {
+    W.onOversize(function (type, bytes) {
+      showError("too large to send (" + Math.round(bytes / 1048576) + "MB)");
+    });
+  }
+
   Life.watch(function () {
     var ka = Keepalive.state();
     return {

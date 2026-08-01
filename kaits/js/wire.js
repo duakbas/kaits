@@ -166,6 +166,10 @@
   };
   var outbox = [];
   var OUTBOX_MAX = 50;
+  // Matches the daemon's own read limit. Anything past this cannot be
+  // delivered, so it is refused rather than stored.
+  var MAX_FRAME_BYTES = 24 * 1024 * 1024;
+  var oversizeFn = null;
   var OUTBOX_KEY = "wa_outbox";
 
   // Best-effort persistence so a refresh mid-outage doesn't lose the queue.
@@ -179,6 +183,19 @@
       var raw = localStorage.getItem(OUTBOX_KEY);
       if (raw) outbox = JSON.parse(raw) || [];
     } catch (e) { outbox = []; }
+    // A build before the size check could have stored a frame that jams the
+    // connection. Drop those on load rather than replaying them forever.
+    var kept = [];
+    for (var i = 0; i < outbox.length; i++) {
+      try {
+        if (JSON.stringify(outbox[i]).length <= MAX_FRAME_BYTES) kept.push(outbox[i]);
+        else console.warn("wire: dropping an oversized frame left by an older build");
+      } catch (e) { /* unserialisable: drop it */ }
+    }
+    if (kept.length !== outbox.length) {
+      outbox = kept;
+      saveOutbox();
+    }
   }
   loadOutbox();
 
@@ -206,6 +223,20 @@
       return id;
     }
     if (QUEUEABLE[type]) {
+      // A frame the far end will refuse must NEVER enter the outbox.
+      //
+      // The daemon closes the connection on an oversized frame rather than
+      // rejecting it, so a queued one is replayed on reconnect, kills the
+      // socket again, and is requeued — a single too-large video jams the
+      // connection permanently, and the outbox persists to localStorage so it
+      // survives a restart. Refusing it here costs one message; queueing it
+      // costs every message after it.
+      var wire = JSON.stringify(frame);
+      if (wire.length > MAX_FRAME_BYTES) {
+        console.warn("wire: too large to queue, dropped:", type, wire.length);
+        if (oversizeFn) oversizeFn(type, wire.length);
+        return id;
+      }
       // Drop the oldest rather than grow without bound — a queue so long it
       // can't be delivered is worse than losing the stalest entry.
       outbox.push(frame);
@@ -225,6 +256,17 @@
     // Exposed so the app can nudge a reconnect from anywhere it learns the
     // situation changed — a keypress after a long sleep, for instance.
     kick: kick,
+    // The outbox is persistent, so a stuck message survives restarts. This is
+    // the way out when one cannot be delivered at all.
+    clearOutbox: function () {
+      var n = outbox.length;
+      outbox = [];
+      saveOutbox();
+      if (queuedFn) queuedFn(0);
+      return n;
+    },
+    queuedCount: function () { return outbox.length; },
+    onOversize: function (fn) { oversizeFn = fn; },
     // reconnect drops the current socket and dials again, for when the daemon's
     // ADDRESS changed rather than the connection failing — after setup, the old
     // socket points somewhere that may not exist any more, and waiting for its
