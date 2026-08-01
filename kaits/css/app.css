@@ -550,9 +550,12 @@ header .status.closed { color: var(--danger); }
 #sk-right  { flex: 1; text-align: right;  padding-right: 8px; color: var(--accent); }
 
 /* ---- full-screen media viewer ---- */
+/* Edge to edge, over the header and the softkey bar both. A photo on a 240px
+   screen needs every pixel, and leaving the app's chrome around it wastes a
+   third of the height on furniture you aren't looking at. */
 #viewer {
   position: absolute;
-  left: 0; right: 0; top: 30px; bottom: 24px;
+  left: 0; right: 0; top: 0; bottom: 0;
   background: #000;
   display: flex;
   flex-direction: column;
@@ -563,7 +566,7 @@ header .status.closed { color: var(--danger); }
 #viewer[hidden] { display: none; }
 #viewer-img {
   max-width: 100%;
-  max-height: calc(100% - 18px);
+  max-height: 100%;
   object-fit: contain;
 }
 #viewer-caption {

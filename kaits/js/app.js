@@ -652,14 +652,37 @@
     Nav.setScreen({
       onUp: function () { moveSelect(-1); },
       onDown: function () { moveSelect(1); },
-      onEnter: openActionMenu,
+      onEnter: enterOnSelected,
       onSoftLeft: enterComposeMode,   // "Cancel" back to typing
       onSoftRight: openActionMenu,    // "Actions"
       onBack: enterComposeMode
     });
     // Centre advertises the Enter action here too; "•••" does the same thing,
     // so the options key means the same in both thread modes.
-    Nav.setSoftkeys("Cancel", "ACTIONS", "•••");
+    Nav.setSoftkeys("Cancel", selectedIsViewable() ? "VIEW" : "ACTIONS", "•••");
+  }
+
+  // Enter does the obvious thing for what's selected: a picture opens
+  // full-screen, everything else opens the action menu. The viewer already
+  // existed but was three keypresses deep behind Actions -> View photo, which
+  // is a lot of ceremony for "look at this properly". Actions is still one
+  // press away on the right softkey.
+  function selectedIsViewable() {
+    var msgs = threads[currentJID] || [];
+    var m = msgs[selectIdx];
+    return !!(m && !m.deleted && m.media &&
+      (m.kind === "image" || m.kind === "sticker"));
+  }
+
+  function enterOnSelected() {
+    var msgs = threads[currentJID] || [];
+    var m = msgs[selectIdx];
+    if (m && !m.deleted && m.media &&
+        (m.kind === "image" || m.kind === "sticker")) {
+      openViewer(m);
+      return;
+    }
+    openActionMenu();
   }
 
   function moveSelect(delta) {
@@ -677,6 +700,8 @@
     if (next >= msgs.length) { enterComposeMode(); return; } // down off the end
     setSelect(next);
     paintSelection();
+    // The centre key means something different on a photo, so say which.
+    Nav.setSoftkeys("Cancel", selectedIsViewable() ? "VIEW" : "ACTIONS", "•••");
   }
 
   // paintSelection moves the highlight by editing two class lists.
