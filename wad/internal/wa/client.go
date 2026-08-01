@@ -60,6 +60,9 @@ type Client struct {
 	// live tracks outgoing live location shares, keyed by chat.
 	live *liveShares
 
+	// tiles caches map previews for locations that arrived without one.
+	tiles *tileCache
+
 	// avatars caches profile pictures by JID (bytes or a "none" mark).
 	avatars  map[string]avatarEntry
 	avatarMu sync.Mutex
@@ -122,6 +125,7 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		mediaMime:  make(map[string]string),
 		replyCtx:   make(map[string]replyContext),
 		live:       newLiveShares(),
+		tiles:      newTileCache(),
 		avatars:    make(map[string]avatarEntry),
 		hist:       hist,
 		sess:       sess,
