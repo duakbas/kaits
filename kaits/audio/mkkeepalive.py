@@ -48,8 +48,11 @@ matters: silent AND not counted. It also displaces the speaker cone while it
 runs and pops when it stops. A tone below hearing gets the same inaudibility
 without either gamble.
 
-8 kHz mono 16-bit, one second: 16 KB, small enough to loop without seams
-mattering and small enough not to care about in the package.
+8 kHz mono 16-bit, THIRTY seconds: 480 KB. Length is the point. This file is
+only the fallback for an engine with no Web Audio — the normal path synthesises
+the tone continuously — but a looping element clicks at every loop point, and a
+one-second loop clicked 3600 times an hour. Thirty seconds cuts that by thirty,
+and the file is still small enough not to think about.
 
     python3 kaits/audio/mkkeepalive.py
 """
@@ -59,7 +62,7 @@ import os
 import struct
 
 RATE = 8000
-SECONDS = 1
+SECONDS = 30
 FREQ = 20.0           # bottom edge of hearing; see the note above
 AMPLITUDE = 328       # out of 32767 — 1% of full scale, -40 dBFS
 

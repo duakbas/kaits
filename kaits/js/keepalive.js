@@ -7,9 +7,18 @@
 //
 // An app that is playing audio is not treated the same way: the platform counts
 // it as perceptibly doing something for the user and moves it up the priority
-// list. That's how a music player survives being backgrounded. So the app plays
-// a near-silent one-second loop while it is out of sight, and stops the moment
-// it comes back.
+// list. That's how a music player survives being backgrounded. So the app makes
+// an inaudible tone while it is out of sight, and stops the moment it returns.
+//
+// It SYNTHESISES that tone rather than looping a file, and the difference is
+// the whole reason this file was rewritten. A one-second file loops 3600 times
+// an hour, and every loop point was audible as a click — reported, accurately,
+// as "clicking like the Predator". The click is not the tone; the tone is 80 dB
+// below anything hearable. It is the element restarting: the decoder tears down
+// and comes back, and an amplifier that gates on silence pops each time it
+// wakes. A continuously running oscillator has no loop point to click at, by
+// construction. The file remains as a fallback for an engine with no Web Audio,
+// and is long rather than short so that even then the clicks are rare.
 //
 // This is a real trade, not a free win:
 //   - it costs battery, because the audio pipeline stays open;
@@ -21,7 +30,9 @@
 window.Keepalive = (function () {
   "use strict";
 
-  var el = null;
+  var el = null;                 // fallback path: a looping <audio> element
+  var ctx = null, osc = null, gain = null;   // primary path: synthesis
+  var engine = "";               // "oscillator" | "file" | ""
   var primed = false;
   var running = false;
   var wanted = true;
@@ -31,8 +42,18 @@ window.Keepalive = (function () {
   var channelAsked = "";
   var channelGot = "";
 
+  // Answered once and remembered. state() is called from the diagnostics screen
+  // AND from the lifecycle heartbeat every 15 seconds, so building a throwaway
+  // <audio> element to answer it each time is a slow leak in the one code path
+  // that must not cost anything.
+  var supportedCache = null;
   function supported() {
-    return typeof Audio !== "undefined" || !!document.createElement("audio").canPlayType;
+    if (supportedCache === null) {
+      supportedCache = !!(window.AudioContext || window.webkitAudioContext) ||
+        typeof Audio !== "undefined" ||
+        !!document.createElement("audio").canPlayType;
+    }
+    return supportedCache;
   }
 
   function build() {
@@ -96,12 +117,66 @@ window.Keepalive = (function () {
     return el;
   }
 
+  // The oscillator path. No file, no decoder, no loop — one continuously
+  // running tone whose gain is turned up when the app goes out of sight and
+  // down when it comes back. Nothing starts or stops, so nothing can click.
+  function buildOsc() {
+    if (ctx) return true;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+    try {
+      ctx = new AC();
+      // Same channel reasoning as the file path: see the note in config.js.
+      channelAsked = (window.CONFIG && CONFIG.KEEPALIVE_CHANNEL) || "normal";
+      try {
+        ctx.mozAudioChannelType = channelAsked;
+        channelGot = ctx.mozAudioChannelType || "";
+      } catch (e) { channelGot = "(refused)"; }
+
+      osc = ctx.createOscillator();
+      gain = ctx.createGain();
+      gain.gain.value = 0;             // silent until we are actually hidden
+      osc.frequency.value = 20;        // below hearing; see audio/mkkeepalive.py
+      osc.type = "sine";
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(0);
+      engine = "oscillator";
+      return true;
+    } catch (e) {
+      lastError = "osc: " + String(e && e.message || e);
+      ctx = null; osc = null; gain = null;
+      return false;
+    }
+  }
+
+  // The level both paths aim for: the file is 1% of full scale and is played at
+  // KEEPALIVE_VOLUME, so the oscillator multiplies the two to land in the same
+  // place rather than having a second number to keep in step.
+  function targetGain() {
+    var vol = (window.CONFIG && typeof CONFIG.KEEPALIVE_VOLUME === "number")
+      ? CONFIG.KEEPALIVE_VOLUME : 0.01;
+    if (!(vol > 0)) vol = 0.01;
+    if (vol > 1) vol = 1;
+    return vol * 0.01;
+  }
+
   // Audio can't start without a user gesture, and "the app just went to the
-  // background" is not one. So the element is unlocked during a keypress —
-  // played and immediately paused — which leaves it primed to start later
-  // without a gesture of its own.
+  // background" is not one. So the pipeline is opened during a keypress, which
+  // leaves it ready to be turned up later without a gesture of its own.
   function prime() {
-    if (primed || running || !wanted) return;
+    if (primed || !wanted) return;
+    if (buildOsc()) {
+      try {
+        if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+        primed = ctx.state !== "suspended";
+      } catch (e) {
+        lastError = String(e && e.message || e);
+      }
+      return;
+    }
+    // No Web Audio: fall back to the file.
+    engine = "file";
     var a = build();
     try {
       // play() returns undefined on Gecko 48 rather than a promise, so this
@@ -121,6 +196,18 @@ window.Keepalive = (function () {
 
   function start() {
     if (!wanted || running || interrupted) return;
+    if (engine === "oscillator" || buildOsc()) {
+      try {
+        if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+        // Ramp rather than jump: an instantaneous gain change is a step in the
+        // waveform, which is a click of exactly the kind being fixed.
+        rampTo(targetGain());
+        running = true;
+      } catch (e) {
+        lastError = String(e && e.message || e);
+      }
+      return;
+    }
     var a = build();
     try {
       a.currentTime = 0;
@@ -131,10 +218,36 @@ window.Keepalive = (function () {
     }
   }
 
+  // A 50 ms ramp is inaudible in itself and removes the discontinuity.
+  function rampTo(v) {
+    if (!gain) return;
+    var now = ctx.currentTime;
+    try {
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(v, now + 0.05);
+    } catch (e) {
+      gain.gain.value = v;      // an engine without the scheduling API
+    }
+  }
+
   function stop() {
-    if (!el || !running) return;
-    try { el.pause(); } catch (e) {}
+    if (!running) return;
     running = false;
+    if (engine === "oscillator") {
+      try {
+        rampTo(0);
+        // Suspend after the ramp has finished, or the suspend itself truncates
+        // it into the step change the ramp exists to avoid.
+        setTimeout(function () {
+          if (!running && ctx && ctx.state === "running" && ctx.suspend) {
+            try { ctx.suspend(); } catch (e) {}
+          }
+        }, 120);
+      } catch (e) {}
+      return;
+    }
+    if (el) { try { el.pause(); } catch (e) {} }
   }
 
   function setEnabled(on) {
@@ -148,6 +261,7 @@ window.Keepalive = (function () {
       primed: primed,
       running: running,
       supported: supported(),
+      engine: engine || "not started",
       channel: channelGot || channelAsked,
       channelAsked: channelAsked,
       interrupted: interrupted,
