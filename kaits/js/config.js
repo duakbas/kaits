@@ -70,8 +70,10 @@ window.CONFIG = {
   KEEPALIVE_CHANNEL: "normal",
 
   // Playback volume for the keepalive loop, on top of a file that is already
-  // 1% of full scale. 0.01 puts -80 dBFS at the speaker: inaudible, and at
-  // 110 Hz, which a phone speaker cannot reproduce anyway.
+  // 1% of full scale. 0.01 puts -80 dBFS at the output — about 20 dB SPL on
+  // headphones at maximum volume, against a hearing threshold of roughly
+  // 78 dB SPL at the loop's 20 Hz. Nearly 60 dB of margin, and headphones are
+  // the demanding case: a phone speaker cannot reproduce 20 Hz at all.
   //
   // Do NOT set this to 0. Zero volume, a muted element and digital silence are
   // the three ways to be counted INAUDIBLE, and an inaudible app is precisely
