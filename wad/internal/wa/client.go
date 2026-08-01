@@ -839,8 +839,55 @@ func (c *Client) RecordSent(d ws.MsgData) {
 			d.ChatName = c.chatName(jid, d.IsGroup)
 		}
 	}
+	c.fillQuote(&d)
 	c.hist.putMessage(d)
 	c.hub.PushT(ws.TMessage, d)
+}
+
+// fillQuote gives an outgoing reply the quote the app needs to draw.
+//
+// An incoming reply arrives with the quoted body and author inside its context
+// info, so storeMessage gets them for free. Nothing hands them to us for a
+// message WE send: the app passes the quoted id, because that is all it has and
+// all WhatsApp needs to make the reply valid. The bubble then came back with a
+// quoted id and no quoted text, and the app draws the quote bar on quotedtext —
+// so your own replies rendered as bare messages while everyone else's showed
+// what they were answering.
+//
+// The body is looked up in our own message table rather than reconstructed:
+// whatever is stored there is exactly what the thread is already displaying,
+// including the "[photo]" style labels media messages are stored with.
+func (c *Client) fillQuote(d *ws.MsgData) {
+	if d.QuotedID == "" || d.QuotedText != "" {
+		return
+	}
+	_, senderStr, _, text, fromMe, ok := c.hist.messageByID(d.QuotedID)
+	if !ok || text == "" {
+		// Quoting something we never stored — before a resync, or a message
+		// that predates history. The reply itself is still valid on the stanza
+		// id, so send it; it simply renders without the bar, exactly as now.
+		return
+	}
+	d.QuotedText = text
+	if fromMe {
+		// Matches how the app labels its own messages everywhere else.
+		d.QuotedName = "You"
+		return
+	}
+	if senderStr == "" {
+		return
+	}
+	jid, err := types.ParseJID(senderStr)
+	if err != nil {
+		return
+	}
+	if n := c.displayNameForJID(jid); n != "" {
+		d.QuotedName = n
+	} else {
+		// The canonical number, never the raw LID — a LID means nothing to
+		// the person reading it.
+		d.QuotedName = c.canonicalJID(jid).User
+	}
 }
 
 // LocationThumb returns the stored map preview for a location message.
