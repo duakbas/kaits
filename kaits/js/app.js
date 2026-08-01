@@ -2618,7 +2618,10 @@
       // the phone at all. Gecko implements it by asking the system for a file,
       // which is a different route to the same question and may well be
       // answered when a filtered activity is not.
-      filePick(kind);
+      // The card first: it is the only route that does not depend on another
+      // app having volunteered. If the permission was refused, or there is no
+      // card, it falls through to the plain upload control.
+      browseSdCard(kind, function () { filePick(kind); });
       return;
     }
     var act, opened = Date.now();
@@ -2660,6 +2663,118 @@
         toast("Picker failed: " + name);
       }
     };
+  }
+
+  // ---------- the memory card, directly ----------
+  //
+  // The one route that does not depend on which apps happen to be installed.
+  // A pick activity can only reach what some other app volunteered to hand
+  // over, so on a phone with no Files app there is nobody to ask about a
+  // document. Device storage skips the negotiation: the app enumerates the
+  // card itself.
+  //
+  // It needs the device-storage:sdcard permission, which is asked for in the
+  // manifest at web level. It may well be refused there — it is normally a
+  // privileged permission — in which case getDeviceStorage is either absent or
+  // the enumeration errors, and this falls through to the next thing. Asking
+  // costs nothing; not asking guarantees the answer is no.
+
+  function deviceStore() {
+    try {
+      if (!navigator.getDeviceStorage) return null;
+      return navigator.getDeviceStorage("sdcard") || null;
+    } catch (e) { return null; }
+  }
+
+  // Enumerating a whole card on this hardware is not free, and this app has
+  // already been killed once for being the biggest process in memory. Cap it,
+  // and say so rather than silently showing a truncated card.
+  var SD_MAX = 150;
+
+  function browseSdCard(kind, onFail) {
+    var store = deviceStore();
+    if (!store || !store.enumerate) { onFail(); return; }
+
+    var cursor;
+    try { cursor = store.enumerate(); }
+    catch (e) { onFail(); return; }
+
+    var files = [];
+    var finished = false;
+    toast("Reading memory card…");
+
+    // A card that is missing, unmounted or unreadable must not leave the menu
+    // hanging — it has to fall through to whatever comes next.
+    var guard = setTimeout(function () {
+      if (!finished) { finished = true; onFail(); }
+    }, 15000);
+
+    function done() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(guard);
+      if (!files.length) { onFail(); return; }
+      present();
+    }
+
+    cursor.onsuccess = function () {
+      if (finished) return;
+      var f = cursor.result;
+      if (!f) { done(); return; }
+      // Skip our own noise and anything with no usable name.
+      if (f.name) files.push(f);
+      if (files.length >= SD_MAX) { done(); return; }
+      try { cursor.continue(); } catch (e) { done(); }
+    };
+    cursor.onerror = function () {
+      // Permission refused, or no card. Either way this route is closed.
+      if (finished) return;
+      finished = true;
+      clearTimeout(guard);
+      onFail();
+    };
+
+    function present() {
+      // Newest first: the file you want is overwhelmingly the one you just put
+      // there, and there is no search on a 240px screen.
+      files.sort(function (a, b) {
+        var at = a.lastModifiedDate ? a.lastModifiedDate.getTime() : 0;
+        var bt = b.lastModifiedDate ? b.lastModifiedDate.getTime() : 0;
+        return bt - at;
+      });
+      var labels = files.map(function (f) {
+        return baseName(f.name) + "  " + sizeLabel(f.size);
+      });
+      var title = files.length >= SD_MAX
+        ? "Memory card (newest " + SD_MAX + ")"
+        : "Memory card";
+      chooseFromList(title, labels, function (idx) {
+        if (idx < 0) return;
+        var f = files[idx];
+        if (!f) return;
+        var mime = f.type || "";
+        var real = kind;
+        if (kind === "doc") {
+          if (mime.indexOf("image/") === 0) real = "image";
+          else if (mime.indexOf("video/") === 0) real = "video";
+          else if (mime.indexOf("audio/") === 0) real = "audio";
+        }
+        blobToBase64AndSend(f, real, baseName(f.name));
+      });
+    }
+  }
+
+  function baseName(path) {
+    var p = String(path || "");
+    var slash = p.lastIndexOf("/");
+    return slash >= 0 ? p.slice(slash + 1) : p;
+  }
+
+  function sizeLabel(bytes) {
+    var n = Number(bytes) || 0;
+    if (n < 1024) return n + "B";
+    if (n < 1024 * 1024) return Math.round(n / 1024) + "K";
+    return (Math.round(n / 104857.6) / 10) + "M";
   }
 
   // A throwaway file input. This is the desktop path during development AND
