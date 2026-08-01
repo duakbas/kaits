@@ -35,7 +35,11 @@ without actually replacing anything.
 
 ## 1.5.0
 
+Bubbles only — the black rounded plate behind the icon is gone, and the shapes
+are scaled up to fill the margin it was using.
+
 Fixes the Settings screen rewriting a stored address. It prefilled the field
-with the scheme stripped, and saving re-derived `ws://host:8080/ws` from it —
+with the scheme stripped, and saving re-derived `ws://host:8080/ws` from that —
 so opening Settings on a working `wss://` server and pressing save silently
-downgraded it to plaintext on the wrong port, and the app went offline.
+downgraded it to plaintext on a port that is deliberately closed, and the app
+went offline with nothing to say why.
