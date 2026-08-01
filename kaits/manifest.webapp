@@ -20,6 +20,9 @@
     },
     "push": {
       "description": "Wake on new message / incoming call"
+    },
+    "geolocation": {
+      "description": "Attach your location to a message when you choose to"
     }
   },
   "messages": [
