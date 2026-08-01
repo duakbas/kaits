@@ -104,9 +104,7 @@
   function note(key, handled) {
     recent.push((handled ? "" : "!") + key);
     if (recent.length > 6) recent.shift();
-    if (window.CONFIG && window.CONFIG.DEBUG_KEYS && window.Nav && Nav.onKeyLog) {
-      Nav.onKeyLog(recent.join(" "));
-    }
+    if (window.Nav && Nav.onKeyLog) Nav.onKeyLog(recent.join(" "), key);
   }
 
   document.addEventListener("keydown", function (e) {
@@ -173,8 +171,11 @@
         recent[recent.length - 1] = "!" + e.key;   // mark it unhandled
         if (window.CONFIG && window.CONFIG.DEBUG_KEYS) {
           console.log("nav: unhandled key", JSON.stringify(e.key), "code", e.code);
-          if (window.Nav && Nav.onKeyLog) Nav.onKeyLog(recent.join(" "));
         }
+        // Re-report with no key: this is the same press being relabelled as
+        // unhandled, not a new one, and counting it twice breaks any sequence
+        // the app is watching for.
+        if (window.Nav && Nav.onKeyLog) Nav.onKeyLog(recent.join(" "), null);
     }
   });
 

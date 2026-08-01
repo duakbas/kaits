@@ -17,10 +17,10 @@ window.CONFIG = {
   RECONNECT_MIN: 1000,
   RECONNECT_MAX: 15000,
 
-  // Log every key the app doesn't already handle. Hardware key names differ
-  // between KaiOS devices and builds, so when a button does nothing on your
-  // phone, turn this on and read the console rather than guessing.
-  DEBUG_KEYS: true,
+  // Show the on-screen key log from startup. You rarely need this: pressing *
+  // three times toggles it on the phone at any point, which is easier than
+  // rebuilding. Errors appear on that strip regardless of this setting.
+  DEBUG_KEYS: false,
 
   // Buzz when a message arrives in the chat you already have open. Off by
   // default: you're looking straight at it, so the buzz tells you nothing the
