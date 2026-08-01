@@ -32,6 +32,39 @@ actually tested without needing to reach proxy.golang.org. About 6 MB plus your
 message history. `--no-session` builds a code-only bundle if you would rather
 pair with a QR on the server.
 
+### If 80 and 443 are already taken
+
+A box that already serves a website has no room for Caddy's usual arrangement.
+Give wad its own port and leave the existing site untouched:
+
+```bash
+sudo ./install.sh deniz.example.ch --port 8080 \
+     --cert /etc/letsencrypt/live/deniz.example.ch/fullchain.pem \
+     --key  /etc/letsencrypt/live/deniz.example.ch/privkey.pem
+```
+
+The certificate must be one the box already has, and that is not a limitation
+of this script: the ACME challenge is answered on port 80 or 443, so a
+certificate cannot be obtained for a service that is on neither. Reuse the one
+the existing site is already using — `ls /etc/letsencrypt/live/`, or
+`grep -rn ssl_certificate /etc/nginx/`. Caddy runs as its own user and must be
+able to read the key; the script checks and prints the `setfacl` line if it
+can't.
+
+The alternative is `--no-tls`, which serves plain `ws://host:8080/ws`. That
+works, and it hands your token to the network in readable text on every
+connect — the token being the only thing between the internet and your WhatsApp
+account. Fine on a LAN, bad on a public hostname.
+
+Two things the script will not do to an existing site: it never overwrites a
+Caddy config that was already serving something (it writes `/etc/caddy/wad.caddy`
+and tells you the one line to add), and the config it generates sets
+`auto_https disable_redirects`, without which Caddy would also grab port 80 to
+redirect to HTTPS and take the other website with it.
+
+`--no-firewall` leaves `ufw` alone entirely, for a machine whose firewall isn't
+yours to enable — which on university infrastructure it generally isn't.
+
 **The zip contains your WhatsApp account.** `wa-session.db` *is* the
 linked-device registration, not a backup of it — anyone who unpacks the zip can
 read and send your messages, and there is no password to change afterwards. Move

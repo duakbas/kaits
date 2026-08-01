@@ -169,6 +169,30 @@ When it finishes it prints the two lines to type into the phone:
 On the phone that is: chat list -> scroll to the bottom -> Settings.
 
 
+If 80 and 443 already belong to something else
+----------------------------------------------
+
+Put wad on its own port and leave the existing site completely alone:
+
+    sudo ./install.sh your.hostname --port 8080 \
+         --cert /etc/letsencrypt/live/your.hostname/fullchain.pem \
+         --key  /etc/letsencrypt/live/your.hostname/privkey.pem
+
+The certificate has to be one that already exists on the box, because nothing
+can obtain a new one here: the ACME challenge is answered on port 80 or 443,
+which is exactly what is occupied. Find the one the existing site uses with
+
+    ls /etc/letsencrypt/live/ ; grep -rn ssl_certificate /etc/nginx/
+
+`--no-tls` skips all of that and serves plain ws://, which also means the token
+crosses the network in readable text on every connect. On a box with a public
+hostname that is worth avoiding.
+
+install.sh will not overwrite a Caddy config that was already serving
+something. If it finds one, it writes its own to /etc/caddy/wad.caddy and tells
+you the one line to add.
+
+
 Before you run it
 -----------------
 
