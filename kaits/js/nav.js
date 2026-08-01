@@ -13,6 +13,7 @@
   var screen = {
     onUp: null, onDown: null, onLeft: null, onRight: null,
     onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null,
+    onFocusChange: null,
     // container element whose [nav] children are focusable, if using
     // built-in list focus:
     list: null
@@ -34,6 +35,12 @@
     if (i >= items.length) i = items.length - 1;
     items.forEach(function (el) { el.classList.remove("focused"); });
     items[i].classList.add("focused");
+    // Tell the app where focus landed. Reading it back out of the DOM later is
+    // unreliable — a rebuild can leave a moment where the answer is "nowhere",
+    // and a restore based on that puts focus back at the top.
+    if (typeof screen.onFocusChange === "function") {
+      try { screen.onFocusChange(items[i]); } catch (e) {}
+    }
     // keep the focused row in view on the tiny screen
     items[i].scrollIntoView({ block: "nearest" });
     focusIndex = i;
@@ -170,6 +177,7 @@
       screen = {
         onUp: null, onDown: null, onLeft: null, onRight: null,
         onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null,
+        onFocusChange: null,
         list: null
       };
       for (var k in handlers) screen[k] = handlers[k];

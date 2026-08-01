@@ -144,8 +144,11 @@
   // the JID rather than the row index is the same lesson the message selection
   // taught: the list re-sorts whenever a message arrives, so an index points at
   // a different conversation a moment later.
-  function focusedChatJID() {
-    var el = Nav.focusedEl();
+  // Where the highlight belongs, updated as the user moves rather than read
+  // back from the DOM afterwards.
+  var listFocusKey = "";
+
+  function rowKey(el) {
     if (!el || !el.getAttribute) return "";
     if (el.getAttribute("data-settings")) return "\u0000settings";
     if (el.getAttribute("data-archived")) return "\u0000archived";
@@ -171,7 +174,7 @@
 
   function renderChatList() {
     // Remember before the rebuild destroys the rows.
-    var keepFocus = elList.hidden ? "" : focusedChatJID();
+    var keepFocus = listFocusKey;
     var arr = Object.keys(chats).map(function (j) { return chats[j]; })
       .filter(function (c) { return !!c.archived === showArchived; });
     arr.sort(function (a, b) {
@@ -256,6 +259,9 @@
     // Settings sits at the very bottom, past every chat. A LAN address changes
     // with DHCP, so there has to be a way back to it — but it's needed once in
     // a blue moon, so it costs nothing to reach it by pressing Down a lot.
+    // Not while the list is otherwise empty: it would be the only focusable row
+    // and would capture the initial focus before any chat exists.
+    if (arr.length) {
     var cog = document.createElement("div");
     cog.className = "chat-row archived-entry";
     cog.setAttribute("data-nav", "");
@@ -263,6 +269,7 @@
     cog.textContent = "⚙  Settings";
     cog.onclick = function () { enterSetupScreen(enterListScreen); };
     elList.appendChild(cog);
+    }
 
     scheduleAvatarLoad();
     // Put the highlight back. Without this every incoming message wipes it, and
@@ -360,6 +367,7 @@
     show(elList);
     Nav.setScreen({
       list: elList,
+      onFocusChange: function (el) { listFocusKey = rowKey(el); },
       onUp: function (e) {
         // At the very top, one more Up reveals the archived entry rather than
         // doing nothing.
