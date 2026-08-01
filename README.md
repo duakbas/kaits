@@ -456,6 +456,27 @@ last one is based on testing the case that matters with the switch in both
 positions. The middle one was also built on a recorder bug that was filing
 kills as clean exits, so its evidence was worth less than it appeared.
 
+### Shrinking when hidden
+
+The best idea in this whole chase came from the phone's owner: if `pushtest`
+survived for hours on the same handset because it was a few kilobytes of page
+holding one socket, make the app *become* that when nobody is looking.
+
+So it does. On going out of sight it drops the chat list, the message DOM, the
+menus, the search and forward lists, the profile pane, every loaded message,
+and — explicitly, because clearing a parent does not reliably free a decoded
+copy — the `src` of every image and video. What survives is the socket and a
+trimmed chat table: name, group, mute and unread, which is precisely what a
+notification needs and nothing more. Losing the mute flag would mean a muted
+chat buzzing at 3am, so that one is tested by name.
+
+Nothing is lost by dropping the rest, because the daemon is the source of truth
+for all of it. Waking asks for the chat list again and reopens whichever chat
+was open, through the same path a normal open takes. The renderers no-op while
+dormant, so an arriving message cannot quietly rebuild what was just freed.
+
+"Shrink when hidden" on the Settings screen, on by default.
+
 **The bigger lever was memory.** Within the same priority class the largest
 process is the one killed, and this app was enormous for what it is: bubbles
 rendered the full-size photo, and CSS `max-width` changes how an image is
