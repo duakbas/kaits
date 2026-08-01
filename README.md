@@ -255,6 +255,12 @@ would otherwise cost another day of waiting:
 - **keepalive** — `playing`, `primed`, `unprimed`, `interrupted` or `off`. If it
   reads `unprimed` the mechanism never started, which is a different bug from
   it starting and not helping.
+- **the verdict itself** — a goodbye is *not* proof the user closed it. KaiOS
+  gives a content process notice before killing it, so `pagehide` fires on the
+  way out; treating that as a clean exit filed system kills as "closed" and
+  would have held the kill rate at zero on a phone that was killing the app.
+  What separates them is whether anyone was looking: a person closes an app
+  they can see, the system kills one they cannot.
 - **socket** — `open` or `closed`. A live app whose socket quietly died
   delivers no messages either, and from the outside the two are identical: you
   simply stop getting notifications. This is what tells them apart.
@@ -359,23 +365,30 @@ one failure that matters, silent and uncounted. It displaces the speaker cone
 while it runs and pops when it stops. A tone below hearing gets the same
 silence without either gamble.
 
-**It ships off, because the measurement says there is nothing to fix.** The
-keepalive was written for "the app dies seconds after I leave it". Then the
-daemon log showed that was never what happened: the app was alive two hours in,
-raised a real notification, and reconnected two seconds after an earlier drop.
-Both disconnections in that log were the *phone* leaving the network — `read:
-no route to host` — not the app being killed. Nothing has yet been observed
-being reaped.
+**It ships off, and there is now one confirmed kill against it.** The daemon
+logged this:
 
-Meanwhile the thumbnail change took a photo thread from tens of megabytes of
-decoded bitmap to a few hundred kilobytes, and process size is what the killer
-actually chooses on. That is the likelier reason the early "dies in seconds"
-behaviour stopped.
+    ws: read closed: websocket: close 1001 (going away): Child was killed
+    ws: phone disconnected after 6m54s
 
-Shipping the keepalive on by default was applying a fix ahead of the
-measurement, which is precisely what the flight recorder exists to prevent. It
-stays one switch away — "Stay alive in background" on the Settings screen, next
-to the kill rate that would justify turning it on.
+immediately after YouTube was opened. `Child was killed` is the platform saying
+so in as many words — the phone wanted memory for YouTube and took it from the
+cheapest process available.
+
+That is one kill, under the heaviest memory pressure a phone like this ever
+sees, and it does not establish that the keepalive would have prevented it:
+against YouTube on a 1400 mAh handset a backgrounded app may be doomed whatever
+priority it claims. It stays off by default, because turning it on would again
+be applying a fix ahead of the measurement — but there is now a repeatable
+trigger, which is worth more than a night of waiting. Open the app, background
+it, start YouTube, then read the Settings screen. Do it once with "Stay alive in
+background" off and once with it on. Two minutes, and the answer is real.
+
+Against ordinary use the evidence still points the other way: the app was alive
+two hours in, raised a real notification, and reconnected two seconds after an
+earlier drop. And the thumbnail change took a photo thread from tens of
+megabytes of decoded bitmap to a few hundred kilobytes — process size being
+exactly what the killer chooses on.
 
 The other switch there is **Scroll animation**, off by default. The eased glide
 was added because an instant jump makes it hard to tell whether the highlight

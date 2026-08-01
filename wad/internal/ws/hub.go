@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,11 +118,43 @@ func (h *Hub) adopt(c *websocket.Conn) {
 	connectedAt := time.Now()
 	log.Printf("ws: phone connected")
 	go h.writeLoop(c, ch)
-	h.readLoop(c)
+	reason := h.readLoop(c)
 	log.Printf("ws: phone disconnected after %s", time.Since(connectedAt).Round(time.Second))
+	explain(reason, time.Since(connectedAt))
 }
 
-func (h *Hub) readLoop(c *websocket.Conn) {
+// explain turns the close reason into the one sentence that matters. These
+// three failures look identical from the phone — messages simply stop — and
+// have nothing in common but the symptom, so the log should not make anyone
+// squint at a errno to tell them apart.
+func explain(reason string, ran time.Duration) {
+	if msg := classify(reason); msg != "" {
+		log.Printf("ws: ^ %s", msg)
+	}
+}
+
+// classify is separate from the logging so the decision can be tested without
+// capturing output.
+func classify(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "child was killed"):
+		return "that was the SYSTEM KILLING THE APP — the phone needed memory " +
+			"for something else and the app was the cheapest thing to take. " +
+			"Not a network fault and not a crash."
+	case strings.Contains(r, "no route to host"),
+		strings.Contains(r, "network is unreachable"):
+		return "the phone left the network — Wi-Fi asleep or out of range. The " +
+			"app is probably still running; it reconnects when the radio returns."
+	case strings.Contains(r, "operation timed out"),
+		strings.Contains(r, "i/o timeout"):
+		return "the phone stopped answering. Usually the radio going to sleep " +
+			"rather than the app dying."
+	}
+	return ""
+}
+
+func (h *Hub) readLoop(c *websocket.Conn) string {
 	c.SetReadLimit(1 << 20)
 	for {
 		_, data, err := c.ReadMessage()
@@ -133,7 +166,7 @@ func (h *Hub) readLoop(c *websocket.Conn) {
 				h.sendCh = nil
 			}
 			h.mu.Unlock()
-			return
+			return err.Error()
 		}
 		var e Envelope
 		if err := json.Unmarshal(data, &e); err != nil {

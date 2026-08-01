@@ -1,17 +1,22 @@
 // life.js — a flight recorder for the app's own lifecycle.
 //
-// When KaiOS kills a backgrounded app it does not ask, does not warn, and does
-// not run any of your code. The process is simply gone. So "the app closes soon
-// after I exit it" cannot be investigated from inside a running app: by the time
-// you could ask a question, the thing that would have answered it is dead.
+// "The app closes soon after I exit it" cannot be investigated from inside a
+// running app: by the time you could ask, the thing that would have answered is
+// dead. What survives is localStorage. So the app writes a heartbeat there while
+// backgrounded, and on the next launch reads back the previous session's last
+// beat — which is when it stopped existing.
 //
-// What survives a kill is localStorage. So the app writes a heartbeat there
-// while it is backgrounded, and on the next launch reads back the previous
-// session's last heartbeat. No goodbye plus a heartbeat that stops is a kill,
-// and the gap between backgrounding and that last beat is how long it survived.
-// A clean exit writes a goodbye, so the two are distinguishable — which matters,
-// because "you closed it" and "the system killed it" have completely different
-// fixes.
+// This file originally assumed a kill runs none of your code. That turned out to
+// be wrong: the daemon watched a kill arrive as a clean WebSocket close, 1001
+// "going away", reason "Child was killed". The platform gives notice, so pagehide
+// can fire on the way out — and a recorder that treats any goodbye as a clean
+// exit will file every one of those as "the user closed it". The kill rate then
+// reads zero while the app is being reaped, which is worse than no measurement,
+// because it is a measurement that lies.
+//
+// What actually separates the two is not whether it said goodbye. It is whether
+// anyone was looking: a person closes an app they can see, and the system kills
+// one they cannot.
 //
 // This is the same shape as the push measurement in pushtest/: get numbers
 // first, then decide, rather than tuning against a guess.
@@ -64,9 +69,24 @@ window.Life = (function () {
     if (rec.hidden) {
       out.bgFor = Math.round(((rec.bye || rec.last || rec.hidden) - rec.hidden) / 1000);
     }
-    if (rec.bye) out.outcome = "closed";
+    // A goodbye is NOT proof the user closed it.
+    //
+    // The platform gives a content process notice before killing it — the
+    // daemon saw the socket close cleanly with 1001 "going away: Child was
+    // killed" — so pagehide can fire on the way out of an execution. Treating
+    // any goodbye as a clean exit therefore filed system kills as "closed",
+    // which is how the kill rate could read zero while the app was in fact
+    // being reaped. What separates the two is not whether it said goodbye, but
+    // whether it was on screen at the time: a person closes an app they are
+    // looking at, and the system kills one they are not.
+    if (rec.bye && !rec.hidden) out.outcome = "closed";
+    else if (rec.bye && rec.hidden) out.outcome = "killed in background";
     else if (rec.hidden) out.outcome = "killed in background";
     else out.outcome = "died in foreground";
+    // Whether it got to say anything on the way out. Not part of the verdict,
+    // but worth keeping: a kill with notice and a kill without are different
+    // amounts of warning, and one day that may matter.
+    out.warned = !!rec.bye;
     out.state = rec.st || null;
     return out;
   }
@@ -78,7 +98,8 @@ window.Life = (function () {
     }
     if (o.outcome === "killed in background") {
       return "last session: backgrounded, then killed after " + fmt(o.bgFor) +
-             " in the background (ran " + fmt(o.ranFor) + " total)" +
+             " in the background" + (o.warned ? " (with notice)" : "") +
+             " (ran " + fmt(o.ranFor) + " total)" +
              stateLine(o.state);
     }
     return "last session: died while on screen after " + fmt(o.ranFor);
@@ -168,7 +189,7 @@ window.Life = (function () {
     if (!o) return;
     var hist = read(HIST) || [];
     hist.push({ t: o.boot, ran: o.ranFor, bg: o.bgFor, out: o.outcome,
-                ver: o.version, st: o.state });
+                ver: o.version, st: o.state, warned: o.warned });
     while (hist.length > HIST_MAX) hist.shift();
     write(HIST, hist);
   }
