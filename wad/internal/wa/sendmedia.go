@@ -21,6 +21,22 @@ import (
 // WhatsApp's CDN, then the message carries the keys — the same ones we persist
 // on the way in so media survives a restart.
 
+// downloadableOf pulls the downloadable part out of a message we just built,
+// so a sent attachment can be fetched back the same way a received one is.
+func downloadableOf(m *waE2E.Message) whatsmeow.DownloadableMessage {
+	switch {
+	case m.GetImageMessage() != nil:
+		return m.GetImageMessage()
+	case m.GetVideoMessage() != nil:
+		return m.GetVideoMessage()
+	case m.GetAudioMessage() != nil:
+		return m.GetAudioMessage()
+	case m.GetDocumentMessage() != nil:
+		return m.GetDocumentMessage()
+	}
+	return nil
+}
+
 // maxUploadBytes caps what we'll accept in one frame. The bytes arrive base64'd
 // over the WebSocket, so they cost ~4/3 their size in memory on both sides, and
 // a feature phone has little to spare.
@@ -76,6 +92,15 @@ func (c *Client) SendMedia(ctx context.Context, chatJID, kind, b64, mime, captio
 	}
 
 	resp, err := c.WA.SendMessage(ctx, jid, msg)
+	if err == nil {
+		// Cache the uploaded message under its own id so /media/<id> can serve
+		// it back. Without this our own attachments are unfetchable: the app
+		// would be asked to render a message whose bytes only ever existed on
+		// the phone that sent them.
+		if dl := downloadableOf(msg); dl != nil {
+			c.cacheMedia(resp.ID, dl, mime)
+		}
+	}
 	if err != nil {
 		return "", err
 	}

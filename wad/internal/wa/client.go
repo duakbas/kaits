@@ -813,6 +813,36 @@ func storeThumb(c *Client, msgID string, thumb []byte) string {
 	return "/thumb/" + msgID
 }
 
+// RecordSent stores a message we just sent and pushes it to the app.
+//
+// whatsmeow does not deliver our own outgoing messages back as events, and
+// nothing here was storing them either — so a sent message existed only as a
+// fake the app appended to its own list, which vanished on restart, and only
+// text bothered to do even that. A sent photo or location simply never
+// appeared. Recording it here fixes all of those at once and in one place:
+// the thread shows it, history keeps it, and /media/ can serve it.
+func (c *Client) RecordSent(d ws.MsgData) {
+	if d.MsgID == "" || d.ChatJID == "" {
+		return
+	}
+	d.FromMe = true
+	if d.Timestamp == 0 {
+		d.Timestamp = time.Now().Unix()
+	}
+	if d.Status == "" {
+		d.Status = "sent"
+	}
+	jid, err := types.ParseJID(d.ChatJID)
+	if err == nil {
+		d.IsGroup = jid.Server == types.GroupServer
+		if d.ChatName == "" {
+			d.ChatName = c.chatName(jid, d.IsGroup)
+		}
+	}
+	c.hist.putMessage(d)
+	c.hub.PushT(ws.TMessage, d)
+}
+
 // LocationThumb returns the stored map preview for a location message.
 func (c *Client) LocationThumb(msgID string) []byte { return c.hist.locationThumb(msgID) }
 

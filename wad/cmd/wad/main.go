@@ -230,6 +230,10 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			// echo back an ack with the assigned id, correlating on e.ID
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			waCli.RecordSent(ws.MsgData{
+				MsgID: id, ChatJID: d.ChatJID, Kind: "text", Text: d.Text,
+				QuotedID: d.QuotedID,
+			})
 		}
 		if d.Kind == "location" {
 			id, err := waCli.SendLocation(ctx, d.ChatJID, d.Lat, d.Lon, d.Accuracy,
@@ -240,6 +244,11 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			}
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			waCli.RecordSent(ws.MsgData{
+				MsgID: id, ChatJID: d.ChatJID, Kind: "location",
+				Lat: d.Lat, Lon: d.Lon, LocName: d.LocName,
+				LocAddress: d.LocAddress, QuotedID: d.QuotedID,
+			})
 		}
 		if d.Kind == "image" || d.Kind == "video" || d.Kind == "audio" ||
 			d.Kind == "gif" || d.Kind == "doc" {
@@ -251,6 +260,10 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			}
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			waCli.RecordSent(ws.MsgData{
+				MsgID: id, ChatJID: d.ChatJID, Kind: d.Kind, Text: d.Text,
+				Mime: d.Mime, MediaURL: "/media/" + id, QuotedID: d.QuotedID,
+			})
 		}
 
 	case ws.TLiveLoc:

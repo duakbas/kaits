@@ -1938,20 +1938,12 @@
     // A private reply leaves this chat entirely — the daemon routes it to the
     // sender's DM — so don't echo it into the group thread. The receipt frame
     // carries the destination and the message lands there instead.
-    if (!privateReply) {
-      var echo = {
-        msgid: "local-" + Date.now(), chat: currentJID, fromme: true,
-        ts: Math.floor(Date.now() / 1000), kind: "text", text: text,
-        status: "sent"
-      };
-      if (replyingTo) {
-        echo.quotedtext = replyingTo.text;
-        echo.quotedname = replyingTo.name;
-      }
-      pushMsg(echo);
-    } else {
-      toast("Sent privately");
-    }
+    // No local echo any more. The daemon records what it sends and pushes it
+    // back like any other message, so the bubble that appears is the real one:
+    // it has the true message id, it is in history, and it survives a restart.
+    // The fake this replaces had none of those properties — and only text ever
+    // got one, which is exactly why a sent photo or location never appeared.
+    if (privateReply) toast("Sent privately");
     elInput.value = "";
     clearDraft(currentJID);
     stopTyping();
