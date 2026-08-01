@@ -117,7 +117,9 @@ softkeys**, Backspace/Esc = back.
 
 Full guide, environment variables, and the LID repair passes:
 [`wad/RUN.md`](wad/RUN.md). To run the daemon on a server so the phone works
-away from your Wi-Fi: [`wad/DEPLOY.md`](wad/DEPLOY.md).
+away from your Wi-Fi: [`wad/DEPLOY.md`](wad/DEPLOY.md) — `wad/deploy/mkbundle.sh`
+builds a zip that carries the existing session, and `install.sh` inside it does
+the whole server setup, TLS and firewall included, in one command.
 
 > Chrome caches JS hard. After editing app JS, hard-reload with devtools open
 > and "Disable cache" ticked, or you'll debug code that isn't running.
