@@ -656,6 +656,15 @@ func mediaHandler(c *wa.Client) http.HandlerFunc {
 		}
 		data, err := c.DownloadMedia(r.Context(), id)
 		if err != nil {
+			// A message with no stored keys is gone for good. 410 rather than
+			// 404 says so, which is what lets the app stop asking — it was
+			// re-requesting the same two dozen ids on every render, which is a
+			// round trip each and a log line each, on a phone that then gets
+			// killed for being large.
+			if wa.IsPermanentlyGone(err) {
+				http.Error(w, "media unavailable", http.StatusGone)
+				return
+			}
 			log.Printf("media %s: %v", id, err)
 			http.Error(w, "media unavailable", http.StatusNotFound)
 			return

@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,6 +153,12 @@ var mmsTypeFor = map[whatsmeow.MediaType]string{
 // is bounded and dies with the process — which is why every photo used to break
 // after a restart or a browser refresh. The keys needed to re-fetch from the CDN
 // are persisted per message, so failing over to those makes media durable.
+// errNoKeys is a permanent answer, not a transient one: a message stored
+// before keys were kept can never be fetched, by anyone, ever. It is a distinct
+// error so the HTTP layer can say "gone" rather than "not found" — and so the
+// app can stop asking.
+var errNoKeys = errors.New("no stored keys (predates key storage, or never had media)")
+
 func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
 	if dl, ok := c.media.get(id); ok {
 		data, err := c.WA.Download(ctx, dl)
@@ -164,7 +171,7 @@ func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
 
 	ref, ok := c.hist.mediaRefFor(id)
 	if !ok {
-		return nil, fmt.Errorf("media %s has no stored keys (predates key storage, or never had media)", id)
+		return nil, errNoKeys
 	}
 	mediaType := whatsmeow.MediaType(ref.mediaType)
 	mms, known := mmsTypeFor[mediaType]
@@ -174,3 +181,7 @@ func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
 	return c.WA.DownloadMediaWithPath(ctx, ref.directPath,
 		ref.encSHA256, ref.sha256, ref.mediaKey, mediaType, mms, false)
 }
+
+// IsPermanentlyGone reports whether this media can never be fetched, as
+// opposed to having failed this time.
+func IsPermanentlyGone(err error) bool { return errors.Is(err, errNoKeys) }
