@@ -70,11 +70,26 @@
   // No console exists on the phone, so an exception is completely silent — the
   // app just stops doing something and there is nothing to read. Errors go to
   // the same strip the key log uses, whether or not DEBUG_KEYS is on.
+  // Errors sit over the softkeys, so they clear themselves after a while
+  // rather than staying until the app restarts. Long enough to read and
+  // photograph, short enough not to become furniture.
+  var ERROR_HOLD_MS = 20000;
+  var errorTimer = null;
+  var keyLogOn = !!(window.CONFIG && CONFIG.DEBUG_KEYS);
+
   function showError(msg) {
     if (!elKeyLog) return;
     elKeyLog.hidden = false;
     elKeyLog.style.color = "#e5484d";
     elKeyLog.textContent = String(msg).slice(0, 120);
+    if (errorTimer) clearTimeout(errorTimer);
+    errorTimer = setTimeout(function () {
+      errorTimer = null;
+      elKeyLog.style.color = "";
+      // Hand the strip back to the key log if it's on, otherwise hide it.
+      if (keyLogOn) elKeyLog.textContent = Nav.recentKeys ? Nav.recentKeys() : "";
+      else { elKeyLog.textContent = ""; elKeyLog.hidden = true; }
+    }, ERROR_HOLD_MS);
   }
 
   window.onerror = function (msg, src, line) {
@@ -82,13 +97,12 @@
     return false;   // keep the default logging too
   };
 
-  // With DEBUG_KEYS on, show every key the page sees. "!" means nothing
-  // handled it. Nothing appearing at all means the key never reached us.
-  // The key log is a debugging tool, so it's off unless asked for. Pressing *
+  // The key log shows every key the page sees; "!" means nothing handled it,
+  // and nothing appearing at all means the key never reached us. It's a
+  // debugging tool, so it's off unless asked for. Pressing *
   // three times in a row toggles it — a sequence you can't hit by accident on
   // a D-pad, and one that works with no console and no way to edit config on
   // the phone. Errors are separate and always shown.
-  var keyLogOn = !!(window.CONFIG && CONFIG.DEBUG_KEYS);
   var starRun = 0;
 
   if (elKeyLog) {
