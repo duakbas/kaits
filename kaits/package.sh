@@ -56,7 +56,18 @@ esac
 rm -rf "$BUILD"
 mkdir -p "$STAGE"
 
-cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" "$STAGE/"
+cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" \
+      "$HERE/audio" "$STAGE/"
+
+# The keepalive loop is generated, not hand-written, and the app is silently
+# less able to survive backgrounding without it — a missing file here would
+# show up as "it still gets killed" rather than as an error.
+if [ ! -f "$STAGE/audio/keepalive.wav" ]; then
+  echo "PROBLEM: audio/keepalive.wav is missing; run kaits/audio/mkkeepalive.py" >&2
+  exit 1
+fi
+# The generator script itself has no business in the package.
+rm -f "$STAGE/audio/mkkeepalive.py"
 
 # Stamp the build version into the package so the running app can say which
 # build it is. Without this, "did the update land?" is unanswerable from the

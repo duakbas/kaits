@@ -38,5 +38,20 @@ window.CONFIG = {
   // Fallbacks when nothing is known: vibrate yes, beep no. A missed buzz beats
   // a browser tab beeping at you in a meeting.
   NOTIFY_VIBRATE: "auto",
-  NOTIFY_SOUND: "auto"
+  NOTIFY_SOUND: "auto",
+
+  // Play a near-silent loop while the app is in the background.
+  //
+  // KaiOS kills a backgrounded app as soon as something else wants the memory,
+  // and with push measured dead the app holding its own socket is the ONLY
+  // thing that delivers a message here — so being reaped is not a cosmetic
+  // problem, it's the notification design failing. An app that is playing
+  // audio is treated as perceptibly doing something and moves up the priority
+  // list, which is how a music player survives backgrounding.
+  //
+  // It costs battery, and it is a demotion of risk rather than a guarantee.
+  // The setup screen reports how long the app actually survived each time it
+  // was backgrounded, so this can be judged on measurements instead of faith:
+  // turn it off, use the phone for a day, and compare.
+  KEEPALIVE: true
 };

@@ -2686,6 +2686,33 @@
     return false;
   }
 
+  // ---------- staying alive in the background ----------
+  //
+  // With push measured dead (see pushtest/), the app holding its own socket is
+  // the only thing that delivers a message to this phone. So the app being
+  // reaped a few seconds after you leave it isn't a nice-to-have — it's the
+  // whole notification design failing. Two responses, in this order: record
+  // what actually happens, and make the app a less attractive thing to kill.
+  function wireLifecycle() {
+    var on = CONFIG.KEEPALIVE !== false;
+    Keepalive.setEnabled(on);
+
+    // The audio element has to be unlocked by a user gesture, and going to the
+    // background is not one. Any keypress will do, and there is always one
+    // before the app can be backgrounded.
+    document.addEventListener("keydown", function primeOnce() {
+      Keepalive.prime();
+      document.removeEventListener("keydown", primeOnce, false);
+    }, false);
+
+    function onVis() {
+      if (appHidden()) Keepalive.start();
+      else Keepalive.stop();
+    }
+    document.addEventListener("visibilitychange", onVis, false);
+    document.addEventListener("mozvisibilitychange", onVis, false);
+  }
+
   // osNotify raises a real system notification through the service worker.
   //
   // Tagged per chat and renotify:true, matching sw.js — a second message in the
@@ -3294,6 +3321,22 @@
         : reg ? "registered" : "NOT registered"));
     var ps = (window.App && window.App.pushState) ? window.App.pushState() : null;
     if (ps) lines.push("push: " + ps.state);
+
+    // How long the app survived last time it was out of sight, and whether
+    // that's a pattern. This is the only place the answer can appear: an app
+    // that gets killed doesn't get to report anything at the time.
+    if (window.Life) {
+      lines.push(Life.describe());
+      var kr = Life.killRate();
+      if (kr) lines.push("background kills: " + kr.killed + " of last " + kr.total);
+      var ka = Keepalive.state();
+      lines.push("keepalive: " + (!ka.wanted ? "off"
+        : ka.running ? "playing" : ka.primed ? "primed" : "not primed yet") +
+        (ka.error ? " (" + ka.error + ")" : ""));
+      var hist = Life.report();
+      if (hist.length) lines.push("— sessions, newest first —");
+      for (var i = 0; i < hist.length && i < 8; i++) lines.push("  " + hist[i]);
+    }
     lines.push(versionLabel());
     elSetupDiag.textContent = lines.join("\n");
   }
@@ -3334,6 +3377,21 @@
   elSetupHost.addEventListener("input", updateSetupPreview);
 
   window.App.setup = function () { enterSetupScreen(enterListScreen); };
+
+  window.App.life = function () {
+    return {
+      previous: Life.previous(),
+      killRate: Life.killRate(),
+      sessions: Life.report(),
+      keepalive: Keepalive.state()
+    };
+  };
+  window.App.forgetLife = function () { Life.clear(); return "cleared"; };
+
+  // Start the recorder before anything else can fail: a session that dies
+  // during boot is exactly the kind we want on the record.
+  Life.start(window.KAITS_VERSION || "dev");
+  wireLifecycle();
 
   // Boot. An unconfigured app has nowhere to connect, so it asks first and
   // connects afterwards.
