@@ -30,6 +30,18 @@
       <div class="setup-label">Token</div>
       <input id="setup-token" type="text" placeholder="WAD_TOKEN">
       <div class="setup-preview" id="setup-preview"></div>
+      <!-- Preferences, toggled with Enter or Left/Right. Kept on the same
+           screen as the address because a feature phone should not make you
+           hunt through nested menus for two switches. -->
+      <div class="setup-label">Options</div>
+      <div class="setup-toggle" id="opt-smoothscroll">
+        <span class="opt-name">Scroll animation</span>
+        <span class="opt-val" id="opt-smoothscroll-val">Off</span>
+      </div>
+      <div class="setup-toggle" id="opt-keepalive">
+        <span class="opt-name">Stay alive in background</span>
+        <span class="opt-val" id="opt-keepalive-val">On</span>
+      </div>
       <div class="setup-hint">
         Your computer's address on this network, and the token you started
         wad with. Port 8080 is assumed if you don't give one.

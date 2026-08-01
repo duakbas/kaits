@@ -503,31 +503,71 @@ header .status.closed { color: var(--danger); }
   font-size: 12px;
 }
 
+/* The composer's height is PINNED, not derived from its contents.
+   Letting content decide it is how it keeps growing: the row is as tall as its
+   tallest child, an <input> carries UA padding and a line-height of "normal"
+   that differs per engine, and the paperclip is an emoji — which falls back to
+   whatever font has it and can carry a much taller line box than the 13px it
+   is nominally set in. Any one of those inflates the row and eats the message
+   list above it. A fixed height with overflow hidden means none of them can. */
 #composer-row {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  height: 26px;                  /* same as the header, so the two bookend */
+  box-sizing: border-box;
   border-top: 1px solid var(--line);
   background: var(--panel);
+  overflow: hidden;
 }
 #attach-btn {
   flex: 0 0 auto;
-  padding: 6px 4px 6px 6px;
-  font-size: 14px;
+  width: 22px;
+  /* line-height fills the row instead of adding to it, so the emoji's own
+     metrics can't push the row taller. */
+  line-height: 25px;
+  text-align: center;
+  font-size: 13px;
   opacity: 0.75;
 }
 #composer {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
   border: none;
+  margin: 0;
   background: var(--panel);
   color: var(--text);
   font-size: 13px;
-  padding: 6px 8px;
+  line-height: 1;
+  padding: 0 8px;
   outline: none;
   -moz-user-select: text;
   user-select: text;
 }
+
+/* The keepalive loop must never occupy layout. Firefox hides a controls-less
+   <audio> by default, but this app has been bitten before by assuming what
+   Gecko 48 does, and a stray 150px media box above the softkeys would look
+   exactly like the composer being too tall. */
+#keepalive-audio { display: none !important; }
+
+/* settings toggles */
+.setup-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 0;
+  padding: 5px 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.setup-toggle.focused { background: var(--accent-dim); border-color: var(--accent); }
+.setup-toggle .opt-val { font-weight: 700; color: var(--accent); }
+.setup-toggle.focused .opt-val { color: #eafff2; }
 
 /* ---- incoming call ---- */
 #call {

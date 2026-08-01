@@ -170,7 +170,7 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | **Send** an arbitrary document | ⚠️ only if some app on the phone claims the type |
 | **Record** a voice note | ❌ playback only — needs a `privileged` build, see below |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
-| Settings screen | ✅ daemon address + token, entered on the phone |
+| Settings screen | ✅ daemon address, token, and preference switches |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
 | **Send** a location | ✅ 📍 in the attach menu |
@@ -241,10 +241,15 @@ survives backgrounding. It plays on the `normal` audio channel rather than
 is using that channel, so a keepalive on it would pause your music every time
 you left the app, which is a worse bug than the one being fixed.
 
-It costs battery and it is a demotion of risk, not a guarantee. `KEEPALIVE` in
-`js/config.js` turns it off, and since the app now measures its own survival,
-that question is settled by running it both ways for a day rather than by
-argument.
+It costs battery and it is a demotion of risk, not a guarantee — so it is a
+switch on the Settings screen ("Stay alive in background"), next to the report
+of how long the app actually survived. Turn it off, use the phone for a day,
+compare the kill rate. That is a measurement, not an argument.
+
+The other switch there is **Scroll animation**, off by default. The eased glide
+was added because an instant jump makes it hard to tell whether the highlight
+moved or the whole list did; whether that trade is worth it is taste, and taste
+belongs in a setting rather than in a commit.
 
 **The bigger lever was memory.** Within the same priority class the largest
 process is the one killed, and this app was enormous for what it is: bubbles
