@@ -380,9 +380,35 @@ priority is beside the point. Reopening afterwards is the correct response, not
 a workaround.
 
 But that is not the case this app lives in. It lives in a phone sitting idle
-waiting for a message, and there the keepalive does help — measured on the
-device, both ways. So it is on by default and the switch is on the Settings
-screen, next to the kill rate, for anyone who would rather have the battery.
+waiting for a message, and there it appears to help:
+
+| build | tone | idle survival |
+|---|---|---|
+| ≤ 1.2.3 | on (audible — it was reported clicking) | hours; a message delivered 2 h in |
+| 1.3.2 | off | 4 m 45 s |
+
+Suggestive rather than conclusive: those are different sessions on different
+days with different things running, not a controlled pair. What makes it worth
+acting on is that it agrees with what the phone's owner observed directly, and
+the cost of being wrong is some battery.
+
+So it is on by default, with the switch on the Settings screen next to the kill
+rate for anyone who would rather have the battery.
+
+**Two unrelated things are called "keepalive" in these logs.** This one is
+ours — the tone, `js/keepalive.js`, shown as "Stay alive in background". The
+`[wa WARN] Keepalive timed out` lines in the daemon's output come from
+whatsmeow and are about the daemon's own connection to WhatsApp's servers
+timing out its ping. They have nothing to do with the phone, the app, or this
+setting.
+
+There is no `CONFIG` master switch any more, and its removal is the important
+part. It used to be ANDed into the phone's preference, so a build shipping
+`KEEPALIVE: false` left the Settings row reading "On" from the stored
+preference while the keepalive was silently disabled — the same screen showed
+"On" in the toggle and `keepalive: off` in the diagnostics two lines below. The
+phone's switch is now the only control, and a test asserts it, because a
+setting that lies about its own state is worse than no setting at all.
 
 The three answers in order were "on, obviously", then "off, nothing was ever
 observed being killed", then "off, it loses to YouTube", and now this. Only the

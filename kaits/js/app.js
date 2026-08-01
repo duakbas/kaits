@@ -2773,9 +2773,13 @@
   var hiddenMsgCount = 0;
 
   function wireLifecycle() {
-    // config.js is the default; the phone's own setting is the answer, and
-    // applyOptions() has already applied it by the time this runs.
-    Keepalive.setEnabled(Settings.pref("keepalive") && CONFIG.KEEPALIVE !== false);
+    // The phone's setting is the ONLY control. There used to be a CONFIG master
+    // switch ANDed in here, and it was a trap: with the build saying false, the
+    // Settings row still read "On" from the stored preference while the
+    // keepalive was silently disabled — the same screen showed "On" in the
+    // toggle and "off" in the diagnostics two lines below. A setting that lies
+    // about its own state is worse than no setting.
+    Keepalive.setEnabled(Settings.pref("keepalive"));
 
     // The audio element has to be unlocked by a user gesture, and going to the
     // background is not one. Any keypress will do, and there is always one
