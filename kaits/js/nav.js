@@ -56,9 +56,9 @@
   // always jumps the row to the top of the view, which makes a list lurch on
   // every keypress. Comparing rectangles gives the behaviour we wanted with an
   // API this engine actually has.
-  function ensureVisible(el) {
+  function ensureVisible(el, container) {
     if (!el || !el.getBoundingClientRect) return;
-    var box = screen.list;
+    var box = container || screen.list;
     try {
       if (!box || !box.getBoundingClientRect) { el.scrollIntoView(); return; }
       var r = el.getBoundingClientRect();
@@ -203,6 +203,9 @@
   window.Nav = {
     // Set by the app to display the key log; "!" marks a key nothing handled.
     onKeyLog: null,
+    // Scroll an element into view within its container, the way
+    // scrollIntoView({block:"nearest"}) would if Gecko 48 accepted it.
+    ensureVisible: ensureVisible,
     recentKeys: function () { return recent.join(" "); },
     setScreen: function (handlers) {
       screen = {

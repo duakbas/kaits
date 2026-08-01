@@ -35,6 +35,9 @@ html, body {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* Starting point only — app.js sets this to window.innerHeight, because the
+     usable area is shorter than the screen once KaiOS's status bar is on it,
+     and 100% here runs the message list off the bottom. */
   height: 100%;
 }
 
