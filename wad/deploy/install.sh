@@ -53,11 +53,19 @@ case "$HOST" in *.*) ;; *) die "'$HOST' is not a hostname — TLS needs a real o
 case "$PORT" in ''|*[!0-9]*) die "--port must be a number";; esac
 [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "--port out of range"
 
-# A certificate can only be obtained automatically over port 80 or 443, and if
-# you are choosing another port it is because those are taken. So on a custom
-# port the certificate has to come from somewhere: either one that already
-# exists on the box, or not at all.
-if [ "$TLS" -eq 1 ] && [ "$PORT" -ne 443 ] && [ -z "$CERT" ]; then
+# Who owns port 80 decides whether a certificate can be obtained for a service
+# that is on neither 80 nor 443: the ACME challenge is answered there. If the
+# machine already runs Caddy and it holds :80, then adding a site on :8080 to
+# THAT Caddy needs no certificate from you — it can get one itself, and the
+# hostname is very likely one it already has a certificate for.
+CADDY_ON_80=no
+if command -v ss >/dev/null 2>&1; then
+  ss -ltnp 2>/dev/null | awk '$4 ~ /:80$/' | grep -q caddy && CADDY_ON_80=yes
+fi
+
+# Otherwise the certificate has to come from somewhere: one that already exists
+# on the box, or not at all.
+if [ "$TLS" -eq 1 ] && [ "$PORT" -ne 443 ] && [ -z "$CERT" ] && [ "$CADDY_ON_80" != yes ]; then
   die "--port $PORT needs a certificate.
 
     Nothing can get one for you here: the ACME challenge is answered on 80 or
@@ -219,21 +227,27 @@ else
     apt-get update -qq && apt-get install -y -qq caddy >/dev/null
   fi
 
-  # The site block. On 443 Caddy gets its own certificate; on any other port it
-  # cannot, so one is supplied. `auto_https disable_redirects` matters more than
-  # it looks: without it Caddy also binds :80 to redirect to HTTPS, which on a
-  # box where :80 belongs to another server is either a failure to start or a
-  # hijacked website.
+  # The site block.
+  #
+  # The global `auto_https disable_redirects` is there for one reason: a Caddy
+  # WE start would otherwise also bind :80 to redirect to HTTPS, and on a box
+  # where :80 belongs to another server that is either a failure to start or a
+  # hijacked website. It must NOT be emitted when Caddy was already running,
+  # because there can only be one global block and disabling redirects would
+  # change the behaviour of the site already being served — which is the exact
+  # thing this is trying not to do.
   SITE="$(mktemp)"
   if [ "$PORT" -eq 443 ] && [ -z "$CERT" ]; then
     sed "s/wad\.example\.com/$HOST/" "$BUNDLE/Caddyfile" > "$SITE"
   else
     {
       echo "# managed by wad install.sh"
-      echo "{"
-      echo "	auto_https disable_redirects"
-      echo "}"
-      echo
+      if [ "$CADDY_WAS_UP" != yes ]; then
+        echo "{"
+        echo "	auto_https disable_redirects"
+        echo "}"
+        echo
+      fi
       echo "$HOST:$PORT {"
       [ -n "$CERT" ] && echo "	tls $CERT $KEYF"
       sed -n '/^wad\.example\.com {/,/^}/p' "$BUNDLE/Caddyfile" | sed '1d;$d'
