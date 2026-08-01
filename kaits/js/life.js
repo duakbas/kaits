@@ -111,7 +111,6 @@ window.Life = (function () {
   function stateLine(st) {
     if (!st) return "";
     var bits = [];
-    if (st.ka) bits.push("keepalive " + st.ka);
     if (st.sock) bits.push("socket " + st.sock);
     if (typeof st.msgs === "number") bits.push(st.msgs + " msgs while hidden");
     return bits.length ? "\n  at the time: " + bits.join(", ") : "";
@@ -128,9 +127,9 @@ window.Life = (function () {
     cur.last = now();
     cur.beats = (cur.beats || 0) + 1;
     // Stamp the app's state into every heartbeat. "It died after 47 minutes" is
-    // a fact; "it died after 47 minutes with the keepalive playing and the
-    // socket open" is a diagnosis. A killed process writes nothing on the way
-    // out, so whatever we want to know afterwards has to already be on disk.
+    // a fact; "it died after 47 minutes with the socket still open" is a
+    // diagnosis. Whatever we want to know afterwards has to already be on disk
+    // by the time the process stops.
     if (watcher) {
       try {
         var st = watcher();

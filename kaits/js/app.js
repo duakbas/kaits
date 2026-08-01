@@ -2760,40 +2760,6 @@
     return false;
   }
 
-  // ---------- staying alive in the background ----------
-  //
-  // With push measured dead (see pushtest/), the app holding its own socket is
-  // the only thing that delivers a message to this phone. So the app being
-  // reaped a few seconds after you leave it isn't a nice-to-have — it's the
-  // whole notification design failing. Two responses, in this order: record
-  // what actually happens, and make the app a less attractive thing to kill.
-  // Messages that arrived while the app was out of sight. If this is 0 at the
-  // time of death, the app may have been alive and simply not receiving —
-  // which is a socket problem wearing a kill's clothing.
-  var hiddenMsgCount = 0;
-
-  function wireLifecycle() {
-    // config.js is the default; the phone's own setting is the answer, and
-    // applyOptions() has already applied it by the time this runs.
-    Keepalive.setEnabled(Settings.pref("keepalive") && CONFIG.KEEPALIVE !== false);
-
-    // The audio element has to be unlocked by a user gesture, and going to the
-    // background is not one. Any keypress will do, and there is always one
-    // before the app can be backgrounded. The listener stays installed rather
-    // than removing itself after the first press: a blocked attempt doesn't
-    // throw, it just leaves the element paused, and giving up after one try
-    // would mean a single early failure costs the whole session. prime()
-    // returns immediately once it has actually worked.
-    document.addEventListener("keydown", function () { Keepalive.prime(); }, false);
-
-    function onVis() {
-      if (appHidden()) Keepalive.start();
-      else Keepalive.stop();
-    }
-    document.addEventListener("visibilitychange", onVis, false);
-    document.addEventListener("mozvisibilitychange", onVis, false);
-  }
-
   // osNotify raises a real system notification through the service worker.
   //
   // Tagged per chat and renotify:true, matching sw.js — a second message in the
@@ -3422,11 +3388,6 @@
       key: "smoothscroll",
       label: "Scroll animation",
       apply: function (on) { Nav.setSmoothScroll(on); }
-    },
-    {
-      key: "keepalive",
-      label: "Stay alive in background",
-      apply: function (on) { Keepalive.setEnabled(on); }
     }
   ];
 
@@ -3486,17 +3447,6 @@
       lines.push(Life.describe());
       var kr = Life.killRate();
       if (kr) lines.push("background kills: " + kr.killed + " of last " + kr.total);
-      var ka = Keepalive.state();
-      lines.push("keepalive: " + (!ka.wanted ? "off"
-        : ka.interrupted ? "interrupted by the system"
-        : ka.running ? "playing" : ka.primed ? "primed" : "not primed yet") +
-        (ka.error ? " (" + ka.error + ")" : ""));
-      // The channel is the knob that decides whether this works and whether it
-      // steps on other audio, so the value the engine ACCEPTED is shown, not
-      // the one that was asked for.
-      lines.push("  " + ka.engine + ", channel: " + (ka.channel || "?") +
-        (ka.channel !== ka.channelAsked ? " (asked for " + ka.channelAsked + ")" : "") +
-        (ka.interruptions ? ", interrupted " + ka.interruptions + "x" : ""));
       var hist = Life.report();
       if (hist.length) lines.push("— sessions, newest first —");
       for (var i = 0; i < hist.length && i < 8; i++) lines.push("  " + hist[i]);
@@ -3546,8 +3496,7 @@
     return {
       previous: Life.previous(),
       killRate: Life.killRate(),
-      sessions: Life.report(),
-      keepalive: Keepalive.state()
+      sessions: Life.report()
     };
   };
   window.App.forgetLife = function () { Life.clear(); return "cleared"; };
@@ -3559,19 +3508,13 @@
   // socket quietly died delivers no messages either, and from the outside the
   // two are indistinguishable — you just stop getting notifications.
   Life.watch(function () {
-    var ka = Keepalive.state();
     return {
-      ka: !ka.wanted ? "off"
-        : ka.interrupted ? "interrupted"
-        : ka.running ? "playing"
-        : ka.primed ? "primed" : "unprimed",
       sock: W.isOpen() ? "open" : "closed",
       msgs: hiddenMsgCount
     };
   });
   Life.start(window.KAITS_VERSION || "dev");
   applyOptions();
-  wireLifecycle();
 
   // Boot. An unconfigured app has nowhere to connect, so it asks first and
   // connects afterwards.
