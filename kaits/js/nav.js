@@ -63,11 +63,49 @@
       if (!box || !box.getBoundingClientRect) { el.scrollIntoView(); return; }
       var r = el.getBoundingClientRect();
       var c = box.getBoundingClientRect();
-      if (r.top < c.top) box.scrollTop -= (c.top - r.top);
-      else if (r.bottom > c.bottom) box.scrollTop += (r.bottom - c.bottom);
+      var delta = 0;
+      if (r.top < c.top) delta = -(c.top - r.top);
+      else if (r.bottom > c.bottom) delta = r.bottom - c.bottom;
+      if (delta) glide(box, box.scrollTop + delta);
     } catch (e) {
       // Never let a scroll failure break focus again.
     }
+  }
+
+  // Ease the scroll rather than jumping. An instant jump on a list makes it
+  // hard to tell whether the highlight moved or the whole list did; a short
+  // glide reads as movement. 200ms is what other KaiOS clients use on this
+  // same hardware, so it's known to be affordable here.
+  var SCROLL_MS = 200;
+  var glideFrom = 0, glideTo = 0, glideStart = 0, glideBox = null, gliding = false;
+
+  function glide(box, target) {
+    if (!window.requestAnimationFrame || !Date.now) {
+      box.scrollTop = target;      // no animation available; just be correct
+      return;
+    }
+    glideBox = box;
+    glideFrom = box.scrollTop;
+    glideTo = target;
+    glideStart = Date.now();
+    if (gliding) return;           // a run is already in flight; it'll pick up
+    gliding = true;
+    requestAnimationFrame(glideStep);
+  }
+
+  function glideStep() {
+    if (!glideBox) { gliding = false; return; }
+    var t = (Date.now() - glideStart) / SCROLL_MS;
+    if (t >= 1) {
+      glideBox.scrollTop = glideTo;
+      gliding = false;
+      glideBox = null;
+      return;
+    }
+    // Ease out: fast at the start, settling at the end.
+    var k = 1 - (1 - t) * (1 - t);
+    glideBox.scrollTop = glideFrom + (glideTo - glideFrom) * k;
+    requestAnimationFrame(glideStep);
   }
 
   function moveFocus(delta) {
