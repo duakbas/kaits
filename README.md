@@ -265,12 +265,34 @@ and working and silent and pointless look identical from the outside.
 
 So the two knobs are set in opposite directions on purpose: the file is 1% of
 full scale (−40 dBFS decoded) so nothing analysing samples mistakes it for
-silence, and `KEEPALIVE_VOLUME` is 0.01 on top, putting −80 dBFS at the
-speaker. That is far under the noise floor of any phone, and the tone is 110 Hz
-— below what a feature-phone speaker can physically reproduce, so even a bug
-that set the volume to full would produce close to nothing audible. The volume
-is clamped above zero in code, because an edit to `config.js` that set it to 0
-would otherwise disable the mechanism while appearing to leave it on.
+silence, and `KEEPALIVE_VOLUME` is 0.01 on top, putting −80 dBFS at the output.
+The volume is clamped above zero in code, because an edit to `config.js` that
+set it to 0 would otherwise disable the mechanism while appearing to leave it
+on.
+
+**The frequency is chosen for headphones, which are the demanding case.** "A
+phone speaker can't reproduce low frequencies" is true and irrelevant the
+moment anything is plugged in — headphones reproduce 110 Hz perfectly well.
+What protects the headphone case is the ear, not the driver. At −80 dBFS the
+tone lands around 20 dB SPL on headphones at full volume, and the threshold of
+hearing depends steeply on frequency:
+
+| tone | threshold | margin |
+|---|---|---|
+| 110 Hz | ~27 dB SPL | **+7 dB** — thin |
+| 63 Hz | ~38 dB SPL | +18 dB |
+| 20 Hz | ~78 dB SPL | **+58 dB** |
+
+So the loop is 20 Hz, at the bottom edge of hearing where the ear is some 50 dB
+less sensitive than it is a couple of hundred hertz up. An exact number of
+cycles fits a one-second loop, so the seam stays continuous.
+
+0 Hz would be inaudible too, but it is a DC offset rather than a sound: the
+output path blocks DC, so it may reach the hardware as literally nothing while
+*also* being the kind of constant signal an audibility check dismisses — the
+one failure that matters, silent and uncounted. It displaces the speaker cone
+while it runs and pops when it stops. A tone below hearing gets the same
+silence without either gamble.
 
 It costs battery and it is a demotion of risk, not a guarantee — so it is a
 switch on the Settings screen ("Stay alive in background"), next to the report
