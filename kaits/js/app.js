@@ -664,7 +664,7 @@
     });
     // Centre advertises the Enter action here too; "•••" does the same thing,
     // so the options key means the same in both thread modes.
-    Nav.setSoftkeys("Cancel", selectedIsViewable() ? "VIEW" : "ACTIONS", "•••");
+    Nav.setSoftkeys("Cancel", centreLabel(), "•••");
   }
 
   // Enter does the obvious thing for what's selected: a picture opens
@@ -672,6 +672,16 @@
   // existed but was three keypresses deep behind Actions -> View photo, which
   // is a lot of ceremony for "look at this properly". Actions is still one
   // press away on the right softkey.
+  // The centre key does three different things depending on what is selected,
+  // so it has to say which. A softkey that lies is worse than a blank one.
+  function centreLabel() {
+    if (selectedIsViewable()) return "VIEW";
+    var msgs = threads[currentJID] || [];
+    var m = msgs[selectIdx];
+    if (m && !m.deleted && findLinks(m.text).length) return "OPEN";
+    return "ACTIONS";
+  }
+
   function selectedIsViewable() {
     var msgs = threads[currentJID] || [];
     var m = msgs[selectIdx];
@@ -685,6 +695,14 @@
     if (m && !m.deleted && m.media &&
         (m.kind === "image" || m.kind === "sticker")) {
       openViewer(m);
+      return;
+    }
+    // Enter on a message that is a link opens it. There is no pointer here, so
+    // this is what "clicking a link" has to mean; it matches Enter on a photo
+    // opening the photo. The action menu is still one press away on the right
+    // softkey, which is where replying to a link lives.
+    if (m && !m.deleted && findLinks(m.text).length) {
+      openLinksOf(m);
       return;
     }
     openActionMenu();
@@ -706,7 +724,7 @@
     setSelect(next);
     paintSelection();
     // The centre key means something different on a photo, so say which.
-    Nav.setSoftkeys("Cancel", selectedIsViewable() ? "VIEW" : "ACTIONS", "•••");
+    Nav.setSoftkeys("Cancel", centreLabel(), "•••");
   }
 
   // paintSelection moves the highlight by editing two class lists.
@@ -842,6 +860,13 @@
     if ((m.kind === "image" || m.kind === "sticker") && m.media) {
       items.push({ action: "view", label: "View photo" });
     }
+    var msgLinks = findLinks(m.text);
+    if (msgLinks.length === 1) {
+      items.push({ action: "openlink", label: "🔗  Open " + shortUrl(msgLinks[0]) });
+    } else if (msgLinks.length > 1) {
+      items.push({ action: "openlink", label: "🔗  Open link (" + msgLinks.length + ")" });
+    }
+    if (msgLinks.length) items.push({ action: "copylink", label: "Copy link" });
     items.push({ action: "reply", label: "Reply" });
     var mine = myReactionTo(m);
     items.push({ action: "react", label: mine ? "Change reaction " + mine : "React" });
@@ -964,6 +989,24 @@
       menuOpen = false;
       elMenu.hidden = true;
       openForwardPicker(m);
+    } else if (action === "openlink") {
+      menuOpen = false;
+      elMenu.hidden = true;
+      // openLinksOf may open a chooser of its own, so the selection is put back
+      // BEFORE it runs — restoring it afterwards would tear down that chooser
+      // the way the attach menu used to.
+      enterSelectMode();
+      selectIdx = keepSelection(m);
+      setSelect(selectIdx);
+      openLinksOf(m);
+    } else if (action === "copylink") {
+      // Same reasoning as "copy text" below: no clipboard on Gecko 48, so it
+      // goes in the composer where it can be sent, edited or read in full.
+      var ls = findLinks(m.text);
+      elInput.value = ls.length === 1 ? ls[0] : ls.join(" ");
+      menuOpen = false;
+      elMenu.hidden = true;
+      enterComposeMode();
     } else if (action === "copy") {
       // Gecko 48 has no reliable clipboard API; just drop the text into the
       // composer so the user can resend/edit it. Practical on a feature phone.
@@ -1474,7 +1517,7 @@
       if (m.text) {
         var cap = document.createElement("div");
         cap.className = "caption";
-        cap.textContent = m.text;
+        appendLinked(cap, m.text);
         b.appendChild(cap);
       }
     } else if (m.kind === "audio") {
@@ -1520,7 +1563,7 @@
       if (m.text) {
         var vcap = document.createElement("div");
         vcap.className = "caption";
-        vcap.textContent = m.text;
+        appendLinked(vcap, m.text);
         b.appendChild(vcap);
       }
     } else if (m.kind === "sticker") {
@@ -1733,7 +1776,7 @@
       b.appendChild(del);
     } else if (m.kind === "text") {
       var body = document.createElement("span");
-      body.textContent = m.text;
+      appendLinked(body, m.text);
       b.appendChild(body);
     } else {
       renderMediaBubble(b, m);
@@ -2203,6 +2246,106 @@
     window.open(url, "_blank");
   }
 
+  // ---------- links ----------
+  //
+  // There is no pointer on this phone, so a link cannot be "clicked". What it
+  // can be is FOUND: the text shows which parts are links, and the action menu
+  // on that message offers to open them. One link opens directly; several give
+  // a chooser, because guessing which one someone meant is worse than asking.
+
+  // Deliberately conservative. Anything cleverer starts turning "e.g. 3.5" and
+  // "file.txt" into links, and a false positive here is a menu entry that
+  // opens a browser at nothing.
+  var URL_RE = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+)/gi;
+
+  // Trailing punctuation belongs to the sentence, not the address. A URL
+  // ending in a bracket is real when the bracket is balanced — Wikipedia does
+  // it constantly — so those are only trimmed when nothing opened them.
+  function trimUrl(u) {
+    var trimmed = u.replace(/[.,;:!?'"]+$/, "");
+    while (/[)\]]$/.test(trimmed)) {
+      var close = trimmed.slice(-1);
+      var open = close === ")" ? "(" : "[";
+      var opens = trimmed.split(open).length - 1;
+      var closes = trimmed.split(close).length - 1;
+      if (opens >= closes) break;          // balanced: the bracket is part of it
+      trimmed = trimmed.slice(0, -1);
+    }
+    return trimmed;
+  }
+
+  function findLinks(text) {
+    if (!text) return [];
+    var out = [];
+    URL_RE.lastIndex = 0;
+    var m;
+    while ((m = URL_RE.exec(text)) !== null) {
+      var u = trimUrl(m[0]);
+      if (u && out.indexOf(u) < 0) out.push(u);
+    }
+    return out;
+  }
+
+  // Build the text as nodes rather than markup. innerHTML with a message body
+  // would mean anyone who can message you can inject into this app, and a
+  // packaged app is not a safe place to be casual about that.
+  function appendLinked(el, text) {
+    var t = String(text == null ? "" : text);
+    URL_RE.lastIndex = 0;
+    var at = 0, m;
+    while ((m = URL_RE.exec(t)) !== null) {
+      if (m.index > at) el.appendChild(document.createTextNode(t.slice(at, m.index)));
+      var raw = m[0];
+      var url = trimUrl(raw);
+      var a = document.createElement("span");
+      a.className = "link";
+      a.textContent = url;
+      el.appendChild(a);
+      // Whatever was trimmed off is still part of the sentence.
+      if (raw.length > url.length) {
+        el.appendChild(document.createTextNode(raw.slice(url.length)));
+      }
+      at = m.index + raw.length;
+    }
+    if (at < t.length) el.appendChild(document.createTextNode(t.slice(at)));
+    if (!el.firstChild) el.appendChild(document.createTextNode(t));
+  }
+
+  // A bare "www.example.com" is not a URL a browser will accept.
+  function absoluteUrl(u) {
+    return /^https?:\/\//i.test(u) ? u : "http://" + u;
+  }
+
+  function openUrl(u) {
+    var url = absoluteUrl(u);
+    if (window.MozActivity) {
+      try {
+        var act = new window.MozActivity({ name: "view", data: { type: "url", url: url } });
+        act.onerror = function () { toast("Nothing on this phone opens links"); };
+        return;
+      } catch (e) { /* fall through to the desktop path */ }
+    }
+    try { window.open(url, "_blank"); }
+    catch (e) { toast("Couldn't open that link"); }
+  }
+
+  function openLinksOf(m) {
+    var links = findLinks(m && m.text);
+    if (!links.length) return;
+    if (links.length === 1) { openUrl(links[0]); return; }
+    chooseFromList("Open which link?", links.map(shortUrl), function (idx) {
+      if (idx >= 0) openUrl(links[idx]);
+    });
+  }
+
+  // A 240px screen cannot show a long URL, and the middle is the least useful
+  // part of one — the host and the tail are what identify it.
+  function shortUrl(u) {
+    var s = u.replace(/^https?:\/\//i, "");
+    if (s.length <= 34) return s;
+    return s.slice(0, 20) + "…" + s.slice(-12);
+  }
+
   // ---------- sending a location ----------
   //
   // geolocation is granted to a plain web-type app, so unlike recording audio
@@ -2433,18 +2576,26 @@
     image: [["image/jpeg", "image/png"], ["image/*"], ["image/jpeg"]],
     video: [["video/*"], ["video/mp4", "video/3gpp"]],
     audio: [["audio/*"], ["audio/mpeg", "audio/amr", "audio/ogg"]],
-    // Documents genuinely have no owner on most builds. Try a Files app if one
-    // is installed, then the concrete types a mail or reader app might claim —
-    // and then stop.
+    // Documents are the hard case, and "no app can do this" is a strong claim
+    // to make from a couple of failed probes — so probe properly before making
+    // it. Wildcards in a REQUEST do not match a handler's filter on this
+    // platform (that is why "*/*" fails even though Gallery handles image/*),
+    // so each shape has to be tried on its own.
     //
-    // This used to fall through to image/video/audio on the theory that a file
-    // a phone can reach is usually a photo anyway. On a handset with no Files
-    // app that made "File" open the camera roll, which is both a lie about
-    // what was picked and redundant: Photo, Video and Audio are their own
-    // entries three rows up. Saying "this phone cannot do that" is more useful
-    // than quietly doing something else.
-    doc: [["*/*"], ["application/pdf", "text/plain", "application/msword",
-                    "application/zip", "text/csv"]]
+    // The last entry is null, meaning "ask with no type filter at all". A
+    // handler whose filter cannot fail should match it, which ought to produce
+    // the system's own chooser of every app that can pick something. It is the
+    // most likely thing to work and the least likely thing to be guessed, so
+    // it is worth trying before concluding anything.
+    //
+    // What this deliberately does NOT do is fall through to image/video/audio.
+    // That made "File" open the camera roll, which is a lie about what was
+    // picked and redundant besides — Photo, Video and Audio are their own
+    // entries three rows up.
+    doc: [["*/*"], ["application/*"], ["text/*"],
+          ["application/pdf", "text/plain", "application/msword",
+           "application/zip", "text/csv"],
+          null]
   };
 
   function pickAndSend(kind) {
@@ -2453,21 +2604,30 @@
       tryPick(PICK_TYPES[kind] || PICK_TYPES.doc, 0, kind);
       return;
     }
-    desktopFilePick(kind);
+    filePick(kind);
   }
 
   // Walk the candidate types until one opens. Every failure mode here is
   // asynchronous except the constructor throwing, so both paths advance.
   function tryPick(candidates, i, kind) {
     if (i >= candidates.length) {
-      toast(kind === "doc"
-        ? "No app on this phone can pick a file"
-        : "No app on this phone can pick that");
+      // Last resort: the plain file input. This was previously reachable only
+      // in a desktop browser, because the presence of MozActivity was treated
+      // as proof that the better path existed — so the ordinary "upload a
+      // file" control, which is exactly what this needs, was never tried on
+      // the phone at all. Gecko implements it by asking the system for a file,
+      // which is a different route to the same question and may well be
+      // answered when a filtered activity is not.
+      filePick(kind);
       return;
     }
     var act, opened = Date.now();
+    // A null candidate means "no type filter" — see PICK_TYPES.doc.
+    var spec = candidates[i] === null
+      ? { name: "pick" }
+      : { name: "pick", data: { type: candidates[i] } };
     try {
-      act = new window.MozActivity({ name: "pick", data: { type: candidates[i] } });
+      act = new window.MozActivity(spec);
     } catch (e) {
       tryPick(candidates, i + 1, kind);
       return;
@@ -2502,20 +2662,46 @@
     };
   }
 
-  // Desktop fallback: a throwaway file input, so attachments can be exercised
-  // in a browser during development.
-  function desktopFilePick(kind) {
-    var input = document.createElement("input");
-    input.type = "file";
-    input.accept = kind === "image" ? "image/*" : "*/*";
-    input.style.display = "none";
-    document.body.appendChild(input);
+  // A throwaway file input. This is the desktop path during development AND
+  // the last resort on the phone — the ordinary "upload a file" control, which
+  // is the most familiar way to answer this question and the one route that
+  // does not depend on some app having registered a matching MIME filter.
+  function filePick(kind) {
+    var input;
+    try {
+      input = document.createElement("input");
+      input.type = "file";
+      // No accept for documents: narrowing it is what got us here.
+      if (kind === "image") input.accept = "image/*";
+      else if (kind === "video") input.accept = "video/*";
+      else if (kind === "audio") input.accept = "audio/*";
+      input.style.display = "none";
+      document.body.appendChild(input);
+    } catch (e) {
+      toast("Nothing here picks files — try Photo/Video/Audio");
+      return;
+    }
     input.onchange = function () {
       var f = input.files && input.files[0];
-      if (f) blobToBase64AndSend(f, kind, f.name || "");
-      document.body.removeChild(input);
+      if (f) {
+        // As with the activity path, what came back decides how it is sent.
+        var mime = f.type || "";
+        var real = kind;
+        if (kind === "doc") {
+          if (mime.indexOf("image/") === 0) real = "image";
+          else if (mime.indexOf("video/") === 0) real = "video";
+          else if (mime.indexOf("audio/") === 0) real = "audio";
+        }
+        blobToBase64AndSend(f, real, f.name || "");
+      }
+      if (input.parentNode) input.parentNode.removeChild(input);
     };
-    input.click();
+    try {
+      input.click();
+    } catch (e) {
+      if (input.parentNode) input.parentNode.removeChild(input);
+      toast("Nothing here picks files — try Photo/Video/Audio");
+    }
   }
 
   function blobToBase64AndSend(blob, kind, filename) {
