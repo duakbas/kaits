@@ -1612,11 +1612,39 @@
     card.className = "loc-card";
 
     if (m.media) {
+      // WhatsApp shipped a rendered preview inside the message: use it.
       var img = document.createElement("img");
       img.className = "loc-map";
       img.src = mediaBase() + m.media;
       img.alt = "map";
       card.appendChild(img);
+    } else if (m.lat || m.lon) {
+      // No shipped preview — ours never have one, and neither do locations from
+      // clients that omit it. Ask the daemon for a map tile instead, with the
+      // pin placed where the point actually falls inside it rather than in the
+      // middle. A tile that fails to load falls back to the plain marker, so
+      // this can never make a location worse than it was.
+      var wrap = document.createElement("div");
+      wrap.className = "loc-map tile";
+      var tile = document.createElement("img");
+      tile.className = "loc-tile-img";
+      tile.alt = "map";
+      tile.src = mediaBase() + "/maptile?lat=" + encodeURIComponent(m.lat) +
+                 "&lon=" + encodeURIComponent(m.lon);
+      var pin = document.createElement("span");
+      pin.className = "loc-pin";
+      pin.textContent = "📍";
+      var at = tileFraction(m.lat, m.lon);
+      pin.style.left = (at.fx * 100) + "%";
+      pin.style.top = (at.fy * 100) + "%";
+      tile.onerror = function () {
+        wrap.className = "loc-map placeholder";
+        wrap.innerHTML = "";
+        wrap.textContent = "📍";
+      };
+      wrap.appendChild(tile);
+      wrap.appendChild(pin);
+      card.appendChild(wrap);
     } else {
       var ph = document.createElement("div");
       ph.className = "loc-map placeholder";
@@ -1656,7 +1684,45 @@
   // "open with" chooser, which is what we want rather than hardcoding a
   // provider. Desktop browsers don't handle geo:, so there we fall back to
   // OpenStreetMap in a new tab.
+  // Where the point sits inside its own map tile, 0..1 on each axis. The same
+  // slippy-map formula the daemon uses to choose the tile — if the two ever
+  // disagree the pin lands somewhere that is not the place, which is worse
+  // than no pin.
+  var TILE_ZOOM = 15;
+  function tileFraction(lat, lon) {
+    var n = Math.pow(2, TILE_ZOOM);
+    var rad = lat * Math.PI / 180;
+    var x = (lon + 180) / 360 * n;
+    var y = (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n;
+    return { fx: x - Math.floor(x), fy: y - Math.floor(y) };
+  }
+
+  // Opening a location: ask which map, rather than guessing.
+  //
+  // A geo: URI lets the phone choose, which is right when something has
+  // registered for it and useless when nothing has — and on this handset
+  // nothing does. So the phone's own choice is offered first and the web maps
+  // are there as the answer that always works.
   function openLocation(m) {
+    var lat = m.lat, lon = m.lon;
+    var label = m.locname || m.locaddress || "Location";
+    var options = [
+      { label: "Phone's map app",
+        url: "geo:" + lat + "," + lon + "?q=" + encodeURIComponent(label) },
+      { label: "Google Maps",
+        url: "https://www.google.com/maps/search/?api=1&query=" + lat + "," + lon },
+      { label: "OpenStreetMap",
+        url: "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=16/" + lat + "/" + lon }
+    ];
+    chooseFromList("Open location with…",
+      options.map(function (o) { return o.label; }),
+      function (idx) {
+        if (idx < 0) return;
+        openUrl(options[idx].url);
+      });
+  }
+
+  function openLocationLegacy(m) {
     if (!m || (!m.lat && !m.lon)) { toast("No coordinates on this message"); return; }
     var label = m.locname || m.locaddress || "Location";
     var geo = "geo:" + m.lat + "," + m.lon + "?q=" +
