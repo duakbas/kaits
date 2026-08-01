@@ -285,6 +285,17 @@ header .status.closed { color: var(--danger); }
   color: var(--muted);
 }
 #reply-bar[hidden] { display: none; }
+
+/* live location share indicator, above the composer */
+#live-bar {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 10px;
+  color: #06251a;
+  background: var(--accent);
+  text-align: center;
+}
+#live-bar[hidden] { display: none; }
 #reply-bar-x { color: var(--muted); padding-left: 8px; }
 
 /* action menu overlay */

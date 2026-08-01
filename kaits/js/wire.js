@@ -15,14 +15,14 @@
     ERROR: "error",
     PROFILE: "profile", CHATUPDATE: "chatupdate",
     REACTION: "reaction", STATUS: "status", TYPING: "typing",
-    SEARCHRESULT: "searchresult", EDITED: "edited",
+    SEARCHRESULT: "searchresult", EDITED: "edited", LIVELOCSTATE: "livelocstate",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
     SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
-    PUSHSUB: "pushsub", EDIT: "edit",
+    PUSHSUB: "pushsub", EDIT: "edit", LIVELOC: "liveloc",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };
@@ -116,6 +116,9 @@
     // meant the daemon never learned where to wake the phone, and nothing said
     // so beyond one line in a console nobody can read on the device.
     pushsub: true
+    // NOT liveloc: a position is only true when it is fresh. Queueing one
+    // through a reconnect would replay where you were, as though it were where
+    // you are. Dropping it costs one 30-second tick.
   };
   var outbox = [];
   var OUTBOX_MAX = 50;

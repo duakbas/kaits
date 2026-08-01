@@ -41,6 +41,7 @@ const (
 	TTyping       = "typing"       // both ways: {chat, sender, sendername, state} composing/paused
 	TSearchResult = "searchresult" // reply to "search": [{msgid,chat,chatname,text,ts}]
 	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
+	TLiveLocState = "livelocstate" // {chat, active, until} state of an outgoing live share
 )
 
 // ---- app -> daemon ----
@@ -65,6 +66,7 @@ const (
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
+	TLiveLoc      = "liveloc"      // {chat, action:"start"|"update"|"stop", lat, lon, acc, secs}
 )
 
 // MsgData is an inbound message pushed to the app.
@@ -121,6 +123,29 @@ type SendData struct {
 	Private bool `json:"private,omitempty"`
 	// FileName labels a document; ignored for other kinds.
 	FileName string `json:"filename,omitempty"`
+	// Location payload, set when Kind == "location". A one-shot pin; a live
+	// share goes through LiveLocData instead, because it is a session rather
+	// than a message.
+	Lat        float64 `json:"lat,omitempty"`
+	Lon        float64 `json:"lon,omitempty"`
+	Accuracy   uint32  `json:"acc,omitempty"`
+	LocName    string  `json:"locname,omitempty"`
+	LocAddress string  `json:"locaddress,omitempty"`
+}
+
+// LiveLocData drives an outgoing live location share.
+//
+// The daemon owns the session rather than the app: it holds the WhatsApp
+// connection, it assigns the sequence numbers, and it has a clock that keeps
+// running when the phone's screen goes off. The app's job is to produce fixes.
+type LiveLocData struct {
+	ChatJID  string  `json:"chat"`
+	Action   string  `json:"action"` // "start" | "update" | "stop"
+	Lat      float64 `json:"lat,omitempty"`
+	Lon      float64 `json:"lon,omitempty"`
+	Accuracy uint32  `json:"acc,omitempty"`
+	// Secs is how long the share should last, on "start" only.
+	Secs int64 `json:"secs,omitempty"`
 }
 
 // ProfileData is everything the contact / group info screen renders.

@@ -164,17 +164,28 @@ neither requires unlinking. See [`wad/RUN.md`](wad/RUN.md).
 | Save a contact (in-app; phone address book on KaiOS) | ✅ |
 | Pin / mute / archive / delete chat | ✅ syncs to the account |
 | Mentions, avatars, per-person colours in groups | ✅ |
-| **Send** photos or documents | ✅ 📎 in the composer, or press Left |
+| **Send** photos, video or audio | ✅ 📎 in the composer, or press Left |
+| **Send** an arbitrary document | ⚠️ only if some app on the phone claims the type |
 | **Record** a voice note | ❌ playback only — needs a `privileged` build, see below |
 | **Call audio** | ❌ signalling only — it rings, there's no sound |
 | Settings screen | ✅ daemon address + token, entered on the phone |
 | Polls | ❌ not rendered at all, let alone votable |
 | Contact cards | ❌ not rendered at all |
-| **Send** a location, or share live location | ❌ received ones render + open in maps; `geolocation` is granted at `web` level, so this needs no privilege bump |
+| **Send** a location | ✅ 📍 in the attach menu |
+| **Share live location** | ✅ 15 min / 1 h / 8 h, stoppable; update rendering unverified |
 
 Pin, mute, archive and delete are **real account changes**, not local
 preferences: they sync to your phone and every other linked device, and delete
 is not undoable.
+
+Attaching goes through a `pick` activity, which only opens if some app on the
+phone has registered as a handler for that MIME type. Photos, video and audio
+have owners — Gallery, Video, Music. Arbitrary documents often don't: a stock
+KaiOS build has no Files app, so nothing answers `*/*` and the picker never
+appears. The attach menu therefore tries a list of types in turn rather than
+asking for `*/*` alone, and says so plainly when the phone genuinely has no
+app that can pick a file. Whatever comes back is sent as what it actually is,
+so a photo picked through "File" still arrives as a photo.
 
 Saving a contact is two separate things, because WhatsApp has no contact-write
 API — the address book syncs one way, phone → account. The in-app nickname is
@@ -241,9 +252,30 @@ Whatever the phone can encode is good enough, incidentally: if `MediaRecorder`
 there yields something other than Ogg/Opus, `wad` runs on a real machine and
 can transcode before sending. The encoder is not the gate either.
 
-`geolocation` needs none of this — it's available to a `web`-type app, so it's
-now declared in the manifest and sending a location can be built against the
-build that's already shipping.
+`geolocation` needed none of this — it's available to a `web`-type app, so it
+is declared in the manifest and sending a location is built and shipping.
+
+### What "live location" does and doesn't do
+
+A pin is one message and behaves exactly as you'd expect. A live share is a
+session: an opening `LiveLocationMessage` declaring the duration, then updates
+every 30 seconds carrying an increasing sequence number and the elapsed time,
+each pointing back at the opening message.
+
+The daemon owns that session, not the app — it holds the connection, it assigns
+the sequence numbers, and its clock keeps running while the phone's timers are
+throttled to minutes with the screen off. The app produces fixes; when the
+daemon says the share is over, the app stops, and *that* is what switches the
+GPS back off.
+
+**Unverified:** whether receiving clients animate the pin from those updates or
+render them as separate cards. The opening message is the part to trust; the
+update path is built to the shape of the protocol and has not been watched from
+a second phone. Everything else here is defensive by choice — 0,0 is refused
+(it's a failed fix reported as a success, not a place in the Atlantic), the
+duration is clamped to eight hours, updates are never queued through a
+reconnect because a replayed position is a lie, and the thread shows a bar for
+as long as a share is running so it can't drain the battery unseen.
 
 ## Prior art worth reading
 

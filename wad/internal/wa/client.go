@@ -57,6 +57,9 @@ type Client struct {
 	replyOrder []string
 	replyMu    sync.Mutex
 
+	// live tracks outgoing live location shares, keyed by chat.
+	live *liveShares
+
 	// avatars caches profile pictures by JID (bytes or a "none" mark).
 	avatars  map[string]avatarEntry
 	avatarMu sync.Mutex
@@ -118,6 +121,7 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 		media:      newMediaStore(500),
 		mediaMime:  make(map[string]string),
 		replyCtx:   make(map[string]replyContext),
+		live:       newLiveShares(),
 		avatars:    make(map[string]avatarEntry),
 		hist:       hist,
 		sess:       sess,
