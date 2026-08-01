@@ -213,6 +213,27 @@ forbids VoIP over the cellular network; and the most experienced KaiOS app
 developers report voice calls are not achievable on this platform at all. The
 first is the only one that might move.
 
+## Prior art worth reading
+
+[strukturart/flop](https://github.com/strukturart/flop) (MIT) is a KaiOS app
+that already does several things sitting in the ❌ column above: sharing a
+location, sharing a *live* location, and recording as well as playing voice
+messages. It's the closest thing to a worked example of those APIs on this
+exact platform, so it's the first place to look when any of them come up
+rather than guessing at what Gecko 48 supports.
+
+MIT means its code *can* be reused with attribution, but the useful thing here
+is the technique, not the lines: how it gets a fix out of `navigator.geolocation`
+on a feature phone, how it drives `getUserMedia` and what it does with the
+result, how it handles the audio channel. Those get adapted to our own screens
+and our own daemon protocol.
+
+[cyan-2048/solid-telekram](https://github.com/cyan-2048/solid-telekram) (GPL-3.0)
+is the other reference — the full-screen media viewer and the eased list
+scrolling here are both modelled on how it behaves. Its licence would attach to
+distribution; this client isn't distributed, and nothing was copied verbatim
+regardless.
+
 ## Don't commit the database
 
 `wa-session.db` **is** your logged-in WhatsApp session, and

@@ -42,6 +42,9 @@
   var elReplyBar = document.getElementById("reply-bar");
   var elReplyBarText = document.getElementById("reply-bar-text");
   var elMenu = document.getElementById("action-menu");
+  // The scrolling element, not the overlay: Nav scrolls whatever it is
+  // given as the list, and the overlay itself never scrolls.
+  var elActionBox = document.getElementById("action-box");
   var elActionList = document.getElementById("action-list");
   var elCall = document.getElementById("call");
   var elCallName = document.getElementById("call-name");
@@ -874,8 +877,11 @@
 
     menuOpen = true;
     elMenu.hidden = false;
+    // A previous open may have left the box scrolled down; the new menu starts
+    // at its first item, so start the scroll there too.
+    if (elActionBox) elActionBox.scrollTop = 0;
     Nav.setScreen({
-      list: elMenu,
+      list: elActionBox || elMenu,
       onEnter: function (e, el) { if (el) runAction(el.getAttribute("data-action")); },
       onSoftLeft: closeActionMenu,
       onSoftRight: function () {

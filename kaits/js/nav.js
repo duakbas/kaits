@@ -56,9 +56,25 @@
   // always jumps the row to the top of the view, which makes a list lurch on
   // every keypress. Comparing rectangles gives the behaviour we wanted with an
   // API this engine actually has.
+  // Which element actually scrolls. The list a screen hands us is often an
+  // overlay that fills the screen while the real scrolling happens in a box
+  // inside it — setting scrollTop on the overlay then does nothing at all, and
+  // the highlight walks off the visible area. So walk up from the focused row
+  // to the first ancestor that has more content than it can show.
+  function scrollBoxFor(el) {
+    var box = screen.list;
+    if (!box) return null;
+    var n = el;
+    for (var hops = 0; n && n !== box && hops < 12; hops++) {
+      if (n.scrollHeight > n.clientHeight + 1) return n;
+      n = n.parentNode;
+    }
+    return box;
+  }
+
   function ensureVisible(el, container) {
     if (!el || !el.getBoundingClientRect) return;
-    var box = container || screen.list;
+    var box = container || scrollBoxFor(el) || screen.list;
     try {
       if (!box || !box.getBoundingClientRect) { el.scrollIntoView(); return; }
       var r = el.getBoundingClientRect();

@@ -288,11 +288,20 @@ header .status.closed { color: var(--danger); }
 #reply-bar-x { color: var(--muted); padding-left: 8px; }
 
 /* action menu overlay */
+/* Bounded at the top as well as the bottom. Without a top bound this menu
+   grew upward off the screen, so with enough items the first entries — Reply
+   among them — sat behind the header where you couldn't see or reach them. */
 #action-menu {
   position: absolute;
-  left: 0; right: 0; bottom: 24px;   /* sit above the softkey bar */
+  left: 0; right: 0; top: 30px; bottom: 24px;
   display: flex;
   justify-content: center;
+  align-items: flex-end;             /* hug the softkeys when it's short */
+}
+#action-box {
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 #action-menu[hidden] { display: none; }
 .menu-box {
@@ -303,8 +312,8 @@ header .status.closed { color: var(--danger); }
   overflow: hidden;
 }
 .menu-item {
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: 6px 10px;
+  font-size: 12px;
   border-bottom: 1px solid var(--line);
 }
 .menu-item:last-child { border-bottom: none; }
