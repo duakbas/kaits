@@ -3,9 +3,11 @@ package wa
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 
@@ -94,6 +96,12 @@ type liveShare struct {
 	startAt  time.Time
 	endsAt   time.Time
 	seq      int64
+	// Set when an update was refused. One failure ends the updates for this
+	// share: the alternative is retrying every 30 seconds for up to eight
+	// hours, and if the refusal is structural — which it will be, since the
+	// same message shape goes out every time — that is 960 attempts producing
+	// nothing but noise in the chat and the log.
+	broken bool
 }
 
 type liveShares struct {
@@ -182,31 +190,85 @@ func (c *Client) UpdateLiveLocation(ctx context.Context, chatJID string,
 		c.live.mu.Unlock()
 		return false, nil
 	}
+	if s.broken {
+		// Still running as far as the app is concerned — the share is live,
+		// the position simply stopped being transmitted. Reported as running
+		// so the phone doesn't treat it as an error every 30 seconds.
+		c.live.mu.Unlock()
+		return true, nil
+	}
 	s.seq++
 	seq := s.seq
 	offset := uint32(time.Since(s.startAt).Seconds())
 	startMsg := s.startMsg
 	c.live.mu.Unlock()
 
-	msg := &waE2E.Message{
-		LiveLocationMessage: &waE2E.LiveLocationMessage{
-			DegreesLatitude:  proto.Float64(lat),
-			DegreesLongitude: proto.Float64(lon),
-			SequenceNumber:   proto.Int64(seq),
-			TimeOffset:       proto.Uint32(offset),
-			// Point every update back at the message that opened the share, so
-			// a client that groups them has something to group them by.
-			ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String(startMsg)},
-		},
-	}
-	if acc > 0 {
-		msg.LiveLocationMessage.AccuracyInMeters = proto.Uint32(acc)
-	}
+	msg := liveUpdateMsg(startMsg, jid, lat, lon, acc, seq, offset)
 
 	if _, err := c.WA.SendMessage(ctx, jid, msg); err != nil {
+		c.live.mu.Lock()
+		if cur, still := c.live.m[jid.String()]; still {
+			cur.broken = true
+		}
+		c.live.mu.Unlock()
 		return true, err
 	}
 	return true, nil
+}
+
+// liveUpdateMsg builds one position update for a running share.
+//
+// It is an EDIT of the message that opened the share, not a new message, and
+// that is the whole point. whatsmeow has no live-location update primitive —
+// LiveLocationMessage is an ordinary message to its send path, with no special
+// stanza attributes — so every update went out as a fresh message with a fresh
+// id, and the chat filled up with a new live-location card every half minute
+// instead of one card that moves.
+//
+// MESSAGE_EDIT is the only in-place mechanism available here. Two things to
+// know about it: official clients put a time limit on edits, so a long share
+// may stop updating partway through, and a client that doesn't apply the edit
+// shows the opening position for the whole share. Both are better than the
+// alternative, which is one message per tick for up to eight hours.
+//
+// WAD_LIVELOC_RESEND=1 restores the old behaviour, for finding out which of
+// these a real client actually does.
+func liveUpdateMsg(startMsg string, chat types.JID, lat, lon float64,
+	acc uint32, seq int64, offset uint32) *waE2E.Message {
+
+	live := &waE2E.LiveLocationMessage{
+		DegreesLatitude:  proto.Float64(lat),
+		DegreesLongitude: proto.Float64(lon),
+		SequenceNumber:   proto.Int64(seq),
+		TimeOffset:       proto.Uint32(offset),
+	}
+	if acc > 0 {
+		live.AccuracyInMeters = proto.Uint32(acc)
+	}
+	content := &waE2E.Message{LiveLocationMessage: live}
+
+	if os.Getenv("WAD_LIVELOC_RESEND") == "1" {
+		// The old shape: a separate message pointing back at the opening one.
+		live.ContextInfo = &waE2E.ContextInfo{StanzaID: proto.String(startMsg)}
+		return content
+	}
+
+	return &waE2E.Message{
+		EditedMessage: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ProtocolMessage: &waE2E.ProtocolMessage{
+					Key: &waCommon.MessageKey{
+						FromMe:    proto.Bool(true),
+						ID:        proto.String(startMsg),
+						RemoteJID: proto.String(chat.String()),
+					},
+					Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+					EditedMessage: content,
+					TimestampMS:   proto.Int64(time.Now().UnixMilli()),
+				},
+			},
+		},
+	}
 }
 
 // StopLiveLocation ends a share. Safe to call when nothing is running, because
