@@ -131,6 +131,31 @@ HTTP 200.** A service tracking its subscriptions would answer 404 or 410. It
 isn't checking, isn't queuing, and isn't delivering — it accepts everything and
 discards it.
 
+## The fix, reported independently
+
+Another developer hit the same wall and found a way round it: the push service
+is chosen by a **device preference**, not by the app.
+
+    dom.push.serverURL    wss://push.kaiostech.com/       (broken, the default)
+                          wss://push.services.mozilla.com/ (works)
+
+It lives in Device Preferences, in the on-device developer menu — which is not
+the same thing as ADB debugging, so a debug-locked handset can still reach it.
+Changing it and rebooting points every app on the phone at Mozilla's autopush.
+
+Nothing in the app can do this for itself. `pushManager.subscribe()` has no way
+to name a push service: the endpoint is issued by whichever service the Gecko
+runtime is configured to talk to, and on this platform that is one connection
+shared by the whole device. An app chooses its `applicationServerKey`, never
+its server.
+
+**The trap when testing it:** `getSubscription()` returns the subscription made
+before the pref changed, pointing at the old server, and it looks completely
+healthy. Changing the pref and reopening the app is not enough — the old
+subscription has to be unsubscribed and remade. The test page now prints the
+endpoint's host with a verdict for exactly this reason, and warns when it has
+reused an existing subscription. Press **1** to force a fresh one.
+
 This also rules out the theory circulating in the BananaHackers Discord, that
 the problem is clients mishandling *encrypted* pushes. This subscription is
 keyless and the pushes carry no payload; there is nothing to decrypt.
