@@ -8,13 +8,19 @@
     body { background: #111; color: #eee; font: 12px sans-serif; margin: 0; padding: 6px; }
     h1 { font-size: 13px; margin: 0 0 6px; color: #25d366; }
     #log { white-space: pre-wrap; word-break: break-all; font-size: 11px; line-height: 1.35; }
+    /* The verdict has to be readable across a room, because it is the answer.
+       The endpoint below it is 200 characters on a 240-pixel screen. */
+    #server { font-size: 12px; line-height: 1.3; margin: 0 0 6px; }
+    #server .name { font-weight: bold; }
     .ok { color: #25d366; }
     .bad { color: #e05252; }
+    .warn { color: #e0b252; }
     .hint { color: #888; margin-top: 8px; font-size: 11px; }
   </style>
 </head>
 <body>
   <h1>Push Test</h1>
+  <div id="server"></div>
   <div id="log"></div>
   <div class="hint">1 = re-subscribe &nbsp; 2 = local notification</div>
 
@@ -37,6 +43,59 @@ function log(msg, cls) {
 
 function fail(where, e) {
   log("✗ " + where + ": " + (e && e.message ? e.message : e), "bad");
+}
+
+// ---- which push service did we actually get? ----
+//
+// KaiOS's own push server accepts pushes and throws them away, so a
+// subscription against it looks perfectly healthy and never delivers anything.
+// The reported workaround is to point dom.push.serverURL at Mozilla's service
+// in Device Preferences. Whether that took is decided entirely by the HOST of
+// the endpoint we get back — and that host is buried a fifth of the way into a
+// 200-character URL on a 240-pixel screen, which is no use to anybody. So it
+// gets read out here, in words.
+var serverEl = document.getElementById("server");
+
+function hostOf(ep) {
+  var m = /^https?:\/\/([^\/]+)/i.exec(ep || "");
+  return m ? m[1] : "";
+}
+
+function showServer(ep, cached) {
+  var host = hostOf(ep);
+  serverEl.innerHTML = "";
+  if (!host) return;
+
+  var line = document.createElement("div");
+  line.className = "name";
+  line.textContent = host;
+  serverEl.appendChild(line);
+
+  var note = document.createElement("div");
+  if (host.indexOf("mozilla") >= 0) {
+    note.className = "ok";
+    note.textContent = "✓ Mozilla push — the pref took. Pushes should arrive.";
+  } else if (host.indexOf("kaiostech") >= 0) {
+    note.className = "bad";
+    note.textContent = "✗ KaiOS push — accepted and discarded. Set " +
+      "dom.push.serverURL to wss://push.services.mozilla.com/ then press 1.";
+  } else {
+    note.className = "warn";
+    note.textContent = "? unrecognised push service";
+  }
+  serverEl.appendChild(note);
+
+  // The trap this test exists to avoid falling into: getSubscription() hands
+  // back the subscription made BEFORE the pref changed, against the old
+  // server, and nothing about it looks stale. Changing the pref and reopening
+  // the app is not enough — the old subscription has to be thrown away.
+  if (cached) {
+    var c = document.createElement("div");
+    c.className = "warn";
+    c.textContent = "(reused an existing subscription — press 1 to force a " +
+      "new one after changing the pref)";
+    serverEl.appendChild(c);
+  }
 }
 
 if (!("serviceWorker" in navigator)) {
@@ -70,12 +129,17 @@ function askPermission() {
 // that pushes must then be payload-free, which is exactly what the real app
 // does — the push is a doorbell, the content is fetched separately.
 function subscribe(reg) {
+  var wasCached = false;
   return reg.pushManager.getSubscription()
-    .then(function (existing) { return existing || reg.pushManager.subscribe({ userVisibleOnly: true }); })
+    .then(function (existing) {
+      if (existing) { wasCached = true; return existing; }
+      return reg.pushManager.subscribe({ userVisibleOnly: true });
+    })
     .then(function (sub) {
       var ep = sub && sub.endpoint;
       if (!ep) { log("✗ subscribed but no endpoint", "bad"); return; }
-      log("✓ subscribed", "ok");
+      log(wasCached ? "✓ existing subscription" : "✓ subscribed", "ok");
+      showServer(ep, wasCached);
       log(ep);
       return sendToCatcher(ep);
     })
@@ -98,9 +162,11 @@ function sendToCatcher(ep) {
 
 // The worker reports each push it receives, so pushes that arrive while the app
 // happens to be open are visible here too.
+var pushCount = 0;
 navigator.serviceWorker.addEventListener("message", function (ev) {
   if (ev.data && ev.data.type === "push") {
-    log("✓ PUSH RECEIVED at " + new Date().toLocaleTimeString(), "ok");
+    pushCount++;
+    log("✓ PUSH RECEIVED #" + pushCount + " at " + new Date().toLocaleTimeString(), "ok");
   }
 });
 
