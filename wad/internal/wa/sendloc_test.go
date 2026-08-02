@@ -1,9 +1,11 @@
 package wa
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -119,5 +121,90 @@ func TestEndsAtIgnoresExpired(t *testing.T) {
 	c.live.m[jid.String()].endsAt = time.Now().Add(time.Hour)
 	if _, ok := c.LiveLocationEndsAt(chat); !ok {
 		t.Error("a running share reported as finished")
+	}
+}
+
+// The reported bug: a live share posted a brand new location card every tick
+// instead of moving the one it opened with. whatsmeow has no live-location
+// update primitive, so a LiveLocationMessage handed to SendMessage is an
+// ordinary message with an ordinary new id — which is exactly what an update
+// used to be. An update has to be an edit of the opening message.
+func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
+	chat, _ := types.ParseJID("12345@s.whatsapp.net")
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 12, 5, 90)
+
+	if msg.GetLiveLocationMessage() != nil {
+		t.Fatal("update is a top-level LiveLocationMessage — that is a NEW message, " +
+			"which is the bug: one card per tick")
+	}
+	pm := msg.GetEditedMessage().GetMessage().GetProtocolMessage()
+	if pm == nil {
+		t.Fatal("update is not an edit at all")
+	}
+	if pm.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT {
+		t.Errorf("edit type = %v, want MESSAGE_EDIT", pm.GetType())
+	}
+	if pm.GetKey().GetID() != "START-ID" {
+		t.Errorf("edits message %q, want the opening message START-ID", pm.GetKey().GetID())
+	}
+	if !pm.GetKey().GetFromMe() {
+		t.Error("edit key is not marked fromMe; only our own message is ours to edit")
+	}
+	if got := pm.GetKey().GetRemoteJID(); got != chat.String() {
+		t.Errorf("edit key chat = %q, want %q", got, chat.String())
+	}
+
+	live := pm.GetEditedMessage().GetLiveLocationMessage()
+	if live == nil {
+		t.Fatal("the edit carries no live location")
+	}
+	if live.GetDegreesLatitude() != 47.3769 || live.GetDegreesLongitude() != 8.5417 {
+		t.Errorf("coordinates = %f,%f", live.GetDegreesLatitude(), live.GetDegreesLongitude())
+	}
+	if live.GetSequenceNumber() != 5 || live.GetTimeOffset() != 90 {
+		t.Errorf("seq/offset = %d/%d, want 5/90", live.GetSequenceNumber(), live.GetTimeOffset())
+	}
+	if live.GetAccuracyInMeters() != 12 {
+		t.Errorf("accuracy = %d, want 12", live.GetAccuracyInMeters())
+	}
+}
+
+// The escape hatch has to actually produce the old shape, or it is no use for
+// working out which behaviour a real client honours.
+func TestLiveUpdateResendEnvRestoresSeparateMessages(t *testing.T) {
+	t.Setenv("WAD_LIVELOC_RESEND", "1")
+	chat, _ := types.ParseJID("12345@s.whatsapp.net")
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 90)
+
+	live := msg.GetLiveLocationMessage()
+	if live == nil {
+		t.Fatal("WAD_LIVELOC_RESEND=1 did not produce a plain live location message")
+	}
+	if msg.GetEditedMessage() != nil {
+		t.Error("produced both an edit and a plain message")
+	}
+	if got := live.GetContextInfo().GetStanzaID(); got != "START-ID" {
+		t.Errorf("context stanza id = %q, want START-ID", got)
+	}
+}
+
+// A refused update must not be retried every 30 seconds for the rest of an
+// eight-hour share. c.WA is nil here, so a second send attempt would panic —
+// which is the assertion.
+func TestUpdateStopsAfterARefusal(t *testing.T) {
+	chat := "12345@s.whatsapp.net"
+	jid, _ := types.ParseJID(chat)
+	c := &Client{live: newLiveShares()}
+	c.live.m[jid.String()] = &liveShare{
+		chat: jid, startMsg: "START-ID", startAt: time.Now(),
+		endsAt: time.Now().Add(time.Hour), broken: true,
+	}
+
+	running, err := c.UpdateLiveLocation(context.Background(), chat, 47.3769, 8.5417, 0)
+	if err != nil {
+		t.Errorf("a share that stopped transmitting reported an error every tick: %v", err)
+	}
+	if !running {
+		t.Error("reported the share as finished; it is still running, just not transmitting")
 	}
 }
