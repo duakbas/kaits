@@ -643,12 +643,20 @@
     clearSelection(); // just drop the highlight; no need to rebuild the thread
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
-      onLeft: openAttachMenu,         // attachments live off Left from the composer
+      // NOT onLeft. Attachments used to live off Left from the composer, which
+      // put them on the key the text field needs: Left is how you move the
+      // caret back through what you have typed, and on a T9 keypad that is not
+      // optional. Reaching for it mid-word opened the file picker instead.
+      // Attach is a softkey now.
       onBack: enterListScreen,
-      // Left softkey is "check notification" when one is waiting, plain "Back"
-      // otherwise. The red hardware key goes back either way, which is what
-      // freed this one up.
-      onSoftLeft: checkNotif,
+      // Left softkey is Attach, unless a notification is waiting — that is
+      // transient, it is the only way to reach the chat it names, and it goes
+      // away as soon as it is used or dismissed. The red hardware key goes
+      // back either way, which is what freed this key up in the first place.
+      onSoftLeft: function () {
+        if (pendingNotif) { checkNotif(); return; }
+        openAttachMenu();
+      },
       // Right softkey is the options menu, matching the platform convention:
       // the CENTRE key advertises what Enter does, and the right one is "•••".
       // Send moved to the centre label accordingly — Enter already sent, so the
@@ -3529,7 +3537,7 @@
   // "go to the chat that just messaged you" — and falls back to Back when
   // there's nothing waiting, since a dead softkey is worse than a plain one.
   function notifSoftLabel() {
-    if (!pendingNotif) return "Back";
+    if (!pendingNotif) return "Attach";
     return "🔔 " + truncate(pendingNotif.title, 8);
   }
 

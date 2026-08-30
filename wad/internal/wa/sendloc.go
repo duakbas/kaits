@@ -19,7 +19,7 @@ import (
 // Two shapes, and they are not the same thing. A pin is one message. A live
 // share is a session: an opening message that declares how long it will run,
 // then a stream of updates carrying an increasing sequence number and the time
-// elapsed since that opening message.
+// the share still has left.
 //
 // The session lives here rather than in the app for three reasons: this is
 // where the WhatsApp connection is, this is where the sequence numbering has
@@ -199,11 +199,19 @@ func (c *Client) UpdateLiveLocation(ctx context.Context, chatJID string,
 	}
 	s.seq++
 	seq := s.seq
-	offset := uint32(time.Since(s.startAt).Seconds())
+	// TimeOffset is how long the share has LEFT to run, exactly as on the
+	// opening message — not how long it has been running.
+	//
+	// It used to be the elapsed time, and that is the second half of the
+	// reported bug: every update announced a share lasting a few seconds, so
+	// the receiving client drew a card that had already expired. A live share
+	// that arrives dead is worse than no share, and it looked like the sender
+	// had ended it immediately.
+	remaining := uint32(time.Until(s.endsAt).Seconds())
 	startMsg := s.startMsg
 	c.live.mu.Unlock()
 
-	msg := liveUpdateMsg(startMsg, jid, lat, lon, acc, seq, offset)
+	msg := liveUpdateMsg(startMsg, jid, lat, lon, acc, seq, remaining)
 
 	if _, err := c.WA.SendMessage(ctx, jid, msg); err != nil {
 		c.live.mu.Lock()
@@ -234,13 +242,13 @@ func (c *Client) UpdateLiveLocation(ctx context.Context, chatJID string,
 // WAD_LIVELOC_RESEND=1 restores the old behaviour, for finding out which of
 // these a real client actually does.
 func liveUpdateMsg(startMsg string, chat types.JID, lat, lon float64,
-	acc uint32, seq int64, offset uint32) *waE2E.Message {
+	acc uint32, seq int64, remaining uint32) *waE2E.Message {
 
 	live := &waE2E.LiveLocationMessage{
 		DegreesLatitude:  proto.Float64(lat),
 		DegreesLongitude: proto.Float64(lon),
 		SequenceNumber:   proto.Int64(seq),
-		TimeOffset:       proto.Uint32(offset),
+		TimeOffset:       proto.Uint32(remaining),
 	}
 	if acc > 0 {
 		live.AccuracyInMeters = proto.Uint32(acc)

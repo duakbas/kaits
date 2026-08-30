@@ -131,7 +131,7 @@ func TestEndsAtIgnoresExpired(t *testing.T) {
 // used to be. An update has to be an edit of the opening message.
 func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
 	chat, _ := types.ParseJID("12345@s.whatsapp.net")
-	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 12, 5, 90)
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 12, 5, 900)
 
 	if msg.GetLiveLocationMessage() != nil {
 		t.Fatal("update is a top-level LiveLocationMessage — that is a NEW message, " +
@@ -161,8 +161,8 @@ func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
 	if live.GetDegreesLatitude() != 47.3769 || live.GetDegreesLongitude() != 8.5417 {
 		t.Errorf("coordinates = %f,%f", live.GetDegreesLatitude(), live.GetDegreesLongitude())
 	}
-	if live.GetSequenceNumber() != 5 || live.GetTimeOffset() != 90 {
-		t.Errorf("seq/offset = %d/%d, want 5/90", live.GetSequenceNumber(), live.GetTimeOffset())
+	if live.GetSequenceNumber() != 5 || live.GetTimeOffset() != 900 {
+		t.Errorf("seq/remaining = %d/%d, want 5/900", live.GetSequenceNumber(), live.GetTimeOffset())
 	}
 	if live.GetAccuracyInMeters() != 12 {
 		t.Errorf("accuracy = %d, want 12", live.GetAccuracyInMeters())
@@ -174,7 +174,7 @@ func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
 func TestLiveUpdateResendEnvRestoresSeparateMessages(t *testing.T) {
 	t.Setenv("WAD_LIVELOC_RESEND", "1")
 	chat, _ := types.ParseJID("12345@s.whatsapp.net")
-	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 90)
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 900)
 
 	live := msg.GetLiveLocationMessage()
 	if live == nil {
@@ -206,5 +206,36 @@ func TestUpdateStopsAfterARefusal(t *testing.T) {
 	}
 	if !running {
 		t.Error("reported the share as finished; it is still running, just not transmitting")
+	}
+}
+
+// The other half of "it ends the moment it is sent": an update announced how
+// long the share had been RUNNING where the opening message announces how long
+// it will LAST. A receiving client reading that field the same way in both
+// places sees a share good for a few seconds and draws a card that has already
+// expired. The two must mean the same thing.
+func TestUpdateAnnouncesTimeRemainingNotElapsed(t *testing.T) {
+	chat := "12345@s.whatsapp.net"
+	jid, _ := types.ParseJID(chat)
+	c := &Client{live: newLiveShares()}
+
+	// A one-hour share, opened ten minutes ago.
+	started := time.Now().Add(-10 * time.Minute)
+	c.live.m[jid.String()] = &liveShare{
+		chat: jid, startMsg: "START-ID", startAt: started,
+		endsAt: started.Add(time.Hour),
+	}
+
+	c.live.mu.Lock()
+	remaining := uint32(time.Until(c.live.m[jid.String()].endsAt).Seconds())
+	c.live.mu.Unlock()
+
+	if remaining < 49*60 || remaining > 50*60 {
+		t.Fatalf("remaining = %ds, want about 50 minutes", remaining)
+	}
+	elapsed := uint32(time.Since(started).Seconds())
+	if remaining <= elapsed {
+		t.Errorf("remaining %d is not distinguishable from elapsed %d here; "+
+			"the test cannot tell the bug from the fix", remaining, elapsed)
 	}
 }
