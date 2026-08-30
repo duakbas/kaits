@@ -261,8 +261,14 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 			}
 			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
 				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			// "gif", not "video". They are the same bytes and the same
+			// WhatsApp message — a VideoMessage with gifPlayback — but the app
+			// draws them differently: a gif autoplays, loops and is muted,
+			// while a video waits behind a poster frame for someone to press
+			// play. Filing our own as a video is why one you sent sat still in
+			// your thread while looping in theirs.
 			waCli.RecordSent(ws.MsgData{
-				MsgID: id, ChatJID: d.ChatJID, Kind: "video",
+				MsgID: id, ChatJID: d.ChatJID, Kind: "gif",
 				Mime: "video/mp4", MediaURL: "/media/" + id, QuotedID: d.QuotedID,
 			})
 			return
