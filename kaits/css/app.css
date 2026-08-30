@@ -866,3 +866,17 @@ header .status.closed { color: var(--danger); }
   padding: 4px 6px;
   text-align: center;
 }
+#gif-q {
+  flex: 0 0 auto;
+  margin: 2px 4px;
+  padding: 4px 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 12px;
+  width: calc(100% - 8px);
+}
+#gif-q[hidden] { display: none; }
+/* A GIF is a wide picture, not a square one, so its cell is wider and the row
+   holds two rather than three. */
+.sticker-cell.gif { width: 108px; height: 76px; }

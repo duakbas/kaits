@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"wad/internal/ws"
 
@@ -120,6 +121,23 @@ func openHistStore(path string) (*histStore, error) {
 	db.Exec(`CREATE TABLE IF NOT EXISTS location_thumbs (
 		msgid TEXT PRIMARY KEY,
 		jpeg  BLOB
+	)`)
+	// Converted animated stickers. The conversion is an ffmpeg run of a second
+	// or two, and a sticker is looked at every time its thread is opened, so
+	// doing it once is the difference between a bubble that appears and one
+	// that arrives late every single time.
+	// Favourite stickers, learned from app state. Only the id and when it was
+	// favourited: the downloadable part lives in media_keys under "fav:<id>",
+	// which is what lets every existing media path serve and send one without
+	// knowing it is not a message.
+	db.Exec(`CREATE TABLE IF NOT EXISTS favorite_stickers (
+		id TEXT PRIMARY KEY,
+		ts INTEGER
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS sticker_gifs (
+		msgid TEXT PRIMARY KEY,
+		gif   BLOB,
+		ts    INTEGER
 	)`)
 	// Unread counts are derived from messages lacking a "read" status, so this
 	// index keeps the per-chat count cheap over a large history.
@@ -1355,12 +1373,12 @@ func (h *histStore) MigrateLIDs(resolve func(string) (string, bool)) (int, int, 
 // Deduplicated on the media reference rather than the message id: the same
 // sticker sent five times is one entry in a picker; five is a picker nobody can
 // use.
-func (h *histStore) recentStickers(limit int) []ws.MsgData {
+func (h *histStore) recentStickers(limit int) []stickerEntry {
 	if limit <= 0 || limit > 200 {
 		limit = 60
 	}
 	rows, err := h.db.Query(`
-		SELECT msgid, chat, MAX(ts) AS ts, mime
+		SELECT msgid, MAX(ts) AS ts
 		  FROM messages
 		 WHERE kind = 'sticker' AND media IS NOT NULL AND media != ''
 		 GROUP BY media
@@ -1371,17 +1389,37 @@ func (h *histStore) recentStickers(limit int) []ws.MsgData {
 	}
 	defer rows.Close()
 
-	var out []ws.MsgData
+	var out []stickerEntry
 	for rows.Next() {
-		var d ws.MsgData
-		var mime sql.NullString
-		if err := rows.Scan(&d.MsgID, &d.ChatJID, &d.Timestamp, &mime); err != nil {
+		var e stickerEntry
+		if err := rows.Scan(&e.MsgID, &e.Timestamp); err != nil {
 			continue
 		}
-		d.Kind = "sticker"
-		d.Mime = mime.String
-		d.MediaURL = "/media/" + d.MsgID
-		out = append(out, d)
+		e.MediaURL = "/media/" + e.MsgID
+		out = append(out, e)
 	}
 	return out
+}
+
+// putStickerGIF caches an animated sticker's converted form.
+func (h *histStore) putStickerGIF(msgid string, gif []byte) {
+	if h == nil || h.db == nil || msgid == "" || len(gif) == 0 {
+		return
+	}
+	h.db.Exec(`INSERT INTO sticker_gifs (msgid, gif, ts) VALUES (?,?,?)
+		ON CONFLICT(msgid) DO UPDATE SET gif=excluded.gif, ts=excluded.ts`,
+		msgid, gif, time.Now().Unix())
+}
+
+// stickerGIF returns a cached conversion, or nil.
+func (h *histStore) stickerGIF(msgid string) []byte {
+	if h == nil || h.db == nil || msgid == "" {
+		return nil
+	}
+	var gif []byte
+	err := h.db.QueryRow(`SELECT gif FROM sticker_gifs WHERE msgid = ?`, msgid).Scan(&gif)
+	if err != nil {
+		return nil
+	}
+	return gif
 }

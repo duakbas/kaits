@@ -125,6 +125,9 @@
     <!-- sticker picker: a grid, because a list of pictures is not a list -->
     <div id="stickers" hidden>
       <div id="sticker-head">Stickers</div>
+      <!-- Only for the GIF picker. Hidden for stickers, which are a fixed set
+           of your own things and have nothing to search. -->
+      <input id="gif-q" type="text" placeholder="Search GIFs…" hidden>
       <div id="sticker-grid"></div>
     </div>
 

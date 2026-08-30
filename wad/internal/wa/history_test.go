@@ -1166,11 +1166,11 @@ func TestRecentStickersAreDistinctAndNewestFirst(t *testing.T) {
 		t.Fatalf("got %d stickers, want 2 distinct ones", len(got))
 	}
 	for _, m := range got {
-		if m.Kind != "sticker" {
-			t.Errorf("a %q message reached the sticker picker", m.Kind)
-		}
 		if m.MediaURL == "" {
 			t.Error("a sticker with no media reached the picker; it would render blank")
+		}
+		if m.Favourite {
+			t.Error("a sticker from message history was marked as a favourite")
 		}
 	}
 	// Newest first, and the repeat carries the LATER timestamp: a sticker you
@@ -1194,5 +1194,51 @@ func TestRecentStickersSkipsUnfetchableOnes(t *testing.T) {
 	})
 	if got := h.recentStickers(0); len(got) != 0 {
 		t.Errorf("got %d stickers, want none — that one has no media", len(got))
+	}
+}
+
+// Favourites are stored as an attachment under a synthetic message id, which
+// is what lets the existing media paths serve and send one without knowing it
+// is not a message. If that id shape or the media_keys row goes missing, the
+// picker shows a cell that never loads.
+func TestFavouriteStickersAreStoredAsFetchableAttachments(t *testing.T) {
+	h := newHist(t)
+	h.putMediaRef("fav:abc", mediaRef{
+		directPath: "/v/t62.7118-24/abc", mediaKey: []byte("k"),
+		encSHA256: []byte("e"), mediaType: "image", mime: "image/webp",
+	})
+	h.putFavouriteSticker("abc", 1700000000000)
+
+	got := h.favouriteStickers(0)
+	if len(got) != 1 {
+		t.Fatalf("got %d favourites, want 1", len(got))
+	}
+	if got[0].MsgID != "fav:abc" {
+		t.Errorf("id = %q, want fav:abc", got[0].MsgID)
+	}
+	if got[0].MediaURL != "/media/fav:abc" {
+		t.Errorf("media url = %q; the picker fetches this literally", got[0].MediaURL)
+	}
+	if !got[0].Favourite {
+		t.Error("a favourite was not marked as one")
+	}
+	// Milliseconds in, seconds out — everything else in this store is seconds,
+	// and a favourite dated in 55000 AD sorts above everything forever.
+	if got[0].Timestamp != 1700000000 {
+		t.Errorf("ts = %d, want 1700000000 (seconds, not millis)", got[0].Timestamp)
+	}
+	if _, ok := h.mediaRefFor("fav:abc"); !ok {
+		t.Error("no media keys stored; the sticker could never be downloaded")
+	}
+
+	// Unfavouriting has to remove BOTH rows. Leaving the media row behind would
+	// keep it downloadable but invisible, which is the kind of half-deletion
+	// nobody ever notices until the table is huge.
+	h.deleteFavouriteSticker("abc")
+	if len(h.favouriteStickers(0)) != 0 {
+		t.Error("an unfavourited sticker is still in the list")
+	}
+	if _, ok := h.mediaRefFor("fav:abc"); ok {
+		t.Error("its media keys were left behind")
 	}
 }

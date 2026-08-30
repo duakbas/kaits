@@ -129,6 +129,11 @@ say "installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates ufw >/dev/null
+# ffmpeg converts animated stickers to GIF. It is the only tool that reliably
+# reads animated WebP, and without it those stickers fall back to a still frame
+# — working, but not moving. Not fatal, so a failure here is not fatal either.
+apt-get install -y -qq ffmpeg >/dev/null 2>&1 || \
+  echo "    note: ffmpeg not installed; animated stickers will show as stills"
 # gcc is only for building — the SQLite driver is CGO.
 [ -n "$PREBUILT" ] || apt-get install -y -qq gcc >/dev/null
 

@@ -40,7 +40,8 @@ const (
 	TStatus       = "status"       // {chat, msgid, status} delivery state of a message we sent
 	TTyping       = "typing"       // both ways: {chat, sender, sendername, state} composing/paused
 	TSearchResult = "searchresult" // reply to "search": [{msgid,chat,chatname,text,ts}]
-	TStickers     = "stickers"     // reply to "getstickers": [{msgid,media,mime,ts}]
+	TStickers     = "stickers"     // reply to "getstickers": [{msgid,media,ts,fav}]
+	TGIFResults   = "gifresults"   // reply to "gifsearch": [{id,preview,send,desc}]
 	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
 	TLiveLocState = "livelocstate" // {chat, active, until} state of an outgoing live share
 )
@@ -65,6 +66,7 @@ const (
 	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 	TSearch       = "search"       // {q, chat?, limit?} search stored messages
 	TGetStickers  = "getstickers"  // {limit?} the stickers this account has seen
+	TGIFSearch    = "gifsearch"    // {q?, limit?} search Tenor (needs WAD_TENOR_KEY)
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
@@ -141,6 +143,11 @@ type SendData struct {
 	// a reference rather than a hundred kilobytes back up the connection it
 	// just came down.
 	SrcMsgID string `json:"srcmsgid,omitempty"`
+	// GIFURL is a Tenor MP4 chosen in the GIF picker. Sent as a url rather than
+	// as bytes for the same reason a sticker is sent as an id: the daemon can
+	// fetch it directly, and routing it through the phone would mean paying for
+	// the same file twice on a connection that is the scarce resource here.
+	GIFURL string `json:"gifurl,omitempty"`
 	// Location payload, set when Kind == "location". A one-shot pin; a live
 	// share goes through LiveLocData instead, because it is a session rather
 	// than a message.

@@ -172,6 +172,7 @@ func main() {
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
 	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
 	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, token))
+	mux.HandleFunc("/gifproxy", gifProxyHandler())
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 	mux.HandleFunc("/debug/message", fakeMessageHandler(hub, token))
 
@@ -249,6 +250,22 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 				Lat: d.Lat, Lon: d.Lon, LocName: d.LocName,
 				LocAddress: d.LocAddress, QuotedID: d.QuotedID,
 			})
+		}
+		// A GIF picked from Tenor arrives as a url. The daemon fetches it and
+		// sends it the way WhatsApp sends a GIF: video with gifPlayback.
+		if d.Kind == "gif" && d.GIFURL != "" {
+			id, err := waCli.SendGIFByURL(ctx, d.ChatJID, d.GIFURL, d.QuotedID)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "sendgif", "msg": err.Error()})
+				return
+			}
+			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
+				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			waCli.RecordSent(ws.MsgData{
+				MsgID: id, ChatJID: d.ChatJID, Kind: "video",
+				Mime: "video/mp4", MediaURL: "/media/" + id, QuotedID: d.QuotedID,
+			})
+			return
 		}
 		// A sticker is picked from ones we already hold, so what arrives is a
 		// message id rather than a file — the bytes are here already.
@@ -485,6 +502,20 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		hub.Push(ws.Envelope{T: ws.TStickers, ID: e.ID,
 			Data: mustJSON(map[string]any{"stickers": waCli.RecentStickers(d.Limit)})})
 
+	case ws.TGIFSearch:
+		var d struct {
+			Q     string `json:"q"`
+			Limit int    `json:"limit"`
+		}
+		_ = json.Unmarshal(e.Data, &d)
+		res, err := waCli.SearchGIFs(ctx, d.Q, d.Limit)
+		if err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "gifsearch", "msg": err.Error()})
+			return
+		}
+		hub.Push(ws.Envelope{T: ws.TGIFResults, ID: e.ID,
+			Data: mustJSON(map[string]any{"q": d.Q, "results": res})})
+
 	case ws.TPushSub:
 		var d struct {
 			Endpoint string `json:"endpoint"`
@@ -706,11 +737,20 @@ func mediaHandler(c *wa.Client) http.HandlerFunc {
 		// decoder exists, so the app just sees an image.
 		if png, animated, ok := wa.TranscodeSticker(data); ok {
 			data, mime = png, "image/png"
-		} else if animated || wa.IsWebP(data) {
-			// An animation, or a WebP this decoder doesn't know. WhatsApp ships
-			// a still preview inside every sticker message, so send that rather
-			// than bytes the browser will refuse: a still sticker beats a
-			// broken one.
+		} else if animated {
+			// An animation. This engine cannot show animated WebP but it does
+			// animate GIF — it is from 2016 and GIF is from 1989 — so the
+			// daemon converts, once, and caches the result.
+			if gif, ok := c.StickerGIF(r.Context(), id, data); ok {
+				data, mime = gif, "image/gif"
+			} else if thumb := c.Thumb(id); len(thumb) > 0 {
+				// No ffmpeg, or a conversion that failed. WhatsApp ships a
+				// still preview inside every sticker message: a sticker that
+				// does not move beats one that does not appear.
+				data, mime = thumb, "image/jpeg"
+			}
+		} else if wa.IsWebP(data) {
+			// A WebP this decoder does not know. Same fallback.
 			if thumb := c.Thumb(id); len(thumb) > 0 {
 				data, mime = thumb, "image/jpeg"
 			}
@@ -742,4 +782,33 @@ func env(k, def string) string {
 func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// gifProxyHandler serves a Tenor preview through the daemon.
+//
+// The phone talks to one host and one host only. That is partly privacy — the
+// app's browsing of a GIF search never reaches Tenor from the user's IP — and
+// partly that this is a 2016 browser whose TLS and root certificates are from
+// 2016, and every additional origin is another chance for a blank grid nobody
+// can debug from the device.
+//
+// wa.FetchGIFPreview refuses anything that is not a Tenor URL, which is what
+// stops this being an open proxy into whatever network the daemon sits in.
+func gifProxyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.Query().Get("u")
+		if raw == "" {
+			http.Error(w, "missing url", http.StatusBadRequest)
+			return
+		}
+		data, ct, err := wa.FetchGIFPreview(r.Context(), raw)
+		if err != nil {
+			log.Printf("gifproxy: %v", err)
+			http.Error(w, "preview unavailable", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Write(data)
+	}
 }

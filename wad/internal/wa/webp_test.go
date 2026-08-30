@@ -2,6 +2,7 @@ package wa
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"image"
 	"image/color"
@@ -110,4 +111,26 @@ func image1x1() *image.RGBA {
 	m := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	m.Set(0, 0, color.RGBA{R: 1, G: 2, B: 3, A: 255})
 	return m
+}
+
+// The animated path has to degrade rather than break when ffmpeg is missing —
+// a daemon on a box without it must still serve stickers, just not moving
+// ones. This runs on a machine that has no ffmpeg, which is exactly the case
+// being asserted; where ffmpeg IS present the guard below keeps it honest by
+// checking the contract rather than the conversion.
+func TestAnimatedStickerGIFDegradesWithoutFFmpeg(t *testing.T) {
+	if HaveFFmpeg() {
+		// With ffmpeg present, a STILL webp must still be refused: it has no
+		// business becoming a GIF, and the caller's PNG path is better.
+		if _, ok := AnimatedStickerGIF(context.Background(), tinyWebP()); ok {
+			t.Error("a still WebP was converted to a GIF; it should be a PNG")
+		}
+		return
+	}
+	if _, ok := AnimatedStickerGIF(context.Background(), tinyWebP()); ok {
+		t.Error("reported a conversion on a machine with no ffmpeg")
+	}
+	if _, ok := AnimatedStickerGIF(context.Background(), nil); ok {
+		t.Error("converted nothing at all")
+	}
 }
