@@ -119,3 +119,45 @@ func TestRecordSentStoresTheQuote(t *testing.T) {
 		t.Error("stored reply has no quoted name")
 	}
 }
+
+// Replying to a photo produced a bare bubble, for the same reason the original
+// bug did: the app draws the quote bar on quotedtext, and a photo with no
+// caption has no text at all. Media has to be labelled rather than skipped.
+func TestFillQuoteLabelsCaptionlessMedia(t *testing.T) {
+	h := newHist(t)
+	c := &Client{hist: h}
+	chat := "1234@s.whatsapp.net"
+	them := "9999@s.whatsapp.net"
+
+	for _, tc := range []struct{ kind, want string }{
+		{"image", "Photo"},
+		{"video", "Video"},
+		{"sticker", "Sticker"},
+		{"audio", "Voice message"},
+		{"doc", "Document"},
+	} {
+		id := "m-" + tc.kind
+		h.putMessage(ws.MsgData{
+			MsgID: id, ChatJID: chat, SenderJID: them,
+			Kind: tc.kind, MediaURL: "/media/" + id, Timestamp: 100,
+		})
+		d := ws.MsgData{MsgID: "r-" + tc.kind, ChatJID: chat, Kind: "text",
+			Text: "nice", QuotedID: id}
+		c.fillQuote(&d)
+		if d.QuotedText != tc.want {
+			t.Errorf("quoting a %s gave %q, want %q", tc.kind, d.QuotedText, tc.want)
+		}
+	}
+
+	// A caption still wins over the label — it is what the message actually
+	// said, and the label is only there for when nothing was said.
+	h.putMessage(ws.MsgData{
+		MsgID: "cap", ChatJID: chat, SenderJID: them,
+		Kind: "image", Text: "at the beach", MediaURL: "/media/cap", Timestamp: 200,
+	})
+	d := ws.MsgData{MsgID: "r2", ChatJID: chat, Kind: "text", QuotedID: "cap"}
+	c.fillQuote(&d)
+	if d.QuotedText != "at the beach" {
+		t.Errorf("quoted text = %q, want the caption", d.QuotedText)
+	}
+}

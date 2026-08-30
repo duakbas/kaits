@@ -104,6 +104,18 @@ PRIVILEGED = {
                        "alerting about a new message",
         "access": "readonly",
     },
+    # Saving a photo or video out of a chat. The narrow stores rather than
+    # device-storage:sdcard: these are the ones the Gallery indexes, so a saved
+    # file turns up where someone would look for it, and readwrite on two
+    # media folders is a great deal less than readwrite on the whole card.
+    "device-storage:pictures": {
+        "description": "Save a photo from a chat to your phone",
+        "access": "readwrite",
+    },
+    "device-storage:videos": {
+        "description": "Save a video from a chat to your phone",
+        "access": "readwrite",
+    },
 }
 
 if apptype == "privileged":

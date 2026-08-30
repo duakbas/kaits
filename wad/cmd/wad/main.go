@@ -183,6 +183,7 @@ func main() {
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
 	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
 	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, token))
+	mux.HandleFunc("/videoinfo/", videoInfoHandler(waCli))
 	mux.HandleFunc("/gifproxy", gifProxyHandler())
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 	mux.HandleFunc("/debug/message", fakeMessageHandler(hub, token))
@@ -827,5 +828,26 @@ func gifProxyHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		w.Write(data)
+	}
+}
+
+// videoInfoHandler tells the app how far a video has to be turned.
+//
+// A phone stores a portrait video landscape with a rotation matrix in the
+// header, and every current player applies it. Gecko 48 predates that, so
+// without this the app plays portrait video on its side. The app cannot read
+// the matrix itself — it is inside the file it is streaming — so it asks.
+func videoInfoHandler(c *wa.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/videoinfo/")
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Cacheable for a long time: a file's rotation is a property of the
+		// file, and the file never changes.
+		w.Header().Set("Cache-Control", "private, max-age=86400")
+		w.Write(mustJSON(map[string]any{"rot": c.VideoRotationFor(r.Context(), id)}))
 	}
 }
