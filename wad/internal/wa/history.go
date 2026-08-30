@@ -1341,3 +1341,47 @@ func (h *histStore) MigrateLIDs(resolve func(string) (string, bool)) (int, int, 
 	}
 	return seen, merged, unmapped
 }
+
+// recentStickers lists the distinct stickers this account has seen, newest
+// first, for the sticker picker.
+//
+// Our own history rather than the account's favourites, and the difference is
+// worth being honest about: WhatsApp keeps favourite and recent stickers in app
+// state, and whatsmeow exposes no way to read that list — FetchStickerPack
+// needs a pack id nothing here hands us. What we do have is every sticker that
+// has passed through this daemon, which for anyone who reuses the stickers they
+// are sent is much the same set.
+//
+// Deduplicated on the media reference rather than the message id: the same
+// sticker sent five times is one entry in a picker; five is a picker nobody can
+// use.
+func (h *histStore) recentStickers(limit int) []ws.MsgData {
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	rows, err := h.db.Query(`
+		SELECT msgid, chat, MAX(ts) AS ts, mime
+		  FROM messages
+		 WHERE kind = 'sticker' AND media IS NOT NULL AND media != ''
+		 GROUP BY media
+		 ORDER BY ts DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []ws.MsgData
+	for rows.Next() {
+		var d ws.MsgData
+		var mime sql.NullString
+		if err := rows.Scan(&d.MsgID, &d.ChatJID, &d.Timestamp, &mime); err != nil {
+			continue
+		}
+		d.Kind = "sticker"
+		d.Mime = mime.String
+		d.MediaURL = "/media/" + d.MsgID
+		out = append(out, d)
+	}
+	return out
+}

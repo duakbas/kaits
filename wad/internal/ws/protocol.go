@@ -40,6 +40,7 @@ const (
 	TStatus       = "status"       // {chat, msgid, status} delivery state of a message we sent
 	TTyping       = "typing"       // both ways: {chat, sender, sendername, state} composing/paused
 	TSearchResult = "searchresult" // reply to "search": [{msgid,chat,chatname,text,ts}]
+	TStickers     = "stickers"     // reply to "getstickers": [{msgid,media,mime,ts}]
 	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
 	TLiveLocState = "livelocstate" // {chat, active, until} state of an outgoing live share
 )
@@ -63,6 +64,7 @@ const (
 	TSaveContact  = "savecontact"  // {jid, name} save a local nickname ("" clears)
 	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 	TSearch       = "search"       // {q, chat?, limit?} search stored messages
+	TGetStickers  = "getstickers"  // {limit?} the stickers this account has seen
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
@@ -82,18 +84,18 @@ type MsgData struct {
 	// without keeping a chat table. That matters because the app throws away
 	// everything it can when it goes out of sight, and a local mute table was
 	// the last thing forcing it to hold state it could otherwise drop.
-	Muted bool `json:"muted,omitempty"`
-	FromMe     bool   `json:"fromme"`
-	Timestamp  int64  `json:"ts"`              // unix seconds
-	Kind       string `json:"kind"`            // "text" | "image" | "audio" | "video" | "doc"
-	Text       string `json:"text,omitempty"`  // body / caption
-	MediaURL   string `json:"media,omitempty"` // http url on the daemon to fetch the blob
+	Muted     bool   `json:"muted,omitempty"`
+	FromMe    bool   `json:"fromme"`
+	Timestamp int64  `json:"ts"`              // unix seconds
+	Kind      string `json:"kind"`            // "text" | "image" | "audio" | "video" | "doc"
+	Text      string `json:"text,omitempty"`  // body / caption
+	MediaURL  string `json:"media,omitempty"` // http url on the daemon to fetch the blob
 	// ThumbURL is the small preview WhatsApp ships inside the message. The app
 	// renders THIS in a bubble and only fetches MediaURL when you open the
 	// photo full-screen — CSS scaling does not shrink a decoded bitmap, so a
 	// thread of full-size photos costs tens of megabytes of RAM on a phone
 	// that kills whichever backgrounded app is biggest.
-	ThumbURL string `json:"thumb,omitempty"`
+	ThumbURL   string `json:"thumb,omitempty"`
 	Mime       string `json:"mime,omitempty"`
 	QuotedID   string `json:"quoted,omitempty"`
 	QuotedText string `json:"quotedtext,omitempty"` // preview of the message this replies to
@@ -134,6 +136,11 @@ type SendData struct {
 	Private bool `json:"private,omitempty"`
 	// FileName labels a document; ignored for other kinds.
 	FileName string `json:"filename,omitempty"`
+	// SrcMsgID names an existing message whose media is to be sent again. Used
+	// by kind="sticker": the daemon already holds the file, so the phone sends
+	// a reference rather than a hundred kilobytes back up the connection it
+	// just came down.
+	SrcMsgID string `json:"srcmsgid,omitempty"`
 	// Location payload, set when Kind == "location". A one-shot pin; a live
 	// share goes through LiveLocData instead, because it is a session rather
 	// than a message.

@@ -16,12 +16,14 @@
     PROFILE: "profile", CHATUPDATE: "chatupdate",
     REACTION: "reaction", STATUS: "status", TYPING: "typing",
     SEARCHRESULT: "searchresult", EDITED: "edited", LIVELOCSTATE: "livelocstate",
+    STICKERS: "stickers",
     // app -> daemon
     SEND: "send", GETCHATS: "getchats", GETHISTORY: "gethistory",
     MARKREAD: "markread",
     DELETE: "delete", FORWARD: "forward",
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
     SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
+    GETSTICKERS: "getstickers",
     PUSHSUB: "pushsub", EDIT: "edit", LIVELOC: "liveloc",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
