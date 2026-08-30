@@ -18,3 +18,7 @@ pushtest/build/
 __pycache__/
 *.pyc
 kaits/build/
+
+# Created on the server by deploy/update-from-git.sh, and by mkbundle in a
+# temp dir. Six megabytes of somebody else's Go, regenerable in seconds.
+wad/vendor/
