@@ -246,14 +246,14 @@ func TestUpdateAnnouncesTimeRemainingNotElapsed(t *testing.T) {
 // WhatsApp will not render a live location inside a MESSAGE_EDIT. "resend"
 // produces a new live-location card per update. Neither is acceptable as the
 // thing that happens when nobody has set anything.
-func TestLiveUpdateDefaultsToSameID(t *testing.T) {
+func TestLiveUpdateDefaultsToResend(t *testing.T) {
 	t.Setenv("WAD_LIVELOC_MODE", "")
-	if got := liveUpdateMode(); got != "sameid" {
-		t.Errorf("default mode = %q, want sameid", got)
+	if got := liveUpdateMode(); got != "resend" {
+		t.Errorf("default mode = %q, want resend", got)
 	}
 	for _, junk := range []string{"nonsense", "EDITS", " "} {
 		t.Setenv("WAD_LIVELOC_MODE", junk)
-		if got := liveUpdateMode(); got != "sameid" {
+		if got := liveUpdateMode(); got != "resend" {
 			t.Errorf("mode %q gave %q, want the safe default", junk, got)
 		}
 	}
@@ -264,9 +264,8 @@ func TestLiveUpdateDefaultsToSameID(t *testing.T) {
 		}
 	}
 
-	// In the default mode the update is a bare live location: no edit wrapper,
-	// no context info. The link to the opening message is carried by the id the
-	// send is made under, which is not part of the message body at all.
+	// Whatever the mode, an update must never be wrapped in an edit unless it
+	// was asked for: that is the shape a real client renders as a placeholder.
 	chat, _ := types.ParseJID("12345@s.whatsapp.net")
 	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 900, "sameid")
 	if msg.GetEditedMessage() != nil {

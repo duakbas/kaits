@@ -245,29 +245,34 @@ func (c *Client) UpdateLiveLocation(ctx context.Context, chatJID string,
 
 // liveUpdateMode decides how a position update is transmitted. WAD_LIVELOC_MODE:
 //
-//	sameid   (default) re-send under the opening message's id
-//	resend   a separate LiveLocationMessage per update
+//	resend   (default) a separate LiveLocationMessage per update
+//	sameid   re-send under the opening message's id
 //	edit     a MESSAGE_EDIT of the opening message
 //	off      send the opening message only; it never moves
 //
-// This is a switch and not a constant because whatsmeow has no live-location
-// update primitive, and two attempts at inferring the right one have now been
-// wrong on real hardware. "edit" produced a chat full of "you sent an edited
-// message, update WhatsApp" placeholders — the official client will not render
-// a live location inside an edit. "resend" produced a new live-location card
-// every tick. Rather than guess a third time and ship it as the only
-// behaviour, all four are selectable and the one that works can become the
-// default once someone has watched it from another phone.
+// The default is "resend" — a separate message per update, which is what this
+// did originally — because the reason that looked broken has been found, and it
+// was not the envelope. whatsmeow's getMediaTypeFromMessage has no case for
+// LiveLocationMessage, so it returns "" and send.go omits the stanza's
+// mediatype attribute; every live-location stanza we sent, the opening one
+// included, went out unlabelled while a real client labels its own
+// "livelocation". deploy/patch-vendor.sh adds that case to the vendored copy.
+//
+// It stays a switch because that explanation is now well-founded but still
+// unconfirmed end to end, and because two earlier attempts at inferring this
+// protocol were wrong in ways only real hardware showed. "edit" is kept so its
+// failure can be reproduced rather than rediscovered: the official client
+// renders it as "you sent an edited message, update WhatsApp", once per tick.
 func liveUpdateMode() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WAD_LIVELOC_MODE"))) {
-	case "resend":
-		return "resend"
+	case "sameid":
+		return "sameid"
 	case "edit":
 		return "edit"
 	case "off":
 		return "off"
 	default:
-		return "sameid"
+		return "resend"
 	}
 }
 
