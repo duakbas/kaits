@@ -45,9 +45,19 @@ func main() {
 	}
 
 	// Declining is first-party — whatsmeow sends the reject node itself — so it
-	// works today. Answering needs a media backend; see CALLS.md for what that
-	// costs and what it risks. Swapping this for one is the only change here.
-	callMgr := calls.NewManager(calls.NewWABackend(waCli.WA), hub)
+	// works with no third-party code at all, and that is the default.
+	//
+	// WAD_CALLS=1 swaps in meowcaller, which can actually answer. It is a
+	// reimplementation of WhatsApp's voice protocol and is the kind of traffic
+	// that can get an account flagged, so it is opt-in: turning it off again is
+	// an environment variable and a restart rather than a rebuild, which is
+	// what you want at 2am when the account starts behaving oddly.
+	var callBackend calls.Backend = calls.NewWABackend(waCli.WA)
+	if os.Getenv("WAD_CALLS") == "1" {
+		callBackend = calls.NewMeowBackend(waCli.WA)
+		log.Printf("calls: media backend enabled (meowcaller)")
+	}
+	callMgr := calls.NewManager(callBackend, hub)
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 
 	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
