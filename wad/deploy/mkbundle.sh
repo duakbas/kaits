@@ -103,6 +103,10 @@ if command -v go >/dev/null 2>&1; then
   if ( cd "$SRC" && go mod vendor >/dev/null 2>&1 ); then
     VENDORED=yes
     echo "    dependencies vendored ($(du -sh "$SRC/vendor" | cut -f1))"
+    # One case whatsmeow is missing, without which live location does not work
+    # at all. Applied to the copy in this bundle only — see patch-vendor.sh for
+    # why, and for what to check if it ever stops applying.
+    "$DEPLOY/patch-vendor.sh" "$SRC"
   else
     echo "    WARNING: go mod vendor failed; the server will fetch modules itself"
   fi
