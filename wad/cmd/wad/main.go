@@ -44,9 +44,10 @@ func main() {
 		log.Fatalf("wa init: %v", err)
 	}
 
-	// Call manager with the Noop backend for now. Swap calls.Noop{} for your
-	// real meowcaller adapter once implemented — nothing else changes.
-	callMgr := calls.NewManager(calls.Noop{}, hub)
+	// Declining is first-party — whatsmeow sends the reject node itself — so it
+	// works today. Answering needs a media backend; see CALLS.md for what that
+	// costs and what it risks. Swapping this for one is the only change here.
+	callMgr := calls.NewManager(calls.NewWABackend(waCli.WA), hub)
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 
 	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
