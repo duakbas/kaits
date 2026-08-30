@@ -2,7 +2,7 @@
 
 The built app, so it can be fetched from GitHub instead of passed around.
 
-**Current: 1.7.1 (privileged)** — [`kaits.zip`](kaits.zip)
+**Current: 1.7.2 (privileged)** — [`kaits.zip`](kaits.zip)
 
 Download it raw:
 
@@ -32,6 +32,17 @@ is store-only. This file is here to be downloaded and sideloaded.
 Bump the version every time. The KaiStore portal rejects a version it has
 already seen, and on the phone an unchanged version can install over itself
 without actually replacing anything.
+
+## 1.7.2
+
+Video in a bubble is a still with a play badge instead of a blank rectangle.
+Left softkey in the viewer now actually **saves** a photo or video to the phone
+(new permission: device-storage pictures/videos); the right one is "open with",
+which is what the old Save really did. Press **5** in the viewer to rotate a
+video by hand.
+
+Needs the daemon for two of the fixes: automatic video rotation, and the quote
+bar when you reply to a photo or sticker.
 
 ## 1.7.1
 

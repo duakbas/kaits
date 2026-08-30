@@ -880,3 +880,40 @@ header .status.closed { color: var(--danger); }
 /* A GIF is a wide picture, not a square one, so its cell is wider and the row
    holds two rather than three. */
 .sticker-cell.gif { width: 108px; height: 76px; }
+
+/* ---- video in a bubble: a still with a play badge ---- */
+/* Not a <video>. Its controls need a pointer this phone does not have, and
+   with nothing preloaded it drew a large blank rectangle. */
+.video-preview { position: relative; display: inline-block; line-height: 0; }
+.video-blank {
+  width: 160px;
+  height: 90px;
+  background: #000;
+  border-radius: 4px;
+}
+.play-badge {
+  position: absolute;
+  left: 50%; top: 50%;
+  margin: -14px 0 0 -14px;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  color: #fff;
+  font-size: 13px;
+  line-height: 26px;
+  text-align: center;
+  /* The glyph's own bearing sits it left of centre in the circle. */
+  text-indent: 2px;
+}
+
+/* Rotation in the full-screen viewer. The quarter turns swap the axes, so the
+   element is sized against the OTHER dimension before being turned — otherwise
+   a portrait video rotated into landscape is cropped to the screen's width. */
+#viewer-vid.rot90, #viewer-vid.rot270 {
+  max-width: 100vh;
+  max-height: 100vw;
+}
+#viewer-vid.rot90  { transform: rotate(90deg); }
+#viewer-vid.rot180 { transform: rotate(180deg); }
+#viewer-vid.rot270 { transform: rotate(270deg); }

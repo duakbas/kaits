@@ -29,6 +29,11 @@ import (
 // Client bundles the whatsmeow client with a handle to the ws hub so events
 // can be pushed straight to the phone.
 type Client struct {
+	// Video rotation, worked out once per video from its MP4 header. See
+	// mp4rot.go for why the app cannot do this itself.
+	rotMu    sync.Mutex
+	rotCache map[string]int
+
 	WA  *whatsmeow.Client
 	hub *ws.Hub
 
@@ -871,11 +876,21 @@ func (c *Client) fillQuote(d *ws.MsgData) {
 	if d.QuotedID == "" || d.QuotedText != "" {
 		return
 	}
-	_, senderStr, _, text, fromMe, ok := c.hist.messageByID(d.QuotedID)
-	if !ok || text == "" {
+	_, senderStr, kind, text, fromMe, ok := c.hist.messageByID(d.QuotedID)
+	if !ok {
 		// Quoting something we never stored — before a resync, or a message
 		// that predates history. The reply itself is still valid on the stanza
-		// id, so send it; it simply renders without the bar, exactly as now.
+		// id, so send it; it simply renders without the bar.
+		return
+	}
+	if text == "" {
+		// A photo, video or sticker with no caption has no text at all, and
+		// bailing out here is why replying to one produced a bare bubble: the
+		// app draws the quote bar on quotedtext, so an empty one is no bar.
+		// Label it the way WhatsApp labels it.
+		text = kindLabel(kind)
+	}
+	if text == "" {
 		return
 	}
 	d.QuotedText = text
@@ -898,6 +913,30 @@ func (c *Client) fillQuote(d *ws.MsgData) {
 		// the person reading it.
 		d.QuotedName = c.canonicalJID(jid).User
 	}
+}
+
+// kindLabel names a message that has nothing to quote — media without a
+// caption. WhatsApp shows the same thing in the same place, so a quote bar
+// reading "Photo" is what someone would expect to see rather than a
+// placeholder that needs explaining.
+func kindLabel(kind string) string {
+	switch kind {
+	case "image":
+		return "Photo"
+	case "video":
+		return "Video"
+	case "gif":
+		return "GIF"
+	case "sticker":
+		return "Sticker"
+	case "audio":
+		return "Voice message"
+	case "doc":
+		return "Document"
+	case "location":
+		return "Location"
+	}
+	return ""
 }
 
 // LocationThumb returns the stored map preview for a location message.
@@ -1901,4 +1940,35 @@ func (c *Client) StickerGIF(ctx context.Context, msgID string, webp []byte) ([]b
 	}
 	c.hist.putStickerGIF(msgID, gif)
 	return gif, true
+}
+
+// VideoRotationFor reports how far a video must be turned to display upright.
+//
+// Cached, because it means downloading the file to read eight bytes out of its
+// header, and the answer cannot change. The download is the same one the app is
+// about to make anyway, so in practice this is paid once per video ever.
+func (c *Client) VideoRotationFor(ctx context.Context, msgID string) int {
+	if msgID == "" {
+		return 0
+	}
+	c.rotMu.Lock()
+	if deg, ok := c.rotCache[msgID]; ok {
+		c.rotMu.Unlock()
+		return deg
+	}
+	c.rotMu.Unlock()
+
+	data, err := c.DownloadMedia(ctx, msgID)
+	if err != nil || len(data) == 0 {
+		return 0
+	}
+	deg := VideoRotation(data)
+
+	c.rotMu.Lock()
+	if c.rotCache == nil {
+		c.rotCache = map[string]int{}
+	}
+	c.rotCache[msgID] = deg
+	c.rotMu.Unlock()
+	return deg
 }

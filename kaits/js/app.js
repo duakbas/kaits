@@ -1634,17 +1634,31 @@
         if (p && p.catch) p.catch(function () {});
       } catch (e) { /* autoplay refused; the poster frame is fine */ }
     } else if (m.kind === "video") {
-      var vid = document.createElement("video");
-      vid.className = "media-img";
-      vid.src = url;
-      vid.controls = true;
-      // preload="none" plus a poster: the element shows the small preview and
-      // decodes nothing of the video until it is played. With "metadata" the
-      // engine pulls and decodes a full-size frame for every video in the
-      // thread, which is the same memory problem as the photos.
-      vid.preload = "none";
-      if (m.thumb) vid.poster = mediaBase() + m.thumb;
-      b.appendChild(vid);
+      // A poster and a play badge, NOT a <video>. The element in a bubble was
+      // furniture: its controls need a pointer this phone does not have, and
+      // with preload="none" and no poster it drew a large blank rectangle,
+      // which is exactly what was reported. It also cost a decoder per video
+      // in the thread on a device that kills whichever app is largest.
+      var vwrap = document.createElement("div");
+      vwrap.className = "video-preview";
+      if (m.thumb) {
+        var vth = document.createElement("img");
+        vth.className = "media-img";
+        vth.src = mediaBase() + m.thumb;
+        vth.alt = "";
+        vwrap.appendChild(vth);
+      } else {
+        // No preview shipped with the message. Something has to occupy the
+        // space or the badge floats in nothing.
+        var vph = document.createElement("div");
+        vph.className = "video-blank";
+        vwrap.appendChild(vph);
+      }
+      var badge = document.createElement("div");
+      badge.className = "play-badge";
+      badge.textContent = "\u25B6";
+      vwrap.appendChild(badge);
+      b.appendChild(vwrap);
       if (m.text) {
         var vcap = document.createElement("div");
         vcap.className = "caption";
@@ -2336,6 +2350,39 @@
   var viewerList = [];
   var viewerIdx = 0;
 
+  // How far the video on screen is turned. A phone stores a portrait video
+  // landscape with a rotation matrix in the file header, and this engine
+  // predates rotation support, so it plays it on its side. The daemon reads the
+  // matrix and says; until it answers, or if it cannot tell, this stays 0 and
+  // the 5 key cycles it by hand.
+  var viewerRot = 0;
+
+  function setViewerRotation(deg) {
+    viewerRot = ((deg % 360) + 360) % 360;
+    elViewerVid.className = viewerRot ? "rot" + viewerRot : "";
+    paintViewerState();
+  }
+
+  // Ask the daemon, once per video. XHR rather than fetch: this engine has no
+  // fetch, and a failure here must leave the video playing rather than break
+  // the viewer.
+  function loadVideoRotation(m) {
+    setViewerRotation(0);
+    if (!m || !m.msgid) return;
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", mediaBase() + "/videoinfo/" + encodeURIComponent(m.msgid), true);
+    xhr.onload = function () {
+      if (xhr.status !== 200) return;
+      var deg = 0;
+      try { deg = (JSON.parse(xhr.responseText) || {}).rot || 0; } catch (e) { return; }
+      // Only if we are still looking at the same video: these come back late.
+      var cur = viewerList[viewerIdx];
+      if (cur && cur.msgid === m.msgid) setViewerRotation(deg);
+    };
+    xhr.onerror = function () { /* an older daemon has no /videoinfo; 0 is fine */ };
+    try { xhr.send(); } catch (e) {}
+  }
+
   function viewerIsVideo() {
     var m = viewerList[viewerIdx];
     return !!(m && m.kind === "video");
@@ -2362,20 +2409,31 @@
       onRight: function () { if (viewerIsVideo()) seekVideo(5); else stepViewer(1); },
       onUp: function () { stepViewer(-1); },
       onDown: function () { stepViewer(1); },
-      onSoftLeft: closeViewer,
+      onSoftLeft: saveCurrentMedia,
       onBack: closeViewer,
-      onSoftRight: function () { saveCurrentImage(); },
+      onSoftRight: openCurrentMedia,
       onEnter: function () {
         if (viewerIsVideo()) togglePlay();
-        else saveCurrentImage();
+        else saveCurrentMedia();
+      },
+      // A video this engine will not turn for itself can at least be turned by
+      // hand. Also the escape hatch when the daemon's guess is wrong.
+      onKey: function (e) {
+        if (e && (e.key === "5" || e.key === "#")) {
+          setViewerRotation((viewerRot + 90) % 360);
+          return true;
+        }
+        return false;
       }
     });
     paintViewerKeys();
   }
 
+  // Left is Save, for a photo and a video alike — that is what it was asked
+  // for, and closing is the red key's job here as everywhere else.
   function paintViewerKeys() {
-    if (!viewerIsVideo()) { Nav.setSoftkeys("Close", "", "Save"); return; }
-    Nav.setSoftkeys("Close", elViewerVid.paused ? "PLAY" : "PAUSE", "Open");
+    if (!viewerIsVideo()) { Nav.setSoftkeys("Save", "", "Open"); return; }
+    Nav.setSoftkeys("Save", elViewerVid.paused ? "PLAY" : "PAUSE", "Open");
   }
 
   // Playback state has to be said in words. There is no control bar — the
@@ -2389,7 +2447,7 @@
     var at = v.currentTime || 0;
     elViewerState.textContent =
       (v.paused ? "❚❚ " : "▶ ") + clock(at) + (dur ? " / " + clock(dur) : "") +
-      "   ←5s  5s→";
+      "   ←5s  5s→" + (viewerRot ? "   ⟳" + viewerRot + "°" : "");
   }
 
   function clock(secs) {
@@ -2446,6 +2504,7 @@
       if (m.thumb) elViewerVid.poster = mediaBase() + m.thumb;
       else elViewerVid.removeAttribute("poster");
       elViewerVid.src = url;
+      loadVideoRotation(m);
     } else {
       elViewerImg.hidden = false;
       elViewerImg.src = url;
@@ -2501,7 +2560,9 @@
 
   // Saving hands the image to the phone rather than triggering a browser
   // download — on KaiOS a "download" isn't a meaningful concept.
-  function saveCurrentImage() {
+  // openCurrentMedia hands the file to whatever app on the phone claims it.
+  // This is what the old "Save" did, and it is not saving — it is "open with".
+  function openCurrentMedia() {
     var m = viewerList[viewerIdx];
     if (!m) return;
     var url = mediaBase() + m.media;
@@ -2512,6 +2573,52 @@
       } catch (e) { /* fall through */ }
     }
     window.open(url, "_blank");
+  }
+
+  // saveCurrentMedia writes the file to the phone's own storage, where the
+  // Gallery and the file manager will find it. There is no "downloads" on
+  // KaiOS: a file is somewhere on the card or it does not exist.
+  function saveCurrentMedia() {
+    var m = viewerList[viewerIdx];
+    if (!m) return;
+    var isVideo = m.kind === "video";
+    var store = null;
+    if (navigator.getDeviceStorage) {
+      // The narrow stores rather than "sdcard": they are what the Gallery
+      // indexes, and they are the least this needs.
+      try { store = navigator.getDeviceStorage(isVideo ? "videos" : "pictures"); }
+      catch (e) { store = null; }
+    }
+    if (!store) {
+      toast("No storage to save to — trying Open instead");
+      openCurrentMedia();
+      return;
+    }
+
+    toast("Saving…");
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", mediaBase() + m.media, true);
+    xhr.responseType = "blob";
+    xhr.onload = function () {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        toast("Couldn't fetch it (" + xhr.status + ")");
+        return;
+      }
+      var name = "kaits/" + (m.msgid || String(Date.now())) +
+        (isVideo ? ".mp4" : (m.mime === "image/png" ? ".png" : ".jpg"));
+      var req;
+      try { req = store.addNamed(xhr.response, name); }
+      catch (e) { toast("Can't save: " + (e && e.message ? e.message : e)); return; }
+      req.onsuccess = function () { toast("Saved to " + name); };
+      req.onerror = function () {
+        // The usual cause is a name that already exists, which is worth saying
+        // rather than reporting a generic failure on a second save.
+        var why = req.error && req.error.name ? req.error.name : "failed";
+        toast(why === "NoModificationAllowedError" ? "Already saved" : "Save failed: " + why);
+      };
+    };
+    xhr.onerror = function () { toast("Couldn't fetch it"); };
+    xhr.send();
   }
 
   // ---------- links ----------
