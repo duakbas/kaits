@@ -107,7 +107,21 @@ fi
 
 say "checking the hostname points here"
 MYIP="$(curl -fsS https://api.ipify.org 2>/dev/null || true)"
-HOSTIP="$(getent hosts "$HOST" | awk '{print $1}' | head -1 || true)"
+# Public DNS, not the resolver. getent reads /etc/hosts first, and Ubuntu puts
+# the machine's own hostname there pointing at 127.0.1.1 — so on exactly the
+# box we are configuring, the check answered "127.0.1.1" and warned that the
+# certificate would fail, every single run, while the DNS was perfectly fine.
+HOSTIP=""
+if command -v dig >/dev/null 2>&1; then
+  HOSTIP="$(dig +short +time=3 +tries=1 A "$HOST" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
+elif command -v host >/dev/null 2>&1; then
+  HOSTIP="$(host -t A "$HOST" 2>/dev/null | awk '/has address/ {print $4; exit}')"
+fi
+# No dns tools: fall back to the resolver, but ignore a loopback answer, which
+# is the /etc/hosts entry rather than anything the world can see.
+if [ -z "$HOSTIP" ]; then
+  HOSTIP="$(getent hosts "$HOST" | awk '{print $1}' | grep -v '^127\.' | head -1 || true)"
+fi
 if [ -n "$MYIP" ] && [ -n "$HOSTIP" ] && [ "$MYIP" != "$HOSTIP" ]; then
   echo "    WARNING: $HOST resolves to $HOSTIP but this box is $MYIP."
   echo "    Certificate issuance will fail until the DNS record points here."
@@ -313,7 +327,19 @@ else
     fi
   fi
 
-  if [ "$CADDY_WAS_UP" = yes ] && ! grep -q "managed by wad install.sh" /etc/caddy/Caddyfile 2>/dev/null; then
+  # "Already ours" means the marker OR a config that already proxies to the
+  # daemon — someone who wired Caddy up by hand has a working setup, and
+  # telling them it is "NOT reachable yet" and to import a second site block
+  # for the same hostname would break the thing that works.
+  CADDY_IS_OURS=no
+  if grep -q "managed by wad install.sh" /etc/caddy/Caddyfile 2>/dev/null; then
+    CADDY_IS_OURS=yes
+  elif grep -q "127\.0\.0\.1:$INT" /etc/caddy/Caddyfile 2>/dev/null; then
+    CADDY_IS_OURS=yes
+    echo "    Caddy already proxies to 127.0.0.1:$INT — leaving your config alone."
+  fi
+
+  if [ "$CADDY_WAS_UP" = yes ] && [ "$CADDY_IS_OURS" = no ]; then
     # Caddy was already serving somebody else's site. Overwriting its config
     # would take that site down, which is not this script's decision to make.
     install -m 644 "$SITE" /etc/caddy/wad.caddy
@@ -327,14 +353,23 @@ else
     echo "    (if that file already has a global { } block at the top, move the"
     echo "     auto_https line into it instead of importing a second one)"
   else
-    if [ -f /etc/caddy/Caddyfile ] && ! grep -q "managed by wad install.sh" /etc/caddy/Caddyfile; then
+    if [ "$CADDY_IS_OURS" = yes ] && ! grep -q "managed by wad install.sh" /etc/caddy/Caddyfile 2>/dev/null; then
+      # Hand-wired and already pointing at us: nothing to do, and rewriting it
+      # would throw away whatever else that file serves.
+      echo "    nothing to change"
+      rm -f "$SITE"
+      SITE=""
+    fi
+    if [ -n "$SITE" ] && [ -f /etc/caddy/Caddyfile ] && ! grep -q "managed by wad install.sh" /etc/caddy/Caddyfile; then
       cp -n /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.before-wad" 2>/dev/null || true
       echo "    kept the previous config as /etc/caddy/Caddyfile.before-wad"
     fi
-    { echo "# managed by wad install.sh"; cat "$SITE"; } > /etc/caddy/Caddyfile
-    systemctl enable caddy >/dev/null 2>&1 || true
-    systemctl restart caddy
-    echo "    serving $HOST on :$PORT"
+    if [ -n "$SITE" ]; then
+      { echo "# managed by wad install.sh"; cat "$SITE"; } > /etc/caddy/Caddyfile
+      systemctl enable caddy >/dev/null 2>&1 || true
+      systemctl restart caddy
+      echo "    serving $HOST on :$PORT"
+    fi
   fi
   rm -f "$SITE"
 fi
