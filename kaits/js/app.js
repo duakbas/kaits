@@ -60,6 +60,8 @@
   var elPromptHint = document.getElementById("prompt-hint");
   var elViewer = document.getElementById("viewer");
   var elViewerImg = document.getElementById("viewer-img");
+  var elViewerVid = document.getElementById("viewer-vid");
+  var elViewerState = document.getElementById("viewer-state");
   var elViewerCap = document.getElementById("viewer-caption");
   var elSearch = document.getElementById("search");
   var elSetup = document.getElementById("setup");
@@ -704,18 +706,23 @@
     return "ACTIONS";
   }
 
+  // What the full-screen viewer can show. Video is in here because a <video>
+  // with controls in a bubble is unusable on this phone: the control bar needs
+  // a pointer, and there isn't one. Playing it means opening it properly.
+  function viewableKind(kind) {
+    return kind === "image" || kind === "sticker" || kind === "video";
+  }
+
   function selectedIsViewable() {
     var msgs = threads[currentJID] || [];
     var m = msgs[selectIdx];
-    return !!(m && !m.deleted && m.media &&
-      (m.kind === "image" || m.kind === "sticker"));
+    return !!(m && !m.deleted && m.media && viewableKind(m.kind));
   }
 
   function enterOnSelected() {
     var msgs = threads[currentJID] || [];
     var m = msgs[selectIdx];
-    if (m && !m.deleted && m.media &&
-        (m.kind === "image" || m.kind === "sticker")) {
+    if (m && !m.deleted && m.media && viewableKind(m.kind)) {
       openViewer(m);
       return;
     }
@@ -2327,10 +2334,15 @@
   var viewerList = [];
   var viewerIdx = 0;
 
+  function viewerIsVideo() {
+    var m = viewerList[viewerIdx];
+    return !!(m && m.kind === "video");
+  }
+
   function openViewer(m) {
     var msgs = threads[currentJID] || [];
     viewerList = msgs.filter(function (x) {
-      return (x.kind === "image" || x.kind === "sticker") && x.media && !x.deleted;
+      return viewableKind(x.kind) && x.media && !x.deleted;
     });
     viewerIdx = 0;
     for (var i = 0; i < viewerList.length; i++) {
@@ -2340,26 +2352,133 @@
     showViewerAt(viewerIdx);
 
     elViewer.hidden = false;
+    // Up/Down always step between items. Left/Right step for a photo and SEEK
+    // for a video — a video needs a scrub control far more than it needs two
+    // more ways to do what Up and Down already do, and there are no keys left.
     Nav.setScreen({
-      onLeft: function () { stepViewer(-1); },
-      onRight: function () { stepViewer(1); },
+      onLeft: function () { if (viewerIsVideo()) seekVideo(-5); else stepViewer(-1); },
+      onRight: function () { if (viewerIsVideo()) seekVideo(5); else stepViewer(1); },
       onUp: function () { stepViewer(-1); },
       onDown: function () { stepViewer(1); },
       onSoftLeft: closeViewer,
       onBack: closeViewer,
       onSoftRight: function () { saveCurrentImage(); },
-      onEnter: function () { saveCurrentImage(); }
+      onEnter: function () {
+        if (viewerIsVideo()) togglePlay();
+        else saveCurrentImage();
+      }
     });
-    Nav.setSoftkeys("Close", "", "Save");
+    paintViewerKeys();
+  }
+
+  function paintViewerKeys() {
+    if (!viewerIsVideo()) { Nav.setSoftkeys("Close", "", "Save"); return; }
+    Nav.setSoftkeys("Close", elViewerVid.paused ? "PLAY" : "PAUSE", "Open");
+  }
+
+  // Playback state has to be said in words. There is no control bar — the
+  // native one is unreachable without a pointer and eats a quarter of a 240px
+  // screen showing buttons nothing can press.
+  function paintViewerState() {
+    if (!elViewerState) return;
+    if (!viewerIsVideo()) { elViewerState.textContent = ""; return; }
+    var v = elViewerVid;
+    var dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+    var at = v.currentTime || 0;
+    elViewerState.textContent =
+      (v.paused ? "❚❚ " : "▶ ") + clock(at) + (dur ? " / " + clock(dur) : "") +
+      "   ←5s  5s→";
+  }
+
+  function clock(secs) {
+    var s = Math.max(0, Math.round(secs));
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  function togglePlay() {
+    var v = elViewerVid;
+    try {
+      // play() returns undefined on Gecko 48 — promises came later — so a
+      // .catch() on it throws and takes the handler down with it.
+      if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+      else v.pause();
+    } catch (e) { toast("Can't play this video"); }
+    paintViewerKeys();
+    paintViewerState();
+  }
+
+  function seekVideo(delta) {
+    var v = elViewerVid;
+    try {
+      var to = (v.currentTime || 0) + delta;
+      if (to < 0) to = 0;
+      if (isFinite(v.duration) && to > v.duration) to = v.duration;
+      v.currentTime = to;
+    } catch (e) { /* not seekable yet; the position simply doesn't move */ }
+    paintViewerState();
+  }
+
+  // Releasing the decoder is not optional. A <video> holds buffered data and a
+  // hardware decoder for as long as it has a src, and this app is killed by the
+  // system for being the largest thing in the background.
+  function releaseVideo() {
+    var v = elViewerVid;
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute("src");
+    try { v.load(); } catch (e) {}
+    v.hidden = true;
   }
 
   function showViewerAt(i) {
     var m = viewerList[i];
     if (!m) return;
-    elViewerImg.src = mediaBase() + m.media;
+    var url = mediaBase() + m.media;
+
+    releaseVideo();
+    if (m.kind === "video") {
+      elViewerImg.hidden = true;
+      elViewerImg.src = "";
+      elViewerVid.hidden = false;
+      if (m.thumb) elViewerVid.poster = mediaBase() + m.thumb;
+      else elViewerVid.removeAttribute("poster");
+      elViewerVid.src = url;
+    } else {
+      elViewerImg.hidden = false;
+      elViewerImg.src = url;
+    }
+
     var caption = m.text || "";
     var pos = viewerList.length > 1 ? (i + 1) + "/" + viewerList.length : "";
     elViewerCap.textContent = [pos, caption].filter(Boolean).join("  ");
+    paintViewerKeys();
+    paintViewerState();
+  }
+
+  // The state line is only true if something repaints it. Wire it once, here,
+  // rather than on every showViewerAt — a listener added per open leaks one per
+  // photo you look at.
+  if (elViewerVid) {
+    elViewerVid.addEventListener("timeupdate", paintViewerState, false);
+    elViewerVid.addEventListener("loadedmetadata", paintViewerState, false);
+    elViewerVid.addEventListener("play", function () {
+      paintViewerKeys(); paintViewerState();
+    }, false);
+    elViewerVid.addEventListener("pause", function () {
+      paintViewerKeys(); paintViewerState();
+    }, false);
+    elViewerVid.addEventListener("ended", function () {
+      paintViewerKeys(); paintViewerState();
+    }, false);
+    // A codec this engine cannot decode fails silently otherwise: a black
+    // rectangle and no explanation. WhatsApp video is usually H.264 in MP4,
+    // which this hardware plays, but "usually" is doing work in that sentence.
+    elViewerVid.addEventListener("error", function () {
+      if (elViewerState) {
+        elViewerState.textContent = "Can't play this video here — Open hands it to the phone";
+      }
+    }, false);
   }
 
   function stepViewer(delta) {
@@ -2372,6 +2491,8 @@
   function closeViewer() {
     elViewer.hidden = true;
     elViewerImg.src = "";
+    elViewerImg.hidden = false;
+    releaseVideo();
     enterSelectMode();
     renderThread();
   }

@@ -112,6 +112,12 @@
     <!-- full-screen media viewer -->
     <div id="viewer" hidden>
       <img id="viewer-img" alt="">
+      <!-- Separate element rather than one that swaps tag: a <video> keeps its
+           decoder and its buffered data alive, and the only reliable way to
+           make it let go on this engine is to clear src on an element that
+           stays put. -->
+      <video id="viewer-vid" preload="none" hidden></video>
+      <div id="viewer-state"></div>
       <div id="viewer-caption"></div>
     </div>
 

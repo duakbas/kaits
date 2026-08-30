@@ -673,6 +673,23 @@ func mediaHandler(c *wa.Client) http.HandlerFunc {
 		if mime == "" {
 			mime = "application/octet-stream"
 		}
+
+		// Stickers are WebP and this phone has no WebP decoder — Gecko 48
+		// predates the format by seventeen releases, so the app would render a
+		// broken image. Convert here, where the bytes already are and where a
+		// decoder exists, so the app just sees an image.
+		if png, animated, ok := wa.TranscodeSticker(data); ok {
+			data, mime = png, "image/png"
+		} else if animated || wa.IsWebP(data) {
+			// An animation, or a WebP this decoder doesn't know. WhatsApp ships
+			// a still preview inside every sticker message, so send that rather
+			// than bytes the browser will refuse: a still sticker beats a
+			// broken one.
+			if thumb := c.Thumb(id); len(thumb) > 0 {
+				data, mime = thumb, "image/jpeg"
+			}
+		}
+
 		w.Header().Set("Content-Type", mime)
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		w.Write(data)

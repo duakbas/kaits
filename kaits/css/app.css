@@ -667,10 +667,24 @@ header .status.closed { color: var(--danger); }
   z-index: 20;
 }
 #viewer[hidden] { display: none; }
-#viewer-img {
+#viewer-img,
+#viewer-vid {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+/* No controls attribute on the viewer's video: there is no pointer to press
+   them with, and the native control bar eats a quarter of a 240px screen to
+   show buttons nothing can reach. The D-pad drives it instead. */
+#viewer-vid[hidden] { display: none; }
+#viewer-img[hidden] { display: none; }
+/* Playback state, drawn as text because there is nothing else to draw it on. */
+#viewer-state {
+  color: #fff;
+  font-size: 11px;
+  padding: 2px 6px;
+  min-height: 13px;
+  text-align: center;
 }
 #viewer-caption {
   color: var(--muted);
