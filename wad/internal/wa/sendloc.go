@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -211,38 +213,71 @@ func (c *Client) UpdateLiveLocation(ctx context.Context, chatJID string,
 	startMsg := s.startMsg
 	c.live.mu.Unlock()
 
-	msg := liveUpdateMsg(startMsg, jid, lat, lon, acc, seq, remaining)
+	mode := liveUpdateMode()
+	if mode == "off" {
+		// The opening card stands and does not move. Chosen deliberately when
+		// every way of updating it makes the chat worse than a share that is
+		// merely stale.
+		return true, nil
+	}
 
-	if _, err := c.WA.SendMessage(ctx, jid, msg); err != nil {
+	msg := liveUpdateMsg(startMsg, jid, lat, lon, acc, seq, remaining, mode)
+
+	var err2 error
+	if mode == "sameid" {
+		// Re-send under the ID of the message that opened the share. A client
+		// that already has that id updates the message it has rather than
+		// appending; one that does not, has nothing to append to either.
+		_, err2 = c.WA.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{ID: startMsg})
+	} else {
+		_, err2 = c.WA.SendMessage(ctx, jid, msg)
+	}
+	if err2 != nil {
 		c.live.mu.Lock()
 		if cur, still := c.live.m[jid.String()]; still {
 			cur.broken = true
 		}
 		c.live.mu.Unlock()
-		return true, err
+		return true, err2
 	}
 	return true, nil
 }
 
+// liveUpdateMode decides how a position update is transmitted. WAD_LIVELOC_MODE:
+//
+//	sameid   (default) re-send under the opening message's id
+//	resend   a separate LiveLocationMessage per update
+//	edit     a MESSAGE_EDIT of the opening message
+//	off      send the opening message only; it never moves
+//
+// This is a switch and not a constant because whatsmeow has no live-location
+// update primitive, and two attempts at inferring the right one have now been
+// wrong on real hardware. "edit" produced a chat full of "you sent an edited
+// message, update WhatsApp" placeholders — the official client will not render
+// a live location inside an edit. "resend" produced a new live-location card
+// every tick. Rather than guess a third time and ship it as the only
+// behaviour, all four are selectable and the one that works can become the
+// default once someone has watched it from another phone.
+func liveUpdateMode() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WAD_LIVELOC_MODE"))) {
+	case "resend":
+		return "resend"
+	case "edit":
+		return "edit"
+	case "off":
+		return "off"
+	default:
+		return "sameid"
+	}
+}
+
 // liveUpdateMsg builds one position update for a running share.
 //
-// It is an EDIT of the message that opened the share, not a new message, and
-// that is the whole point. whatsmeow has no live-location update primitive —
-// LiveLocationMessage is an ordinary message to its send path, with no special
-// stanza attributes — so every update went out as a fresh message with a fresh
-// id, and the chat filled up with a new live-location card every half minute
-// instead of one card that moves.
-//
-// MESSAGE_EDIT is the only in-place mechanism available here. Two things to
-// know about it: official clients put a time limit on edits, so a long share
-// may stop updating partway through, and a client that doesn't apply the edit
-// shows the opening position for the whole share. Both are better than the
-// alternative, which is one message per tick for up to eight hours.
-//
-// WAD_LIVELOC_RESEND=1 restores the old behaviour, for finding out which of
-// these a real client actually does.
+// The content is the same in every mode — position, an increasing sequence
+// number, and the time the share has LEFT to run. Only the envelope differs,
+// and which envelope is right is the open question this switch exists for.
 func liveUpdateMsg(startMsg string, chat types.JID, lat, lon float64,
-	acc uint32, seq int64, remaining uint32) *waE2E.Message {
+	acc uint32, seq int64, remaining uint32, mode string) *waE2E.Message {
 
 	live := &waE2E.LiveLocationMessage{
 		DegreesLatitude:  proto.Float64(lat),
@@ -255,27 +290,36 @@ func liveUpdateMsg(startMsg string, chat types.JID, lat, lon float64,
 	}
 	content := &waE2E.Message{LiveLocationMessage: live}
 
-	if os.Getenv("WAD_LIVELOC_RESEND") == "1" {
-		// The old shape: a separate message pointing back at the opening one.
+	switch mode {
+	case "resend":
+		// A separate message pointing back at the opening one, in the hope a
+		// client groups them. None observed does.
 		live.ContextInfo = &waE2E.ContextInfo{StanzaID: proto.String(startMsg)}
 		return content
-	}
 
-	return &waE2E.Message{
-		EditedMessage: &waE2E.FutureProofMessage{
-			Message: &waE2E.Message{
-				ProtocolMessage: &waE2E.ProtocolMessage{
-					Key: &waCommon.MessageKey{
-						FromMe:    proto.Bool(true),
-						ID:        proto.String(startMsg),
-						RemoteJID: proto.String(chat.String()),
+	case "edit":
+		// Kept only so the failure can be reproduced deliberately: the official
+		// client renders this as "you sent an edited message, update WhatsApp",
+		// once per update.
+		return &waE2E.Message{
+			EditedMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{
+					ProtocolMessage: &waE2E.ProtocolMessage{
+						Key: &waCommon.MessageKey{
+							FromMe:    proto.Bool(true),
+							ID:        proto.String(startMsg),
+							RemoteJID: proto.String(chat.String()),
+						},
+						Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+						EditedMessage: content,
+						TimestampMS:   proto.Int64(time.Now().UnixMilli()),
 					},
-					Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
-					EditedMessage: content,
-					TimestampMS:   proto.Int64(time.Now().UnixMilli()),
 				},
 			},
-		},
+		}
+
+	default: // sameid — the message itself is unadorned; the ID carries the link
+		return content
 	}
 }
 
