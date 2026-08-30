@@ -31,14 +31,15 @@ type Backend interface {
 	// the peer's audio as PCM; the returned Source lets us push OUR audio back.
 	Answer(ctx context.Context, callID string, sink PCMSink) (PCMSource, error)
 
-	// Reject declines an incoming call.
-	Reject(ctx context.Context, callID string) error
+	// Reject declines an incoming call. fromJID is needed as well as the id:
+	// a reject is addressed to the caller, not to the call.
+	Reject(ctx context.Context, callID, fromJID string) error
 
 	// Dial places an outgoing call to a JID/number. Same media contract.
 	Dial(ctx context.Context, dest string, sink PCMSink) (PCMSource, string, error)
 
 	// Hangup ends the active call.
-	Hangup(ctx context.Context, callID string) error
+	Hangup(ctx context.Context, callID, fromJID string) error
 }
 
 // PCMSink receives 48kHz mono float32 PCM frames from the peer.
@@ -56,6 +57,9 @@ type Manager struct {
 	hub *ws.Hub
 
 	activeCallID string
+	// The caller's JID, kept because a reject is addressed to them rather than
+	// to the call — the id alone is not enough to decline.
+	activeCallFrom string
 	// pion PeerConnection would live here; omitted until backend is real.
 }
 
@@ -72,6 +76,7 @@ func NewManager(be Backend, hub *ws.Hub) *Manager {
 // import (see wacall.go) and call the methods below.
 func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, ts int64) {
 	m.activeCallID = callID
+	m.activeCallFrom = fromJID
 	m.hub.PushT(ws.TCallOffer, ws.CallData{
 		CallID:    callID,
 		FromJID:   fromJID,
@@ -86,6 +91,7 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 func (m *Manager) NotifyEnded(callID, reason string) {
 	if callID == m.activeCallID {
 		m.activeCallID = ""
+		m.activeCallFrom = ""
 	}
 	m.hub.PushT(ws.TCallState, map[string]any{"callid": callID, "state": "ended", "reason": reason})
 }
@@ -96,19 +102,25 @@ func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 	case ws.TCallAnswer:
 		// TODO(pion): create PeerConnection, set up transcode, then:
 		//   src, err := m.be.Answer(ctx, m.activeCallID, m.onPeerPCM)
-		// For now just acknowledge so the app flow is testable.
 		if err := m.answer(ctx); err != nil {
 			m.hub.PushT(ws.TError, map[string]string{"code": "answer", "msg": err.Error()})
 		}
 	case ws.TCallReject:
 		if m.activeCallID != "" {
-			_ = m.be.Reject(ctx, m.activeCallID)
-			m.activeCallID = ""
+			if err := m.be.Reject(ctx, m.activeCallID, m.activeCallFrom); err != nil {
+				// Worth saying out loud: a decline that silently failed leaves
+				// the caller ringing and the user believing they hung up.
+				log.Printf("calls: reject %s: %v", m.activeCallID, err)
+				m.hub.PushT(ws.TError, map[string]string{"code": "reject", "msg": err.Error()})
+			}
+			m.activeCallID, m.activeCallFrom = "", ""
 		}
 	case ws.TCallHangup:
 		if m.activeCallID != "" {
-			_ = m.be.Hangup(ctx, m.activeCallID)
-			m.activeCallID = ""
+			if err := m.be.Hangup(ctx, m.activeCallID, m.activeCallFrom); err != nil {
+				log.Printf("calls: hangup %s: %v", m.activeCallID, err)
+			}
+			m.activeCallID, m.activeCallFrom = "", ""
 		}
 	case ws.TCallSignalA:
 		// Forward app's SDP/ICE into pion. TODO when pion is wired.
@@ -120,8 +132,16 @@ func (m *Manager) answer(ctx context.Context) error {
 	if m.activeCallID == "" {
 		return nil
 	}
+	// Ask the backend before telling the app it worked. The old code announced
+	// "accepted" unconditionally, so a phone with no media backend showed a
+	// call in progress and silence — which is a worse failure than being told
+	// the call cannot be answered here.
+	if _, err := m.be.Answer(ctx, m.activeCallID, nil); err != nil {
+		m.hub.PushT(ws.TCallState, map[string]any{
+			"callid": m.activeCallID, "state": "ended", "reason": "no-media"})
+		return err
+	}
 	m.hub.PushT(ws.TCallState, map[string]any{"callid": m.activeCallID, "state": "accepted"})
-	// Real impl: m.be.Answer + pion offer -> push TCallSignal to app.
 	return nil
 }
 
@@ -133,11 +153,11 @@ func (Noop) Answer(context.Context, string, PCMSink) (PCMSource, error) {
 	log.Printf("calls: Noop backend — Answer ignored (wire meowcaller)")
 	return noopSource{}, nil
 }
-func (Noop) Reject(context.Context, string) error { return nil }
+func (Noop) Reject(context.Context, string, string) error { return nil }
 func (Noop) Dial(context.Context, string, PCMSink) (PCMSource, string, error) {
 	return noopSource{}, "", nil
 }
-func (Noop) Hangup(context.Context, string) error { return nil }
+func (Noop) Hangup(context.Context, string, string) error { return nil }
 
 type noopSource struct{}
 
