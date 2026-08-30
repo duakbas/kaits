@@ -16,9 +16,18 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca // indirect
+	github.com/pion/datachannel v1.6.0 // indirect
+	github.com/pion/dtls/v3 v3.1.2 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/opus v0.1.0 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/sctp v1.9.4 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/purpshell/meowcaller v0.0.0-20260811012811-27a3c6b18657 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect

@@ -88,10 +88,12 @@ and it's the half of calling that's most used.
 delivered. Store them as messages of kind `call`. Independent of everything
 below.
 
-**2. meowcaller, server-side only.** Answer an incoming call and write the
-peer's audio to a WAV on the VPS. No phone involved. This proves the whole
-WhatsApp leg — MLow, SRTP, relay — in isolation, and if meowcaller doesn't work
-against a current account, we find out before writing any of the rest.
+**2. meowcaller, server-side only.** BUILT — `internal/calls/meow.go`, behind
+`WAD_CALLS=1`. Set `WAD_CALL_RECORD=/some/dir` as well and every answered call
+writes the peer's audio to a WAV. No phone involved: answer, record, listen to
+the file. That proves the whole WhatsApp leg — MLow, SRTP, relay — in isolation,
+and if meowcaller does not work against a current account we find out before
+writing any of the rest.
 
 **3. pion to the phone, no WhatsApp.** Ring the app, answer, and send a
 generated tone. This proves Gecko 48 ↔ pion interop, which is the part I'd bet
