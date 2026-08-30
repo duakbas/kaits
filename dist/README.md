@@ -2,7 +2,7 @@
 
 The built app, so it can be fetched from GitHub instead of passed around.
 
-**Current: 1.5.0 (privileged)** — [`kaits.zip`](kaits.zip)
+**Current: 1.6.0 (privileged)** — [`kaits.zip`](kaits.zip)
 
 Download it raw:
 
@@ -32,6 +32,18 @@ is store-only. This file is here to be downloaded and sideloaded.
 Bump the version every time. The KaiStore portal rejects a version it has
 already seen, and on the phone an unchanged version can install over itself
 without actually replacing anything.
+
+## 1.6.0
+
+Videos play in the full-screen viewer — Enter plays and pauses, Left and Right
+seek. Stickers display at all now (the daemon converts them; this browser has
+no WebP decoder). A sticker picker on the attach menu, offering the stickers
+you have been sent.
+
+Left on the D-pad moves the caret again instead of opening the attach menu;
+attach is the left softkey.
+
+Needs the matching daemon — the sticker and live-location work is on that side.
 
 ## 1.5.0
 

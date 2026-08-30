@@ -81,10 +81,11 @@
         <span id="reply-bar-x">✕</span>
       </div>
       <!-- The paperclip is a visible home for attachments. There's no touch on
-           KaiOS, so it doubles as a hint that Left opens the attach menu; it is
-           still clickable, which is what makes it usable in a desktop browser. -->
+           KaiOS, so it doubles as a hint that the left softkey opens the attach
+           menu; it is still clickable, which is what makes it usable in a
+           desktop browser. -->
       <div id="composer-row">
-        <span id="attach-btn" title="Attach (press Left)">📎</span>
+        <span id="attach-btn" title="Attach (left softkey)">📎</span>
         <input id="composer" type="text" placeholder="Type a message…">
       </div>
     </div>
@@ -112,7 +113,19 @@
     <!-- full-screen media viewer -->
     <div id="viewer" hidden>
       <img id="viewer-img" alt="">
+      <!-- Separate element rather than one that swaps tag: a <video> keeps its
+           decoder and its buffered data alive, and the only reliable way to
+           make it let go on this engine is to clear src on an element that
+           stays put. -->
+      <video id="viewer-vid" preload="none" hidden></video>
+      <div id="viewer-state"></div>
       <div id="viewer-caption"></div>
+    </div>
+
+    <!-- sticker picker: a grid, because a list of pictures is not a list -->
+    <div id="stickers" hidden>
+      <div id="sticker-head">Stickers</div>
+      <div id="sticker-grid"></div>
     </div>
 
     <!-- search -->

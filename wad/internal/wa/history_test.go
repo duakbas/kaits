@@ -1140,3 +1140,59 @@ func TestUnknownSenderLabelling(t *testing.T) {
 		})
 	}
 }
+
+// The picker shows pictures, so the same sticker sent five times has to be one
+// entry. Five copies of one sticker is a grid nobody can use, and on a 240px
+// screen it is most of the grid.
+func TestRecentStickersAreDistinctAndNewestFirst(t *testing.T) {
+	h := newHist(t)
+	chat := "1234@s.whatsapp.net"
+
+	put := func(id, media string, ts int64) {
+		h.putMessage(ws.MsgData{
+			MsgID: id, ChatJID: chat, Kind: "sticker",
+			MediaURL: media, Mime: "image/webp", Timestamp: ts,
+		})
+	}
+	put("a1", "/media/a1", 100)
+	put("b1", "/media/b1", 200)
+	put("a2", "/media/a1", 300) // the same sticker again, later
+	h.putMessage(ws.MsgData{
+		MsgID: "t1", ChatJID: chat, Kind: "text", Text: "not a sticker", Timestamp: 400,
+	})
+
+	got := h.recentStickers(0)
+	if len(got) != 2 {
+		t.Fatalf("got %d stickers, want 2 distinct ones", len(got))
+	}
+	for _, m := range got {
+		if m.Kind != "sticker" {
+			t.Errorf("a %q message reached the sticker picker", m.Kind)
+		}
+		if m.MediaURL == "" {
+			t.Error("a sticker with no media reached the picker; it would render blank")
+		}
+	}
+	// Newest first, and the repeat carries the LATER timestamp: a sticker you
+	// used a minute ago should not sit at the bottom because you first saw it
+	// last year.
+	if got[0].Timestamp < got[1].Timestamp {
+		t.Errorf("order is oldest-first: %d then %d", got[0].Timestamp, got[1].Timestamp)
+	}
+	if got[0].Timestamp != 300 {
+		t.Errorf("newest entry ts = %d, want 300 (the repeat's time, not its first sighting)",
+			got[0].Timestamp)
+	}
+}
+
+// A sticker whose media reference is empty cannot be rendered or resent, so it
+// must not reach the grid at all.
+func TestRecentStickersSkipsUnfetchableOnes(t *testing.T) {
+	h := newHist(t)
+	h.putMessage(ws.MsgData{
+		MsgID: "x1", ChatJID: "1234@s.whatsapp.net", Kind: "sticker", Timestamp: 100,
+	})
+	if got := h.recentStickers(0); len(got) != 0 {
+		t.Errorf("got %d stickers, want none — that one has no media", len(got))
+	}
+}

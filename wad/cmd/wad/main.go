@@ -250,6 +250,22 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 				LocAddress: d.LocAddress, QuotedID: d.QuotedID,
 			})
 		}
+		// A sticker is picked from ones we already hold, so what arrives is a
+		// message id rather than a file — the bytes are here already.
+		if d.Kind == "sticker" {
+			id, err := waCli.SendStickerByID(ctx, d.ChatJID, d.SrcMsgID, d.QuotedID)
+			if err != nil {
+				hub.PushT(ws.TError, map[string]string{"code": "sendsticker", "msg": err.Error()})
+				return
+			}
+			hub.Push(ws.Envelope{T: ws.TReceipt, ID: e.ID,
+				Data: mustJSON(map[string]any{"msgid": id, "type": "sent"})})
+			waCli.RecordSent(ws.MsgData{
+				MsgID: id, ChatJID: d.ChatJID, Kind: "sticker",
+				Mime: "image/webp", MediaURL: "/media/" + id, QuotedID: d.QuotedID,
+			})
+			return
+		}
 		if d.Kind == "image" || d.Kind == "video" || d.Kind == "audio" ||
 			d.Kind == "gif" || d.Kind == "doc" {
 			id, err := waCli.SendMedia(ctx, d.ChatJID, d.Kind, d.MediaB64, d.Mime,
@@ -458,6 +474,16 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		}
 		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
 			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
+
+	case ws.TGetStickers:
+		var d struct {
+			Limit int `json:"limit"`
+		}
+		// A missing or malformed body is not worth refusing over: the only
+		// field is a limit that already has a default.
+		_ = json.Unmarshal(e.Data, &d)
+		hub.Push(ws.Envelope{T: ws.TStickers, ID: e.ID,
+			Data: mustJSON(map[string]any{"stickers": waCli.RecentStickers(d.Limit)})})
 
 	case ws.TPushSub:
 		var d struct {
@@ -673,6 +699,23 @@ func mediaHandler(c *wa.Client) http.HandlerFunc {
 		if mime == "" {
 			mime = "application/octet-stream"
 		}
+
+		// Stickers are WebP and this phone has no WebP decoder — Gecko 48
+		// predates the format by seventeen releases, so the app would render a
+		// broken image. Convert here, where the bytes already are and where a
+		// decoder exists, so the app just sees an image.
+		if png, animated, ok := wa.TranscodeSticker(data); ok {
+			data, mime = png, "image/png"
+		} else if animated || wa.IsWebP(data) {
+			// An animation, or a WebP this decoder doesn't know. WhatsApp ships
+			// a still preview inside every sticker message, so send that rather
+			// than bytes the browser will refuse: a still sticker beats a
+			// broken one.
+			if thumb := c.Thumb(id); len(thumb) > 0 {
+				data, mime = thumb, "image/jpeg"
+			}
+		}
+
 		w.Header().Set("Content-Type", mime)
 		w.Header().Set("Cache-Control", "private, max-age=3600")
 		w.Write(data)

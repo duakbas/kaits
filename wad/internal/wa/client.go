@@ -1846,3 +1846,9 @@ func firstID(ids []types.MessageID) string {
 	}
 	return string(ids[0])
 }
+
+// RecentStickers is the sticker picker's source: every distinct sticker this
+// account has seen, newest first.
+func (c *Client) RecentStickers(limit int) []ws.MsgData {
+	return c.hist.recentStickers(limit)
+}

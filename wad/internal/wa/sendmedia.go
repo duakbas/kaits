@@ -33,6 +33,8 @@ func downloadableOf(m *waE2E.Message) whatsmeow.DownloadableMessage {
 		return m.GetAudioMessage()
 	case m.GetDocumentMessage() != nil:
 		return m.GetDocumentMessage()
+	case m.GetStickerMessage() != nil:
+		return m.GetStickerMessage()
 	}
 	return nil
 }
@@ -118,6 +120,9 @@ func uploadTypeFor(kind string) (whatsmeow.MediaType, bool) {
 		return whatsmeow.MediaAudio, true
 	case "doc":
 		return whatsmeow.MediaDocument, true
+	case "sticker":
+		// Stickers upload on the image media type; only the message differs.
+		return whatsmeow.MediaImage, true
 	}
 	return "", false
 }
@@ -130,6 +135,8 @@ func defaultMimeFor(kind string) string {
 		return "video/mp4"
 	case "audio":
 		return "audio/ogg; codecs=opus"
+	case "sticker":
+		return "image/webp"
 	}
 	return "application/octet-stream"
 }
@@ -164,6 +171,16 @@ func buildMediaMessage(kind string, up whatsmeow.UploadResponse, mime, caption, 
 			// Sent as a voice note rather than a music file, which is what a
 			// recording from the phone should be.
 			PTT: proto.Bool(true),
+		}}
+	case "sticker":
+		return &waE2E.Message{StickerMessage: &waE2E.StickerMessage{
+			Mimetype: proto.String(mime),
+			URL:      proto.String(up.URL), DirectPath: proto.String(up.DirectPath),
+			MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256,
+			FileSHA256: up.FileSHA256, FileLength: proto.Uint64(size),
+			// No caption field on a sticker, and no animation: what we resend
+			// is a still WebP, because a still is what we can be sure of.
+			IsAnimated: proto.Bool(false),
 		}}
 	case "doc":
 		if filename == "" {
@@ -205,4 +222,38 @@ func strOrNil(s string) *string {
 		return nil
 	}
 	return proto.String(s)
+}
+
+// SendStickerByID resends a sticker the daemon already holds, named by the
+// message it arrived in.
+//
+// The bytes never touch the phone. A sticker picked from the grid is one the
+// account has already received, so the file exists here — sending it back down
+// to the app in base64 only to have the app send the same bytes up again would
+// cost a round trip of a hundred kilobytes each way on a connection this phone
+// pays for, to produce a file identical to the one already in hand.
+//
+// It re-uploads rather than reusing the original media reference. Reusing the
+// URL and key would be smaller still, but a sticker forwarded that way carries
+// the original upload's identity, and WhatsApp's own clients treat the media
+// reference as belonging to the message that created it.
+func (c *Client) SendStickerByID(ctx context.Context, chatJID, srcMsgID, quotedID string) (string, error) {
+	if srcMsgID == "" {
+		return "", fmt.Errorf("no sticker chosen")
+	}
+	data, err := c.DownloadMedia(ctx, srcMsgID)
+	if err != nil {
+		return "", fmt.Errorf("fetch sticker: %w", err)
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("that sticker is no longer available")
+	}
+	// The picker shows PNGs because the phone cannot decode WebP, but what gets
+	// sent is the original WebP — converting our copy to PNG and sending that
+	// would produce a "sticker" every other client renders as a photo.
+	if !IsWebP(data) {
+		return "", fmt.Errorf("that message is not a sticker")
+	}
+	return c.SendMedia(ctx, chatJID, "sticker",
+		base64.StdEncoding.EncodeToString(data), "image/webp", "", "", quotedID)
 }
