@@ -2,7 +2,7 @@
 
 The built app, so it can be fetched from GitHub instead of passed around.
 
-**Current: 1.7.0 (privileged)** — [`kaits.zip`](kaits.zip)
+**Current: 1.7.1 (privileged)** — [`kaits.zip`](kaits.zip)
 
 Download it raw:
 
@@ -33,6 +33,12 @@ Bump the version every time. The KaiStore portal rejects a version it has
 already seen, and on the phone an unchanged version can install over itself
 without actually replacing anything.
 
+## 1.7.1
+
+GIF search moved from Tenor to GIPHY: Google decommissioned the Tenor API on
+30 June 2026, so there is no key to get and nothing at the other end. Set
+`WAD_GIPHY_KEY` on the daemon instead.
+
 ## 1.7.0
 
 Animated stickers move (the daemon converts them to GIF with ffmpeg). Your
@@ -40,7 +46,7 @@ WhatsApp **favourite** stickers now appear in the picker — they really do sync
 through app state. A GIF picker with search, through Tenor.
 
 The daemon needs `ffmpeg` installed for animated stickers, and a
-`WAD_TENOR_KEY` for GIF search; without either, those parts stay off rather
+`WAD_GIPHY_KEY` for GIF search; without either, those parts stay off rather
 than breaking.
 
 ## 1.6.0

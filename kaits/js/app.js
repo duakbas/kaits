@@ -2968,7 +2968,7 @@
       var note = document.createElement("div");
       note.id = "sticker-note";
       note.textContent = pickerMode === "gif"
-        ? "No GIFs. If this stays empty, the daemon has no WAD_TENOR_KEY set."
+        ? "No GIFs. If this stays empty, the daemon has no WAD_GIPHY_KEY set."
         : "No stickers yet. Your favourites appear here, and every sticker " +
           "you have been sent.";
       elStickerGrid.appendChild(note);

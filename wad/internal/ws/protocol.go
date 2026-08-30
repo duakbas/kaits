@@ -66,7 +66,7 @@ const (
 	TSendReaction = "sendreaction" // {chat, msgid, emoji} react ("" removes)
 	TSearch       = "search"       // {q, chat?, limit?} search stored messages
 	TGetStickers  = "getstickers"  // {limit?} the stickers this account has seen
-	TGIFSearch    = "gifsearch"    // {q?, limit?} search Tenor (needs WAD_TENOR_KEY)
+	TGIFSearch    = "gifsearch"    // {q?, limit?} search GIFs (needs WAD_GIPHY_KEY)
 	TWatch        = "watch"        // {jid} subscribe to a contact's presence
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
