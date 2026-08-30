@@ -131,7 +131,7 @@ func TestEndsAtIgnoresExpired(t *testing.T) {
 // used to be. An update has to be an edit of the opening message.
 func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
 	chat, _ := types.ParseJID("12345@s.whatsapp.net")
-	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 12, 5, 900)
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 12, 5, 900, "edit")
 
 	if msg.GetLiveLocationMessage() != nil {
 		t.Fatal("update is a top-level LiveLocationMessage — that is a NEW message, " +
@@ -171,14 +171,13 @@ func TestLiveUpdateIsAnEditOfTheOpeningMessage(t *testing.T) {
 
 // The escape hatch has to actually produce the old shape, or it is no use for
 // working out which behaviour a real client honours.
-func TestLiveUpdateResendEnvRestoresSeparateMessages(t *testing.T) {
-	t.Setenv("WAD_LIVELOC_RESEND", "1")
+func TestLiveUpdateResendModeMakesSeparateMessages(t *testing.T) {
 	chat, _ := types.ParseJID("12345@s.whatsapp.net")
-	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 900)
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 900, "resend")
 
 	live := msg.GetLiveLocationMessage()
 	if live == nil {
-		t.Fatal("WAD_LIVELOC_RESEND=1 did not produce a plain live location message")
+		t.Fatal("resend mode did not produce a plain live location message")
 	}
 	if msg.GetEditedMessage() != nil {
 		t.Error("produced both an edit and a plain message")
@@ -237,5 +236,50 @@ func TestUpdateAnnouncesTimeRemainingNotElapsed(t *testing.T) {
 	if remaining <= elapsed {
 		t.Errorf("remaining %d is not distinguishable from elapsed %d here; "+
 			"the test cannot tell the bug from the fix", remaining, elapsed)
+	}
+}
+
+// The default has to be the one mode that does not put junk in the chat.
+//
+// "edit" was the default until a real client showed what it produces: a
+// "you sent an edited message, update WhatsApp" placeholder per update, because
+// WhatsApp will not render a live location inside a MESSAGE_EDIT. "resend"
+// produces a new live-location card per update. Neither is acceptable as the
+// thing that happens when nobody has set anything.
+func TestLiveUpdateDefaultsToSameID(t *testing.T) {
+	t.Setenv("WAD_LIVELOC_MODE", "")
+	if got := liveUpdateMode(); got != "sameid" {
+		t.Errorf("default mode = %q, want sameid", got)
+	}
+	for _, junk := range []string{"nonsense", "EDITS", " "} {
+		t.Setenv("WAD_LIVELOC_MODE", junk)
+		if got := liveUpdateMode(); got != "sameid" {
+			t.Errorf("mode %q gave %q, want the safe default", junk, got)
+		}
+	}
+	for _, m := range []string{"resend", "edit", "off", "SameID", " Off "} {
+		t.Setenv("WAD_LIVELOC_MODE", m)
+		if got := liveUpdateMode(); got == "" {
+			t.Errorf("mode %q resolved to nothing", m)
+		}
+	}
+
+	// In the default mode the update is a bare live location: no edit wrapper,
+	// no context info. The link to the opening message is carried by the id the
+	// send is made under, which is not part of the message body at all.
+	chat, _ := types.ParseJID("12345@s.whatsapp.net")
+	msg := liveUpdateMsg("START-ID", chat, 47.3769, 8.5417, 0, 5, 900, "sameid")
+	if msg.GetEditedMessage() != nil {
+		t.Error("the default mode still wraps the update in an edit")
+	}
+	live := msg.GetLiveLocationMessage()
+	if live == nil {
+		t.Fatal("no live location in the update")
+	}
+	if live.GetContextInfo().GetStanzaID() != "" {
+		t.Error("carries a context stanza id; that is the resend shape, not this one")
+	}
+	if live.GetTimeOffset() != 900 {
+		t.Errorf("remaining = %d, want 900", live.GetTimeOffset())
 	}
 }
