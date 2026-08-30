@@ -837,7 +837,8 @@
       { action: "video", label: "🎬  Video" },
       { action: "audio", label: "🎵  Audio" },
       { action: "file", label: "📎  File" },
-      { action: "sticker", label: "🙂  Sticker" }
+      { action: "sticker", label: "🙂  Sticker" },
+      { action: "gif", label: "🎞  GIF" }
     ];
     if (haveGeolocation()) {
       attachItems.push({ action: "location", label: "📍  Location" });
@@ -2841,6 +2842,7 @@
   function runAttach(action) {
     if (action === "location") { sendLocation(); return false; }
     if (action === "sticker") { openStickerPicker(); return true; }
+    if (action === "gif") { openGifPicker(); return true; }
     if (action === "livelocation") return startLiveLocation();
     if (action === "photo") { pickAndSend("image"); return false; }
     if (action === "video") { pickAndSend("video"); return false; }
@@ -2865,13 +2867,21 @@
   // kilobytes on a connection this phone pays for.
   var elStickers = document.getElementById("stickers");
   var elStickerGrid = document.getElementById("sticker-grid");
+  var elGifQ = document.getElementById("gif-q");
   var stickerList = [];
   var stickerIdx = 0;
   var stickerChat = "";
+  var pickerMode = "sticker";   // "sticker" | "gif"
   var STICKER_COLS = 3;
+  var GIF_COLS = 2;
+
+  function pickerCols() { return pickerMode === "gif" ? GIF_COLS : STICKER_COLS; }
 
   function openStickerPicker() {
     if (!currentJID) return;
+    pickerMode = "sticker";
+    elGifQ.hidden = true;
+    document.getElementById("sticker-head").textContent = "Stickers";
     stickerChat = currentJID;
     stickerIdx = 0;
     elStickerGrid.innerHTML = "";
@@ -2885,12 +2895,66 @@
     W.send(W.T.GETSTICKERS, { limit: 60 });
   }
 
+  // The GIF picker is the same grid with a search box on top and a different
+  // source. Sharing it rather than writing a second one keeps the D-pad
+  // behaviour identical, which on a phone with five keys matters more than the
+  // two of them being separately tidy.
+  function openGifPicker() {
+    if (!currentJID) return;
+    pickerMode = "gif";
+    stickerChat = currentJID;
+    stickerIdx = 0;
+    stickerList = [];
+    document.getElementById("sticker-head").textContent = "GIFs";
+    elGifQ.hidden = false;
+    elGifQ.value = "";
+    elStickerGrid.innerHTML = "";
+    var loading = document.createElement("div");
+    loading.id = "sticker-note";
+    loading.textContent = "Loading…";
+    elStickerGrid.appendChild(loading);
+    elStickers.hidden = false;
+    focusGifSearch();
+    // An empty query asks for what is popular. Opening a picker onto nothing
+    // is a worse first impression than opening it onto whatever is trending.
+    W.send(W.T.GIFSEARCH, { q: "", limit: 24 });
+  }
+
+  // Two modes on one screen: typing in the box, and moving around the grid.
+  // Down leaves the box for the grid; Up from the top row goes back to it.
+  function focusGifSearch() {
+    Nav.setScreen({
+      onDown: function () { if (stickerList.length) bindStickerKeys(); },
+      onEnter: function () {
+        W.send(W.T.GIFSEARCH, { q: elGifQ.value || "", limit: 24 });
+      },
+      onSoftRight: function () {
+        W.send(W.T.GIFSEARCH, { q: elGifQ.value || "", limit: 24 });
+      },
+      onSoftLeft: closeStickerPicker,
+      onBack: closeStickerPicker
+    });
+    Nav.setSoftkeys("Cancel", "SEARCH", "");
+    setTimeout(function () { try { elGifQ.focus(); } catch (e) {} }, 0);
+  }
+
   function bindStickerKeys() {
+    // Leaving the text field is not optional: KaiOS keeps its input method
+    // attached to a blurred input, and the D-pad then feeds a box nobody can
+    // see instead of moving the selection.
+    if (pickerMode === "gif") {
+      try { elGifQ.blur(); } catch (e) {}
+      var sink = document.getElementById("focus-sink");
+      if (sink && sink.focus) { try { sink.focus(); } catch (e) {} }
+    }
     Nav.setScreen({
       onLeft: function () { moveSticker(-1); },
       onRight: function () { moveSticker(1); },
-      onUp: function () { moveSticker(-STICKER_COLS); },
-      onDown: function () { moveSticker(STICKER_COLS); },
+      onUp: function () {
+        if (pickerMode === "gif" && stickerIdx < pickerCols()) { focusGifSearch(); return; }
+        moveSticker(-pickerCols());
+      },
+      onDown: function () { moveSticker(pickerCols()); },
       onEnter: sendChosenSticker,
       onSoftRight: sendChosenSticker,
       onSoftLeft: closeStickerPicker,
@@ -2903,21 +2967,23 @@
     if (!stickerList.length) {
       var note = document.createElement("div");
       note.id = "sticker-note";
-      note.textContent =
-        "No stickers yet. These are the stickers you have been sent — " +
-        "once one arrives it can be sent from here.";
+      note.textContent = pickerMode === "gif"
+        ? "No GIFs. If this stays empty, the daemon has no WAD_TENOR_KEY set."
+        : "No stickers yet. Your favourites appear here, and every sticker " +
+          "you have been sent.";
       elStickerGrid.appendChild(note);
       Nav.setSoftkeys("Cancel", "", "");
       return;
     }
     for (var i = 0; i < stickerList.length; i++) {
       var cell = document.createElement("div");
-      cell.className = "sticker-cell" + (i === stickerIdx ? " sel" : "");
+      cell.className = cellClass(i === stickerIdx);
       var img = document.createElement("img");
-      // /media/ converts WebP to PNG on the way out, so this is an ordinary
-      // image as far as the phone is concerned.
-      img.src = mediaBase() + stickerList[i].media;
-      img.alt = "sticker";
+      // For stickers, /media/ converts WebP to PNG (and animated ones to GIF)
+      // on the way out. For GIFs the daemon proxies Tenor, so either way this
+      // is an ordinary image from the one host the app talks to.
+      img.src = mediaBase() + (stickerList[i].media || stickerList[i].preview);
+      img.alt = stickerList[i].desc || "";
       cell.appendChild(img);
       elStickerGrid.appendChild(cell);
     }
@@ -2930,9 +2996,9 @@
     var next = stickerIdx + delta;
     if (next < 0 || next >= stickerList.length) return;
     var cells = elStickerGrid.getElementsByClassName("sticker-cell");
-    if (cells[stickerIdx]) cells[stickerIdx].className = "sticker-cell";
+    if (cells[stickerIdx]) cells[stickerIdx].className = cellClass(false);
     stickerIdx = next;
-    if (cells[stickerIdx]) cells[stickerIdx].className = "sticker-cell sel";
+    if (cells[stickerIdx]) cells[stickerIdx].className = cellClass(true);
     scrollStickerIntoView();
   }
 
@@ -2950,21 +3016,31 @@
     }
   }
 
+  function cellClass(selected) {
+    return "sticker-cell" + (pickerMode === "gif" ? " gif" : "") +
+      (selected ? " sel" : "");
+  }
+
   function sendChosenSticker() {
     var s = stickerList[stickerIdx];
     if (!s) return;
     var chat = stickerChat || currentJID;
     if (!chat) return;
-    W.send(W.T.SEND, {
-      chat: chat, kind: "sticker", srcmsgid: s.msgid,
-      quoted: replyingTo ? replyingTo.msgid : ""
-    });
+    var frame = pickerMode === "gif"
+      // The url goes to the daemon, which fetches it. Routing the file through
+      // the phone would mean paying for the same bytes twice on the connection
+      // that is the scarce thing here.
+      ? { chat: chat, kind: "gif", gifurl: s.send }
+      : { chat: chat, kind: "sticker", srcmsgid: s.msgid };
+    frame.quoted = replyingTo ? replyingTo.msgid : "";
+    W.send(W.T.SEND, frame);
     clearReply();
     closeStickerPicker();
   }
 
   function closeStickerPicker() {
     elStickers.hidden = true;
+    elGifQ.hidden = true;
     // Drop the images. Every one is a decoded bitmap held for as long as the
     // node exists, and this app is killed by the system for being the largest
     // thing in the background.
@@ -2973,10 +3049,20 @@
   }
 
   W.on(W.T.STICKERS, function (d) {
-    if (elStickers.hidden) return;      // picker closed while the reply was in flight
+    if (elStickers.hidden || pickerMode !== "sticker") return;
     stickerList = (d && d.stickers) || [];
     stickerIdx = 0;
     renderStickers();
+  });
+
+  W.on(W.T.GIFRESULTS, function (d) {
+    if (elStickers.hidden || pickerMode !== "gif") return;
+    stickerList = (d && d.results) || [];
+    stickerIdx = 0;
+    renderStickers();
+    // Stay in the search box after a search: the next thing anyone does is
+    // either refine the query or press Down.
+    if (stickerList.length) Nav.setSoftkeys("Cancel", "SEARCH", "");
   });
 
   // ---------- sending attachments ----------

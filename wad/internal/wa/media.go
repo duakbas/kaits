@@ -178,8 +178,14 @@ func (c *Client) downloadMedia(ctx context.Context, id string) ([]byte, error) {
 	if !known {
 		return nil, fmt.Errorf("media %s has unsupported type %q", id, ref.mediaType)
 	}
+	// allowNoHash only when we genuinely have no plaintext hash to check
+	// against. A favourite sticker comes from an app state mutation, which
+	// carries the encrypted hash and the media key but not the plaintext one —
+	// and the alternative is worse than skipping the check: with allowNoHash
+	// false a nil hash is replaced by 32 zero bytes, so verification fails
+	// every time and the sticker simply never loads.
 	return c.WA.DownloadMediaWithPath(ctx, ref.directPath,
-		ref.encSHA256, ref.sha256, ref.mediaKey, mediaType, mms, false)
+		ref.encSHA256, ref.sha256, ref.mediaKey, mediaType, mms, len(ref.sha256) == 0)
 }
 
 // IsPermanentlyGone reports whether this media can never be fetched, as

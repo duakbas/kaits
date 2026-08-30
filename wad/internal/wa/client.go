@@ -232,6 +232,16 @@ func (c *Client) handleEvent(evt any) {
 		// because a reconnect resets it.
 		c.announcePresence()
 		c.hub.PushT(ws.TReady, map[string]any{"ok": true})
+		// Favourites arrive as app state, and without asking we would only ever
+		// learn about ones favourited AFTER this daemon was paired. Once per
+		// connect, in the background: it is one request and nothing waits on it.
+		go c.SyncFavouriteStickers(context.Background())
+
+	case *events.AppState:
+		// whatsmeow has no handler for the favouriteSticker index, but it emits
+		// this for every mutation regardless — which is the only reason
+		// favourites are reachable at all.
+		c.handleAppState(v)
 
 	case *events.Message:
 		c.pushMessage(v)
@@ -1847,8 +1857,48 @@ func firstID(ids []types.MessageID) string {
 	return string(ids[0])
 }
 
-// RecentStickers is the sticker picker's source: every distinct sticker this
-// account has seen, newest first.
-func (c *Client) RecentStickers(limit int) []ws.MsgData {
-	return c.hist.recentStickers(limit)
+// RecentStickers is the sticker picker's source: your favourites first, then
+// every other distinct sticker this account has seen, newest first.
+//
+// Favourites lead because they are the ones you chose. The rest follow because
+// the favourites list can be empty — a fresh pairing, or an account that never
+// used the feature — and a picker with nothing in it is not a feature.
+func (c *Client) RecentStickers(limit int) []stickerEntry {
+	favs := c.hist.favouriteStickers(limit)
+	out := favs
+	if len(out) >= limit && limit > 0 {
+		return out
+	}
+	seen := make(map[string]bool, len(favs))
+	for _, f := range favs {
+		seen[f.MsgID] = true
+	}
+	for _, e := range c.hist.recentStickers(limit) {
+		if seen[e.MsgID] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// StickerGIF returns an animated sticker as a GIF this phone can animate,
+// converting and caching it the first time it is asked for.
+//
+// Cached because the conversion is an ffmpeg run of a second or two and a
+// sticker is fetched every time its thread is opened — doing it once is the
+// difference between a bubble that appears and one that arrives late, forever.
+func (c *Client) StickerGIF(ctx context.Context, msgID string, webp []byte) ([]byte, bool) {
+	if msgID == "" {
+		return nil, false
+	}
+	if gif := c.hist.stickerGIF(msgID); len(gif) > 0 {
+		return gif, true
+	}
+	gif, ok := AnimatedStickerGIF(ctx, webp)
+	if !ok {
+		return nil, false
+	}
+	c.hist.putStickerGIF(msgID, gif)
+	return gif, true
 }
