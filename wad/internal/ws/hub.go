@@ -11,25 +11,38 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Hub manages the (single) phone connection. Serves one user's one phone, but
-// must tolerate the phone reconnecting constantly (refresh, backgrounding).
+// Hub manages the phone connections. Usually one, but it must tolerate a phone
+// reconnecting constantly (refresh, backgrounding) and it now allows several at
+// once.
+//
+// It used to allow exactly one: adopt() closed whatever was already connected,
+// on the reasoning that a reconnecting phone is the same phone. That is true
+// until it isn't. A second handset with the same address and token would
+// connect, kick the first off, and the first — which reconnects on a backoff
+// and on every wake — would kick it straight back. Neither ever finished
+// syncing, and nothing said why.
+//
+// So frames go to every attached client. Replies to a request go to all of
+// them too, rather than only to the asker: they carry an id nobody correlates
+// on, and a second phone receiving a chat list it did not ask for just ends up
+// with a fresher chat list. The alternative is routing tables for no benefit.
 //
 // KEY DESIGN: each connection gets its OWN send channel. Earlier a single
 // shared channel meant a superseded connection's writeLoop could grab a frame
-// (e.g. the chatlist reply to getchats) and discard it on "cur != c" — so on
-// refresh the reply vanished. Per-connection channels make that impossible:
-// Push always targets the current connection's channel, and a dead loop only
-// ever drained its own (now-abandoned) channel.
+// (e.g. the chatlist reply to getchats) and discard it — so on refresh the
+// reply vanished. Per-connection channels make that impossible, and they are
+// what makes several clients straightforward: one slow phone fills and drops
+// from its own queue without touching anybody else's.
 type Hub struct {
 	mu       sync.Mutex
-	conn     *websocket.Conn
-	sendCh   chan Envelope // the CURRENT connection's send channel
+	clients  map[*websocket.Conn]chan Envelope
 	handler  func(Envelope)
 	upgrader websocket.Upgrader
 }
 
 func NewHub() *Hub {
 	return &Hub{
+		clients: map[*websocket.Conn]chan Envelope{},
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -46,18 +59,27 @@ func (h *Hub) OnFrame(fn func(Envelope)) { h.handler = fn }
 func (h *Hub) HasClient() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.sendCh != nil
+	return len(h.clients) > 0
 }
 
-// Push queues a frame to the current connection. If none is attached, the
-// frame is dropped (the app re-requests on reconnect anyway).
+// Push queues a frame to every attached client. If none is attached, the frame
+// is dropped (the app re-requests on reconnect anyway).
 func (h *Hub) Push(e Envelope) {
 	h.mu.Lock()
-	ch := h.sendCh
-	h.mu.Unlock()
-	if ch == nil {
-		return
+	chans := make([]chan Envelope, 0, len(h.clients))
+	for _, ch := range h.clients {
+		chans = append(chans, ch)
 	}
+	h.mu.Unlock()
+	for _, ch := range chans {
+		h.pushTo(ch, e)
+	}
+}
+
+// pushTo enqueues to one client, dropping that client's oldest frame when its
+// queue is full. Per client, deliberately: a phone that has wandered out of
+// coverage must not cost the one in your hand its messages.
+func (h *Hub) pushTo(ch chan Envelope, e Envelope) {
 	select {
 	case ch <- e:
 	default:
@@ -102,11 +124,8 @@ func (h *Hub) adopt(c *websocket.Conn) {
 	ch := make(chan Envelope, 512)
 
 	h.mu.Lock()
-	if h.conn != nil {
-		_ = h.conn.Close() // newest wins
-	}
-	h.conn = c
-	h.sendCh = ch
+	h.clients[c] = ch
+	n := len(h.clients)
 	h.mu.Unlock()
 
 	// How long the phone stays connected is the number that decides whether
@@ -116,7 +135,11 @@ func (h *Hub) adopt(c *websocket.Conn) {
 	// long as KaiOS lets the app keep running with the phone shut. Logging the
 	// session length measures that without any code on the phone.
 	connectedAt := time.Now()
-	log.Printf("ws: phone connected")
+	if n > 1 {
+		log.Printf("ws: phone connected (%d attached)", n)
+	} else {
+		log.Printf("ws: phone connected")
+	}
 	go h.writeLoop(c, ch)
 	reason := h.readLoop(c)
 	log.Printf("ws: phone disconnected after %s", time.Since(connectedAt).Round(time.Second))
@@ -169,10 +192,7 @@ func (h *Hub) readLoop(c *websocket.Conn) string {
 		if err != nil {
 			log.Printf("ws: read closed: %v", err)
 			h.mu.Lock()
-			if h.conn == c {
-				h.conn = nil
-				h.sendCh = nil
-			}
+			delete(h.clients, c)
 			h.mu.Unlock()
 			return err.Error()
 		}
@@ -195,11 +215,8 @@ func (h *Hub) writeLoop(c *websocket.Conn, ch chan Envelope) {
 	for {
 		select {
 		case e := <-ch:
-			h.mu.Lock()
-			cur := h.conn
-			h.mu.Unlock()
-			if cur != c {
-				return // superseded — stop, but we only drained our OWN channel
+			if !h.attached(c) {
+				return // this connection is gone; its queue goes with it
 			}
 			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.WriteJSON(e); err != nil {
@@ -207,10 +224,7 @@ func (h *Hub) writeLoop(c *websocket.Conn, ch chan Envelope) {
 				return
 			}
 		case <-ping.C:
-			h.mu.Lock()
-			cur := h.conn
-			h.mu.Unlock()
-			if cur != c {
+			if !h.attached(c) {
 				return
 			}
 			_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -224,5 +238,19 @@ func (h *Hub) writeLoop(c *websocket.Conn, ch chan Envelope) {
 func (h *Hub) Connected() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.conn != nil
+	return len(h.clients) > 0
+}
+
+// ClientCount is how many phones are attached right now.
+func (h *Hub) ClientCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients)
+}
+
+func (h *Hub) attached(c *websocket.Conn) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.clients[c]
+	return ok
 }
