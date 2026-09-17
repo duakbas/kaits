@@ -4355,6 +4355,7 @@
     paintOptions();
     updateSetupPreview();
     updateSetupDiag();
+    runProbe();
     show(elSetup);
 
     // Rows, not fields: two text inputs followed by the preference toggles. A
@@ -4409,6 +4410,11 @@
       // keypad for this frame.
       try { elSetupHost.blur(); elSetupToken.blur(); } catch (e) {}
       W.reconnect();
+      // Say whether that address and token actually work, rather than leaving
+      // the person on an empty chat list to guess. The socket cannot tell us —
+      // it fails the same way for a typo in the hostname as for a typo in the
+      // token — so ask the daemon over plain HTTP and toast the verdict.
+      probeAndToast();
       enterListScreen();
     }
 
@@ -4489,6 +4495,89 @@
     return window.KAITS_VERSION ? "Kaits " + window.KAITS_VERSION : "Kaits (dev)";
   }
 
+  function agoLabel(t) {
+    if (!t) return "at some point";
+    var s = Math.round((Date.now() - t) / 1000);
+    if (s < 60) return s + "s ago";
+    if (s < 3600) return Math.round(s / 60) + "m ago";
+    return Math.round(s / 3600) + "h ago";
+  }
+
+  // The answer from the last probe, and the sentence it turns into. Held here
+  // rather than re-asked on every repaint: the settings screen redraws for
+  // reasons that have nothing to do with the network.
+  var lastProbe = null;
+  var probeRunning = false;
+
+  function probeLabel() {
+    if (probeRunning) return "asking…";
+    if (!lastProbe) return "not asked yet";
+    var p = lastProbe;
+    var caveat = p.mozSystem === false
+      ? "  (probe ran unprivileged; a browser block looks the same)" : "";
+    switch (p.kind) {
+      case "ok":
+        // Address and token both verified against the daemon itself. If the
+        // socket is still down after this, nothing on this screen is at fault.
+        return "reachable, TOKEN ACCEPTED — address and token are both right";
+      case "badtoken":
+        return "reachable, but TOKEN REJECTED (401) — the address is right, "
+             + "the token is not";
+      case "notwad":
+        return "answered 404 — that hostname is serving something else, or the "
+             + "path isn't /ws";
+      case "daemondown":
+        return "proxy answered " + p.status + " — the server is up, wad is not";
+      case "unreachable":
+        return "NO ANSWER — hostname, port, or https not right" + caveat;
+      case "timeout":
+        return "timed out — reachable name, nothing listening, or a firewall"
+             + caveat;
+      case "noaddress":
+        return "no address set";
+      case "noxhr":
+        return "cannot ask from here";
+    }
+    return "unexpected reply " + p.status;
+  }
+
+  // The same answer in the few words a toast has room for.
+  function probeToast(p) {
+    switch (p.kind) {
+      case "ok":         return "Server found, token accepted";
+      case "badtoken":   return "Wrong token — server found, it said no";
+      case "notwad":     return "Wrong address — 404, that isn't wad";
+      case "daemondown": return "Server up, wad is not running";
+      case "unreachable":return "Can't reach that address";
+      case "timeout":    return "No answer from that address";
+      case "noaddress":  return "No address set";
+    }
+    return "Unexpected reply (" + p.status + ")";
+  }
+
+  function probeAndToast() {
+    if (!W.probe) return;
+    W.probe(function (r) {
+      lastProbe = r;
+      toast(probeToast(r));
+    });
+  }
+
+  // Ask the daemon directly whether it is there and whether it likes the
+  // token. Runs on entering the settings screen, unprompted: someone opening
+  // this screen because the app "doesn't sync" should not also have to know
+  // which key to press to find out why.
+  function runProbe() {
+    if (!W.probe || probeRunning) return;
+    probeRunning = true;
+    updateSetupDiag();
+    W.probe(function (r) {
+      probeRunning = false;
+      lastProbe = r;
+      updateSetupDiag();
+    });
+  }
+
   // Everything that decides whether a notification can appear, in the only
   // place it can be read on a device with no devtools.
   function updateSetupDiag() {
@@ -4507,7 +4596,38 @@
       lines.push("!! INSECURE ORIGIN (" + location.origin + ")");
       lines.push("   notifications need https, localhost, or the packaged app");
     }
-    lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
+    // The connection, in as much detail as the platform gives us. This is the
+    // top of the screen because it is the first thing that can be wrong and
+    // the only thing whose failure is completely silent otherwise.
+    var d = W.diag ? W.diag() : null;
+    if (d) {
+      lines.push("address: " + (d.address || "(none set)"));
+      lines.push("token: " + (d.tokenLength
+        ? d.tokenLength + " chars, ends " + d.tokenTail
+        : "EMPTY"));
+      if (W.isOpen()) {
+        lines.push("socket: connected");
+      } else if (!d.everOpened) {
+        // The damning case. A socket that has never once opened on this
+        // handset is not a dropout — it is an address, a token or a network
+        // that has never been right.
+        lines.push("socket: NEVER opened (" + d.attempts + " attempt" +
+          (d.attempts === 1 ? "" : "s") + ")");
+      } else {
+        lines.push("socket: dropped " + agoLabel(d.lastCloseAt) +
+          ", opened ok before");
+      }
+      if (!W.isOpen() && d.lastCloseCode) {
+        lines.push("  last close: " + d.lastCloseCode +
+          (d.lastCloseCode === 1006
+            ? " (died below the websocket — dns, tls, port, or an http error)"
+            : ""));
+      }
+      if (d.lastError) lines.push("  " + d.lastError);
+      lines.push("server: " + probeLabel());
+    } else {
+      lines.push("socket: " + (W.isOpen() ? "connected" : "not connected"));
+    }
     // A stuck outbox is invisible otherwise, and it used to be unfixable
     // without reinstalling: the queue persists, so a frame the daemon refuses
     // is replayed on every reconnect forever.

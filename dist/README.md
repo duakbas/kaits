@@ -2,7 +2,7 @@
 
 The built app, so it can be fetched from GitHub instead of passed around.
 
-**Current: 1.7.2 (privileged)** — [`kaits.zip`](kaits.zip)
+**Current: 1.8.0 (privileged)** — [`kaits.zip`](kaits.zip)
 
 Download it raw:
 

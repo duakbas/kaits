@@ -116,6 +116,18 @@ PRIVILEGED = {
         "description": "Save a video from a chat to your phone",
         "access": "readwrite",
     },
+    # Used for exactly one thing: asking your own daemon, over plain HTTP,
+    # whether it is reachable and whether it accepts your token. A failed
+    # WebSocket reports nothing a person can act on — a wrong hostname, a
+    # wrong port, a missing TLS certificate and a mistyped token all look
+    # identical — and the daemon sends no CORS headers, so an ordinary XHR to
+    # it fails as a network error no matter what the server said. Without this
+    # the settings screen cannot tell those apart, which is precisely the hole
+    # a second handset fell into.
+    "systemXHR": {
+        "description": "Check that your daemon is reachable and your token is "
+                       "accepted, and say which one is wrong when it isn't",
+    },
 }
 
 if apptype == "privileged":

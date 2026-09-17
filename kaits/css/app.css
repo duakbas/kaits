@@ -791,6 +791,12 @@ header .status.closed { color: var(--danger); }
   color: var(--muted);
   line-height: 1.5;
   white-space: pre-wrap;
+  /* An address is one long unbroken word, and this panel exists to be read on
+     a 240px screen. pre-wrap alone would let it run off the right edge, which
+     would hide the very character that is wrong. Both spellings: Gecko 48
+     predates overflow-wrap. */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 /* The softkey bar is clickable on desktop (see nav.js). No pointer exists on

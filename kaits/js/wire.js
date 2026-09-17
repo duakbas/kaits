@@ -59,6 +59,103 @@
     return C.DAEMON_WS + sep + "token=" + encodeURIComponent(C.TOKEN);
   }
 
+  // ---- why isn't it connecting? ----
+  //
+  // A socket that never opens looks identical to one the daemon refused, to a
+  // hostname that doesn't resolve, to a token off by one character. All four
+  // show the same thing on the phone: a chat list that says "waiting for
+  // messages" forever. There is no console on the device, so unless the app
+  // records what happened, nobody can tell those apart — which is exactly the
+  // position a second handset put us in.
+  //
+  // So: keep a small ledger of every attempt, and expose it to the settings
+  // screen. None of this changes behaviour; it only makes failure legible.
+  var diag = {
+    attempts: 0,
+    everOpened: false,
+    lastOpenAt: 0,
+    lastCloseAt: 0,
+    lastCloseCode: 0,
+    lastCloseClean: null,
+    lastError: ""
+  };
+
+  // httpURL turns the WebSocket address into the plain HTTP one at the same
+  // place, so the daemon can be asked a question a failed socket can't answer.
+  // Order matters: wss must be tested first or ws:// would match it.
+  function httpURL() {
+    var u = String(C.DAEMON_WS || "");
+    if (!u) return "";
+    if (/^wss:/i.test(u)) return u.replace(/^wss:/i, "https:");
+    if (/^ws:/i.test(u)) return u.replace(/^ws:/i, "http:");
+    return "";
+  }
+
+  // classify turns an HTTP status from that address into the one fact worth
+  // knowing. The daemon checks the token BEFORE attempting the upgrade, so a
+  // plain GET separates "wrong token" from "wrong address" cleanly:
+  //
+  //   401  token rejected — we reached the daemon, so the address is right
+  //   400  gorilla refusing a non-websocket GET — address AND token are right,
+  //        and the problem is the socket itself
+  //   404  something answered, but it isn't wad — wrong path, or another site
+  //        on that hostname
+  //   5xx  a reverse proxy is up and the daemon behind it is not
+  function classify(status) {
+    if (status === 401) return { kind: "badtoken", status: status };
+    if (status === 400 || status === 426) return { kind: "ok", status: status };
+    if (status === 404) return { kind: "notwad", status: status };
+    if (status >= 500) return { kind: "daemondown", status: status };
+    if (status === 0) return { kind: "unreachable", status: 0 };
+    return { kind: "odd", status: status };
+  }
+
+  // probe asks that question. mozSystem lifts the same-origin rule, which a
+  // packaged app needs to reach any host at all from XHR; the daemon sends no
+  // CORS headers, so without it every answer would come back as a network
+  // error and the probe would accuse a perfectly good server. Whether we got
+  // it is reported alongside the result rather than assumed.
+  function probe(cb) {
+    var base = httpURL();
+    if (!base) { cb({ kind: "noaddress", status: 0, mozSystem: false }); return; }
+    var sep = base.indexOf("?") >= 0 ? "&" : "?";
+    var full = base + sep + "token=" + encodeURIComponent(C.TOKEN);
+
+    var xhr;
+    try { xhr = new XMLHttpRequest({ mozSystem: true }); }
+    catch (e) { try { xhr = new XMLHttpRequest(); } catch (e2) { cb({ kind: "noxhr", status: 0, mozSystem: false }); return; } }
+    var system = xhr.mozSystem === true;
+
+    var done = false;
+    function finish(r) {
+      if (done) return;
+      done = true;
+      r.mozSystem = system;
+      try { cb(r); } catch (e) { console.error("probe callback", e); }
+    }
+    xhr.onload = function () { finish(classify(xhr.status)); };
+    xhr.onerror = function () { finish({ kind: "unreachable", status: 0 }); };
+    xhr.ontimeout = function () { finish({ kind: "timeout", status: 0 }); };
+    try {
+      xhr.open("GET", full, true);
+      xhr.timeout = 8000;
+      xhr.send();
+    } catch (e) {
+      finish({ kind: "unreachable", status: 0 });
+    }
+    // xhr.timeout is honoured by some builds and not others, and a probe that
+    // never calls back leaves the settings screen reading "asking…" for ever —
+    // which is a worse answer than a wrong one. Our own deadline, slightly
+    // longer, so the XHR's own timeout wins when it works.
+    if (!done && typeof setTimeout === "function") {
+      setTimeout(function () {
+        if (done) return;
+        try { xhr.abort(); } catch (e) {}
+        finish({ kind: "timeout", status: 0 });
+      }, 10000);
+    }
+  }
+
   // Exactly one dial may be in flight. Without this, a kick and an already
   // pending backoff timer both call connect() and the phone ends up with two
   // sockets — the daemon adopts the newest and closes the older, which logs a
@@ -70,16 +167,24 @@
                ws.readyState === WebSocket.CONNECTING)) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     setStatus("connecting");
+    diag.attempts++;
     try {
       ws = new WebSocket(url());
     } catch (e) {
       console.error("wire: construct failed", e);
+      // A throw here means the ADDRESS is malformed — a bad scheme, a stray
+      // space. Worth keeping, because it never reaches onclose and so leaves
+      // no other trace.
+      diag.lastError = "bad address: " + (e && e.message ? e.message : e);
       scheduleReconnect();
       return;
     }
 
     ws.onopen = function () {
        backoff = C.RECONNECT_MIN;
+       diag.everOpened = true;
+       diag.lastOpenAt = Date.now();
+       diag.lastError = "";
        setStatus("open");
        // Anything typed while offline goes out before we ask for state, so the
        // chat list we get back already reflects it.
@@ -94,7 +199,15 @@
       emit(env.t, env.data);
     };
 
-    ws.onclose = function () {
+    ws.onclose = function (ev) {
+      // The close code is the single most informative number the platform
+      // gives us. 1006 — no close frame — means the connection died below the
+      // WebSocket layer: DNS, TLS, a refused port, or an HTTP error instead of
+      // an upgrade. Anything else means a real close frame arrived and the far
+      // end was genuinely a WebSocket server.
+      diag.lastCloseAt = Date.now();
+      diag.lastCloseCode = (ev && typeof ev.code === "number") ? ev.code : 0;
+      diag.lastCloseClean = (ev && typeof ev.wasClean === "boolean") ? ev.wasClean : null;
       setStatus("closed");
       scheduleReconnect();
     };
@@ -102,6 +215,7 @@
     ws.onerror = function (e) {
       // onclose will follow; just log.
       console.error("wire: socket error", e);
+      diag.lastError = "socket error";
     };
   }
 
@@ -298,7 +412,25 @@
     },
     onStatus: function (fn) { statusFns.push(fn); },
     onQueued: function (fn) { queuedFn = fn; },
-    queuedCount: function () { return outbox.length; },
-    isOpen: function () { return ws && ws.readyState === WebSocket.OPEN; }
+    isOpen: function () { return ws && ws.readyState === WebSocket.OPEN; },
+
+    // For the settings screen, which is the only console this phone has.
+    diag: function () {
+      return {
+        address: String(C.DAEMON_WS || ""),
+        tokenLength: String(C.TOKEN || "").length,
+        tokenTail: String(C.TOKEN || "").slice(-4),
+        attempts: diag.attempts,
+        everOpened: diag.everOpened,
+        lastOpenAt: diag.lastOpenAt,
+        lastCloseAt: diag.lastCloseAt,
+        lastCloseCode: diag.lastCloseCode,
+        lastCloseClean: diag.lastCloseClean,
+        lastError: diag.lastError
+      };
+    },
+    httpURL: httpURL,
+    classify: classify,
+    probe: probe
   };
 })();

@@ -43,6 +43,58 @@ Keyboard maps to phone keys for testing:
 If messages arrive at the daemon they appear in the list. Type in a thread
 and press F2 (or Enter) to send.
 
+## When it doesn't connect
+
+A WebSocket that never opens tells you nothing. A wrong hostname, a port
+nothing listens on, a certificate the phone won't accept and a token off by
+one character all fail in exactly the same silent way, and the app sits on
+"No chats yet. Waiting for messages…" for ever.
+
+So the Settings screen asks the daemon directly, over plain HTTP, every time
+you open it, and prints what it learned:
+
+```
+address: wss://your.host/ws
+token: 32 chars, ends 1537
+socket: NEVER opened (7 attempts)
+  last close: 1006 (died below the websocket — dns, tls, port, or an http error)
+server: reachable, but TOKEN REJECTED (401) — the address is right, the token is not
+```
+
+That `server:` line is the diagnosis. It works because `/ws` checks the token
+*before* attempting the upgrade, so an ordinary GET separates the two failures:
+
+| What comes back | What it means |
+| --- | --- |
+| `400 Bad Request` | address and token are both right — the fault is elsewhere |
+| `401 unauthorized` | you reached the daemon; the token is wrong |
+| `404` | that hostname serves something else, or the path isn't `/ws` |
+| `502` / `503` | the reverse proxy is up and `wad` is not |
+| nothing at all | hostname, port, or TLS |
+
+The same table works from any browser, including the phone's own, which is the
+way to check a handset the app isn't installed on yet:
+
+    https://your.host/ws?token=YOUR_TOKEN
+
+The probe needs the `systemXHR` permission, because the daemon sends no CORS
+headers and the app is not same-origin with it. In a desktop browser it has no
+such permission, so a failure there may be the browser rather than the server —
+the panel says so when that's the case.
+
+Two things worth knowing while reading that panel:
+
+- **`socket: NEVER opened`** is categorically different from a dropout. It
+  means this handset has not once reached the daemon, so the address, the
+  token or the network has never been right — not that the connection is
+  flaky.
+- **`waiting to send: N`** counts on every launch that finds no socket, because
+  the push endpoint is queued at boot. A number that keeps climbing across
+  restarts is the same "never connected" story told another way.
+
+Run `node test/addr_test.js` after touching anything that builds, stores or
+interprets that address.
+
 ## What works vs. not (matches the daemon)
 
 Works: connect + reconnect, chat list, threads, receive text/media label,
