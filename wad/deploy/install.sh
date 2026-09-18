@@ -91,6 +91,36 @@ if [ "$TLS" -eq 1 ] && [ -n "$CERT" ]; then
   [ -n "$KEYF" ] || die "--cert given without --key"
   [ -r "$CERT" ] || die "cannot read $CERT"
   [ -r "$KEYF" ] || die "cannot read $KEYF"
+
+  # Does this file carry the INTERMEDIATE as well as the leaf?
+  #
+  # A certificate file containing only the leaf works perfectly on every
+  # machine you are likely to test from, and fails on the phone. Safari and
+  # Chrome fetch the missing intermediate themselves, following the AIA
+  # extension; Gecko does not, and the phone is Gecko. A handset that has
+  # never happened to visit another site under the same CA therefore cannot
+  # build a chain to any root it holds, and reports sec_error_unknown_issuer.
+  #
+  # In a browser you can click past that. A wss:// socket from a packaged app
+  # cannot — there is no interstitial and nowhere to put the question — so it
+  # fails at the TLS layer, closes 1006, and says nothing at all. One phone
+  # works, the next one never connects, and nothing anywhere explains why.
+  #
+  # Counting the certificates in the file is the whole test.
+  ncerts=$(grep -c -- "-----BEGIN CERTIFICATE-----" "$CERT" 2>/dev/null || echo 0)
+  if [ "$ncerts" -le 1 ]; then
+    echo "    WARNING: $CERT contains only the leaf certificate."
+    echo "        Browsers will not notice. The phone will: Gecko does not"
+    echo "        fetch missing intermediates, so the app gets"
+    echo "        sec_error_unknown_issuer and the socket dies silently."
+    echo "        Append your CA's intermediate(s) to the file, leaf first:"
+    echo "            cat leaf.pem intermediate.pem | sudo tee $CERT"
+    echo "        Then re-run this script. Check the result from anywhere with:"
+    echo "            openssl s_client -connect $HOST:$PORT -servername $HOST </dev/null 2>/dev/null | grep -c BEGIN"
+    echo "        More than 1 is what you want."
+  else
+    echo "    certificate chain: $ncerts certificates (leaf + intermediates)"
+  fi
 fi
 [ "$TLS" -eq 1 ] || CERT=""
 
