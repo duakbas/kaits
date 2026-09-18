@@ -89,3 +89,91 @@ func TestEndedClearsTheCaller(t *testing.T) {
 		t.Errorf("declined to %q after the call ended", be.rejectedFrom)
 	}
 }
+
+// A test call must never reach the WhatsApp backend. That is the whole reason
+// it exists: the account risk is the one thing in this feature that cannot be
+// undone, so the WebRTC leg has to be exercisable without touching it.
+func TestATestCallNeverTouchesWhatsApp(t *testing.T) {
+	be := &fakeBackend{}
+	m := NewManager(be, ws.NewHub())
+
+	id := m.StartTestCall()
+	if !IsTestCall(id) {
+		t.Fatalf("StartTestCall produced %q, which is not recognised as a test", id)
+	}
+
+	if err := m.answer(context.Background()); err != nil {
+		t.Fatalf("answering the test call: %v", err)
+	}
+	defer m.endCall()
+	if be.answered {
+		t.Error("the WhatsApp backend was asked to answer a TEST call")
+	}
+
+	// Declining one likewise has no far end to decline to.
+	m2 := NewManager(be, ws.NewHub())
+	m2.StartTestCall()
+	m2.HandleAppFrame(context.Background(), ws.Envelope{T: ws.TCallReject})
+	if be.rejectedID != "" {
+		t.Errorf("a test call was declined to WhatsApp as %q", be.rejectedID)
+	}
+}
+
+// Answering a test call brings up a phone leg and offers it; hanging up tears
+// it down. A leg left running holds a UDP socket and a goroutine pumping a
+// tone at a phone that stopped listening.
+func TestTestCallStartsAndStopsThePhoneLeg(t *testing.T) {
+	m := NewManager(&fakeBackend{}, ws.NewHub())
+	m.StartTestCall()
+
+	if err := m.answer(context.Background()); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	m.mu.Lock()
+	leg, stop := m.leg, m.stopTone
+	m.mu.Unlock()
+	if leg == nil {
+		t.Fatal("answering a test call did not start a phone leg")
+	}
+	if stop == nil {
+		t.Fatal("the tone pump has no stop channel; hanging up would leak it")
+	}
+
+	m.HandleAppFrame(context.Background(), ws.Envelope{T: ws.TCallHangup})
+
+	m.mu.Lock()
+	legAfter, idAfter := m.leg, m.activeCallID
+	m.mu.Unlock()
+	if legAfter != nil {
+		t.Error("the phone leg survived the hangup")
+	}
+	if idAfter != "" {
+		t.Errorf("active call id is still %q after hanging up", idAfter)
+	}
+	select {
+	case <-stop:
+	default:
+		t.Error("the tone pump was not stopped")
+	}
+}
+
+// Signalling that arrives with no live leg is normal during teardown — the
+// app's last ICE candidates routinely outrun our hangup — and must not panic
+// or be reported to the user as a failure.
+func TestStraySignallingIsHarmless(t *testing.T) {
+	m := NewManager(&fakeBackend{}, ws.NewHub())
+	m.HandleAppFrame(context.Background(), ws.Envelope{
+		T:    ws.TCallSignalA,
+		Data: []byte(`{"callid":"gone","kind":"ice","candidate":{"candidate":"x"}}`),
+	})
+
+	// And a malformed frame while a leg IS up.
+	m.StartTestCall()
+	if err := m.answer(context.Background()); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	defer m.endCall()
+	m.HandleAppFrame(context.Background(), ws.Envelope{
+		T: ws.TCallSignalA, Data: []byte(`{"kind":`),
+	})
+}

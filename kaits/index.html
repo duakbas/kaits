@@ -150,9 +150,13 @@
 
     <!-- incoming call -->
     <div id="call" class="screen" tabindex="-1" hidden>
-      <div class="label">Incoming call</div>
+      <div class="label" id="call-label">Incoming call</div>
       <div class="ring">📞</div>
       <div id="call-name"></div>
+      <div id="call-status" class="call-status"></div>
+      <!-- Where the far end comes out. autoplay because there is no gesture to
+           hang a play() off once a call is already answered. -->
+      <audio id="call-audio" autoplay></audio>
     </div>
 
     <!-- forward destination picker -->
@@ -188,6 +192,9 @@
   <script src="js/life.js"></script>
   <script src="js/keepalive.js"></script>
   <script src="js/nav.js"></script>
+  <!-- Before app.js, which drives it on answer. After wire.js, which it
+       signals over. -->
+  <script src="js/call.js"></script>
   <script src="js/app.js"></script>
   <script src="js/push.js"></script>
 </body>

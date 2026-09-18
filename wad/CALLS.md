@@ -73,9 +73,14 @@ entire codec responsibility is a 256-entry lookup table and a resampler:
 G.711 is 64 kbit/s and telephone-grade, which is precisely what this is — a
 phone call on a feature phone. Firefox has supported PCMU since long before 48.
 
-**Verify before building on it:** get the SDP offer out of the KaiOS app and
-confirm PCMU is in the m=audio line. If it isn't, we're back to Opus and cgo,
-and I'd rather know that on day one than on day five.
+**This is now what's built.** The daemon offers, so it does not have to hope
+PCMU is in the phone's list — it presents a one-codec offer and the phone can
+take it or refuse it. If Gecko 48 refuses a PCMU-only offer outright, the tone
+test fails at `setRemoteDescription` and we find out in one command rather than
+after building the whole media path on the assumption.
+
+The transcode this leaves is `g711.go`, which is the whole of it: a lookup
+table with tests against the published µ-law values.
 
 ## Order of work, so each step is worth having alone
 
@@ -95,9 +100,38 @@ the file. That proves the whole WhatsApp leg — MLow, SRTP, relay — in isolat
 and if meowcaller does not work against a current account we find out before
 writing any of the rest.
 
-**3. pion to the phone, no WhatsApp.** Ring the app, answer, and send a
-generated tone. This proves Gecko 48 ↔ pion interop, which is the part I'd bet
-on going wrong: SDP semantics, DTLS-SRTP, ICE against a VPS with no NAT.
+**3. pion to the phone, no WhatsApp.** BUILT — `internal/calls/phoneleg.go`
+and `kaits/js/call.js`. Ring the app, answer, hear a warbling tone; the daemon
+logs the level of whatever the phone's microphone sends back, so one test
+exercises both directions.
+
+```bash
+curl "https://your.host/debug/call?token=$WAD_TOKEN"
+```
+
+Nothing about this touches WhatsApp — no account, no relay, nothing that can
+get a number flagged — so it can be run as often as it takes. That is the
+point: the account risk is the only part of this feature that cannot be
+undone, so the risky half stays off until this half works.
+
+What to expect in the daemon log:
+
+```
+calls: test call test-dli258nn ringing
+calls: phone leg test-dli258nn: connecting
+calls: phone leg test-dli258nn: connected
+calls: test test-dli258nn — 98 packets from the phone, peak 4210 (-17 dBFS)
+```
+
+`connected` proves ICE and DTLS-SRTP. The tone in your ear proves the daemon →
+phone direction and G.711. The packet count and level prove phone → daemon,
+which is the half more likely to fail on this hardware: `getUserMedia` in a
+packaged app, a permission that can be refused silently, an echo canceller
+enthusiastic enough to mute everything.
+
+If it says `connected` and you hear nothing, the transport is fine and the
+fault is codec or audio routing. If it never says `connected`, it is ICE or
+DTLS and the SDP is where to look.
 
 **4. Join them.** Resample and forward in both directions. If 2 and 3 both
 work, this is a buffer and a loop.
@@ -123,9 +157,33 @@ foreground or a recently-backgrounded state. That is a real ceiling on how
 useful incoming calls can be, and it does not apply to outgoing ones — which
 argues for doing step 5 earlier than its number suggests.
 
-**Gecko 48 WebRTC.** Firefox 48 predates unified plan. pion can be configured
-for either, and a single audio track is the case most likely to interoperate,
-but this is 2016 WebRTC talking to a 2026 library and I would not assume.
+**Gecko 48 WebRTC.** Downgraded from "would not assume" to "probably fine",
+on evidence gathered before writing the code:
+
+- **DTLS version was the real worry, and it is not a problem.** pion/dtls
+  implements 1.2 and nothing older. Firefox has sent a DTLS 1.2 ClientHello
+  since Firefox **37** — Mozilla bug 1153702 is titled "Firefox 37 uses DTLS
+  1.2 client, breaking any WebRTC implementations using DTLS 1.0" — so Gecko 48
+  is comfortably above pion's floor rather than just under it. (DTLS 1.0 was
+  not removed from Firefox until 86, long after this engine.)
+- **Cipher suites overlap.** Firefox has offered
+  `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` and
+  `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` since 34; pion supports both.
+- **Unified plan does not bite for one audio track.** A single `m=audio`
+  section is identical under either set of semantics. It would matter for a
+  second track, and there will never be one.
+- **The offer is deliberately minimal**, which is the mitigation for everything
+  not yet known: one codec (PCMU), no header extensions, no interceptors. See
+  the header comment in `phoneleg.go` for why each was dropped.
+
+`phoneleg_test.go` asserts that shape and runs a whole session against a second
+pion peer — offer, answer, ICE, DTLS-SRTP, µ-law, audio both ways. That cannot
+prove Gecko interoperates, and nothing here can. What it proves is that when
+the phone fails, our side is not the reason, which is the question that would
+otherwise take an evening to answer.
+
+The genuinely untested part is now narrow: whether Gecko 48 accepts pion's SDP,
+and whether `getUserMedia` works in a packaged app on this handset.
 
 **Latency.** Phone → VPS → WhatsApp relay → the other party. The VPS hop is new
 and it is in Zurich; if the other party is far away this may be audibly worse

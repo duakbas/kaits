@@ -58,6 +58,14 @@ func main() {
 		log.Printf("calls: media backend enabled (meowcaller)")
 	}
 	callMgr := calls.NewManager(callBackend, hub)
+	// STUN is normally unnecessary: this daemon is on a box with a public
+	// address, so its own host candidate is directly reachable and the phone's
+	// address is learned from the binding request it sends. Set WAD_CALL_STUN
+	// (comma-separated stun: URLs) if the daemon ever ends up behind NAT too.
+	if s := os.Getenv("WAD_CALL_STUN"); s != "" {
+		callMgr.STUN = strings.Split(s, ",")
+		log.Printf("calls: using STUN %v", callMgr.STUN)
+	}
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 
 	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
@@ -187,6 +195,7 @@ func main() {
 	mux.HandleFunc("/gifproxy", gifProxyHandler())
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
 	mux.HandleFunc("/debug/message", fakeMessageHandler(hub, token))
+	mux.HandleFunc("/debug/call", testCallHandler(callMgr, token))
 
 	// A closed laptop lid is the most common reason the phone stops receiving,
 	// and it is indistinguishable from the app being killed unless someone says
@@ -675,6 +684,32 @@ func fakeMessageHandler(hub *ws.Hub, token string) http.HandlerFunc {
 		log.Printf("debug: pushed a fake message from %q", name)
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintf(w, "sent %q from %q\n", text, name)
+	}
+}
+
+// testCallHandler rings the phone with a call that does not exist.
+//
+//	curl "https://your.host/debug/call?token=$WAD_TOKEN"
+//
+// Answer it and the daemon plays a warbling tone over WebRTC, and logs the
+// level of whatever the phone's microphone sends back. Between them that
+// exercises the entire phone leg — offer, answer, ICE, DTLS-SRTP, G.711,
+// both directions — against the one thing no test here can stand in for: a
+// browser engine from 2016.
+//
+// Nothing about this touches WhatsApp. No account, no relay, nothing that
+// could get a number flagged, which is what makes it safe to run as often as
+// it takes to get right. The account risk is the one part of calling that
+// cannot be undone, so the risky half stays off until this half works.
+func testCallHandler(cm *calls.Manager, token string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		id := cm.StartTestCall()
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "ringing %s — answer on the phone; you should hear a warble\n", id)
 	}
 }
 

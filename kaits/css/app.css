@@ -623,6 +623,13 @@ header .status.closed { color: var(--danger); }
 }
 #call .label { color: var(--muted); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; }
 #call-name { font-size: 18px; font-weight: 700; padding: 0 12px; }
+/* "connecting…" then "connected". On a call that is silent, knowing whether
+   the transport ever came up is the difference between a network problem and
+   an audio one, and there is no console on this phone to ask. */
+#call .call-status { color: var(--muted); font-size: 12px; }
+/* The element the far end plays out of. It must exist and must not take up
+   space; display:none would stop playback on some builds, so hide it by size. */
+#call-audio { width: 0; height: 0; }
 #call .ring {
   width: 54px; height: 54px; border-radius: 50%;
   border: 2px solid var(--accent);

@@ -3551,16 +3551,55 @@
 
   function answerCall() {
     if (!activeCall) return;
+    if (!window.Call || !Call.supported()) {
+      // Better to say so than to accept a call this engine cannot carry and
+      // leave two people listening to silence.
+      toast("This phone can't carry call audio");
+      rejectCall();
+      return;
+    }
+    // Arm the media side BEFORE telling the daemon, because the daemon sends
+    // its offer the moment it hears "answer" and the first frame can arrive
+    // before the next line of this function would have run.
+    Call.begin(activeCall.callid);
     W.send(W.T.CALLANSWER, { callid: activeCall.callid });
-    // NOTE: real audio needs the WebRTC leg (later). For now this just tells
-    // the daemon we accepted; you'll see the call-state change in logs.
+    enterInCallScreen();
   }
 
   function rejectCall() {
     if (!activeCall) return;
     W.send(W.T.CALLREJECT, { callid: activeCall.callid });
+    if (window.Call) Call.end();
     activeCall = null;
     enterListScreen();
+  }
+
+  function hangUp() {
+    if (!activeCall) { enterListScreen(); return; }
+    W.send(W.T.CALLHANGUP, { callid: activeCall.callid });
+    if (window.Call) Call.end();
+    activeCall = null;
+    enterListScreen();
+  }
+
+  // The in-call screen is the ring screen with different words and one softkey.
+  // A feature phone call needs exactly one affordance: end it.
+  function enterInCallScreen() {
+    var label = document.getElementById("call-label");
+    if (label) label.textContent = "In call";
+    setCallStatus("connecting…");
+    show(elCall);
+    Nav.setScreen({
+      onSoftLeft: hangUp,
+      onSoftRight: hangUp,
+      onBack: hangUp
+    });
+    Nav.setSoftkeys("End", "", "End");
+  }
+
+  function setCallStatus(s) {
+    var el = document.getElementById("call-status");
+    if (el) el.textContent = s || "";
   }
 
   // ---------- data handlers ----------
@@ -4235,9 +4274,26 @@
 
   W.on(W.T.CALLOFFER, function (d) { showIncomingCall(d); });
 
+  // SDP and ICE from the daemon. The daemon offers and we answer; call.js owns
+  // the whole exchange from here.
+  W.on(W.T.CALLSIGNAL, function (d) {
+    if (window.Call) Call.signal(d);
+  });
+
   W.on(W.T.CALLSTATE, function (d) {
     console.log("call state:", d.state, d.reason || "");
-    if (d.state === "ended") { activeCall = null; if (elCall.hidden === false) enterListScreen(); }
+    if (d.state === "connected") { setCallStatus("connected"); return; }
+    if (d.state === "accepted") { setCallStatus("connecting…"); return; }
+    if (d.state === "ended") {
+      if (window.Call) Call.end();
+      activeCall = null;
+      if (elCall.hidden === false) {
+        // Say why before leaving, or a call that failed to connect and one
+        // the other side hung up on look identical.
+        toast(d.reason ? "Call ended (" + d.reason + ")" : "Call ended");
+        enterListScreen();
+      }
+    }
   });
 
   W.on(W.T.ERROR, function (d) {
