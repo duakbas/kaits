@@ -421,6 +421,14 @@
         tokenLength: String(C.TOKEN || "").length,
         tokenTail: String(C.TOKEN || "").slice(-4),
         tokenHasSpace: /\s/.test(String(C.TOKEN || "")),
+        // install.sh generates `openssl rand -hex 16`, which is lower case.
+        // A T9 keypad capitalises readily — "Abc" mode capitalises the first
+        // letter of a word, and some builds start in upper case entirely — and
+        // the daemon compares the string exactly. An all-hex token carrying
+        // capitals is therefore worth pointing at: it is the right length, it
+        // looks correct at a glance, and it will be refused every time.
+        tokenMiscased: /^[0-9a-fA-F]+$/.test(String(C.TOKEN || "")) &&
+                       /[A-F]/.test(String(C.TOKEN || "")),
         attempts: diag.attempts,
         everOpened: diag.everOpened,
         lastOpenAt: diag.lastOpenAt,

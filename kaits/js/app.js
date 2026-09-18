@@ -4610,6 +4610,12 @@
       // token into a different wrong token — so it has to be said out loud.
       if (d.tokenHasSpace) {
         lines.push("  !! there is a SPACE inside the token — retype it");
+      } else if (d.tokenMiscased) {
+        // Not corrected automatically: a token is whatever the daemon was
+        // given, and lower-casing someone's deliberately mixed-case token
+        // would break a working setup to fix a guess.
+        lines.push("  !! the token has CAPITAL letters — installer tokens are "
+                 + "all lower case");
       } else if (d.tokenLength && d.tokenLength !== 32) {
         // install.sh generates `openssl rand -hex 16`, so 32 is what a token
         // from the installer looks like. A hand-set WAD_TOKEN can be anything,

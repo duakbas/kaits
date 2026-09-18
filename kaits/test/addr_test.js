@@ -264,12 +264,36 @@ function load(win, file) {
   check("only its tail is shown", d.tokenTail, "1537");
   check("and a clean token is not flagged", d.tokenHasSpace, false);
 
-  // The flag the settings screen reads to say "retype it".
+  check("and correct hex is not called miscased", d.tokenMiscased, false);
+
+  // The flags the settings screen reads to say "retype it".
   const winSpace = makeWindow();
   winSpace.CONFIG.TOKEN = "45ce788f 1d880c1458fde9f6bd611537";
   load(winSpace, "wire.js");
   check("a space anywhere in the token is reported",
     winSpace.Wire.diag().tokenHasSpace, true);
+
+  // A keypad that capitalises produces the right length and the wrong token.
+  const winCaps = makeWindow();
+  winCaps.CONFIG.TOKEN = "45CE788F1D880C1458FDE9F6BD611537";
+  load(winCaps, "wire.js");
+  check("upper-case hex is flagged", winCaps.Wire.diag().tokenMiscased, true);
+  check("and its length is still the innocent-looking 32",
+    winCaps.Wire.diag().tokenLength, 32);
+
+  // One capital from "Abc" mode is the likelier accident, and must also catch.
+  const winOne = makeWindow();
+  winOne.CONFIG.TOKEN = "45ce788f1d880c1458fde9f6bd611537".replace("f", "F");
+  load(winOne, "wire.js");
+  check("a single capital is enough to flag", winOne.Wire.diag().tokenMiscased, true);
+
+  // A token that isn't hex at all is somebody's own WAD_TOKEN. Not our
+  // business, and flagging it would cry wolf on a working setup.
+  const winWord = makeWindow();
+  winWord.CONFIG.TOKEN = "CorrectHorseBatteryStaple";
+  load(winWord, "wire.js");
+  check("a non-hex token is left unjudged",
+    winWord.Wire.diag().tokenMiscased, false);
 
   // One failed dial: the socket constructor throws nothing here, but our fake
   // WebSocket never calls onopen, so this is the real-world shape of a phone
