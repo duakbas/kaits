@@ -86,6 +86,14 @@
   }
 
   var stored = load();
+  // Repair what an earlier build stored untrimmed, rather than waiting for
+  // someone to notice and retype it — a phone already carrying a token with a
+  // stray space would otherwise keep failing after an update that fixed the
+  // cause. Applied on the way out only; nothing is rewritten to localStorage,
+  // so this is a correction and not a migration that can go wrong.
+  if (stored && typeof stored.token === "string") {
+    stored.token = stored.token.replace(/^\s+|\s+$/g, "");
+  }
   if (stored && stored.url && window.CONFIG) {
     window.CONFIG.DAEMON_WS = stored.url;
     window.CONFIG.TOKEN = stored.token || "";
@@ -121,7 +129,20 @@
     save: function (host, token) {
       var url = normalize(host);
       if (!url) return null;
-      stored = { url: url, token: String(token || "") };
+      // Trim the token as well as the address.
+      //
+      // normalize() has always trimmed the address and this line has always
+      // stored the token exactly as typed, which is an asymmetry with real
+      // consequences: a T9 keypad adds a trailing space readily — predictive
+      // input appends one after a "word", and 0 is the space key sitting right
+      // next to the digits of a hex token. The result is a token that looks
+      // correct on screen, is rejected by the daemon, and fails the way every
+      // other connection problem on this phone fails: in total silence.
+      //
+      // Only the ends. A space in the middle is a typo we must not silently
+      // "fix" into a different token; the settings screen reports the length
+      // so it can be seen.
+      stored = { url: url, token: String(token || "").replace(/^\s+|\s+$/g, "") };
       try {
         localStorage.setItem(KEY, JSON.stringify(stored));
       } catch (e) { /* not persisted; still applies for this run */ }

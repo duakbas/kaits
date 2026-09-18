@@ -420,6 +420,7 @@
         address: String(C.DAEMON_WS || ""),
         tokenLength: String(C.TOKEN || "").length,
         tokenTail: String(C.TOKEN || "").slice(-4),
+        tokenHasSpace: /\s/.test(String(C.TOKEN || "")),
         attempts: diag.attempts,
         everOpened: diag.everOpened,
         lastOpenAt: diag.lastOpenAt,

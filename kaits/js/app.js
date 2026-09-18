@@ -4605,6 +4605,18 @@
       lines.push("token: " + (d.tokenLength
         ? d.tokenLength + " chars, ends " + d.tokenTail
         : "EMPTY"));
+      // The two ways a token can be wrong while looking right. A space in the
+      // middle is deliberately NOT trimmed away — that would turn one wrong
+      // token into a different wrong token — so it has to be said out loud.
+      if (d.tokenHasSpace) {
+        lines.push("  !! there is a SPACE inside the token — retype it");
+      } else if (d.tokenLength && d.tokenLength !== 32) {
+        // install.sh generates `openssl rand -hex 16`, so 32 is what a token
+        // from the installer looks like. A hand-set WAD_TOKEN can be anything,
+        // which is why this is a note and not an accusation.
+        lines.push("  (installer tokens are 32 chars; this one is " +
+          d.tokenLength + ")");
+      }
       if (W.isOpen()) {
         lines.push("socket: connected");
       } else if (!d.everOpened) {

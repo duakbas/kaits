@@ -111,6 +111,53 @@ function load(win, file) {
     win.Settings.current().url, "ws://192.168.1.200:8080/ws");
 })();
 
+// ---------------------------------------------------------------- the token
+//
+// The address has always been trimmed and the token never was, which is the
+// asymmetry that matters on a keypad: predictive input appends a space after a
+// "word", and the space key sits among the digits. A token with a trailing
+// space is rejected by the daemon and looks identical on screen to one that
+// isn't.
+(function testTokenTrim() {
+  const win = load(makeWindow(), "settings.js");
+
+  win.Settings.save("192.168.1.200", "45ce788f1d880c1458fde9f6bd611537 ");
+  check("a trailing space is not part of the token",
+    win.Settings.current().token, "45ce788f1d880c1458fde9f6bd611537");
+
+  win.Settings.save("192.168.1.200", "  45ce788f1d880c1458fde9f6bd611537\n");
+  check("nor is leading whitespace, or a newline",
+    win.Settings.current().token, "45ce788f1d880c1458fde9f6bd611537");
+
+  // A space in the MIDDLE is a typo. Removing it would quietly turn one wrong
+  // token into a different wrong token, and hide the mistake from the person
+  // who has to correct it.
+  win.Settings.save("192.168.1.200", "45ce788f 1d880c1458fde9f6bd611537");
+  check("a space in the middle is left alone, to be reported",
+    win.Settings.current().token, "45ce788f 1d880c1458fde9f6bd611537");
+
+  win.Settings.save("192.168.1.200", "");
+  check("an empty token stays empty", win.Settings.current().token, "");
+})();
+
+// A token stored untrimmed by an earlier build has to be corrected on load,
+// or updating the app would fix the cause and leave the symptom.
+(function testTokenTrimOnLoad() {
+  const store = {
+    "kaits.daemon": JSON.stringify({
+      url: "wss://deniz.example.ch/ws",
+      token: "45ce788f1d880c1458fde9f6bd611537 "
+    })
+  };
+  const win = load(makeWindow({ store: store }), "settings.js");
+  check("an already-stored stray space is repaired on load",
+    win.Settings.current().token, "45ce788f1d880c1458fde9f6bd611537");
+  check("and the repaired token is what gets dialled",
+    win.CONFIG.TOKEN, "45ce788f1d880c1458fde9f6bd611537");
+  check("the address it was stored with is untouched",
+    win.CONFIG.DAEMON_WS, "wss://deniz.example.ch/ws");
+})();
+
 // ------------------------------------------------------------------ httpURL
 //
 // The probe asks the same place over HTTP. wss must map to https: asking the
@@ -215,6 +262,14 @@ function load(win, file) {
     "wss://deniz.example.ch/ws");
   check("the token is described, not printed", d.tokenLength, 32);
   check("only its tail is shown", d.tokenTail, "1537");
+  check("and a clean token is not flagged", d.tokenHasSpace, false);
+
+  // The flag the settings screen reads to say "retype it".
+  const winSpace = makeWindow();
+  winSpace.CONFIG.TOKEN = "45ce788f 1d880c1458fde9f6bd611537";
+  load(winSpace, "wire.js");
+  check("a space anywhere in the token is reported",
+    winSpace.Wire.diag().tokenHasSpace, true);
 
   // One failed dial: the socket constructor throws nothing here, but our fake
   // WebSocket never calls onopen, so this is the real-world shape of a phone
