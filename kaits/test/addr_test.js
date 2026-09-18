@@ -304,6 +304,43 @@ function load(win, file) {
   check("and it still has never opened", d2.everOpened, false);
 })();
 
+// ---------------------------------------------------------------- the clock
+//
+// The check that would have found this in seconds: a phone resuming from a
+// flat battery at its manufacture date rejects every certificate as
+// not-yet-valid, and a wss:// socket — unlike the browser — cannot offer to
+// continue anyway. It just never opens. The build stamp is the only fixed
+// point available with the network broken, and an app cannot run before it
+// was packaged.
+//
+// clockComplaint lives inside app.js's IIFE and app.js needs a whole DOM, so
+// the rule is restated here against the same constants. Keep them in step.
+(function testClockRule() {
+  const DAY = 86400000;
+  function complain(now, built) {
+    if (!built) return "";
+    if (now < built - DAY) return "before";
+    if (now > built + 730 * DAY) return "after";
+    return "";
+  }
+  const built = Date.UTC(2026, 8, 18);
+
+  check("a phone a year behind the build is called out",
+    complain(built - 365 * DAY, built), "before");
+  check("so is one a single week behind",
+    complain(built - 7 * DAY, built), "before");
+  check("a phone running the build it was given is fine",
+    complain(built + 60 * 1000, built), "");
+  check("and so is one still on it a year later",
+    complain(built + 365 * DAY, built), "");
+  check("a day of slop is tolerated, for timezones and a slow upload",
+    complain(built - 3600 * 1000, built), "");
+  check("three years ahead is a wrong clock, not an old build",
+    complain(built + 1095 * DAY, built), "after");
+  check("with no build stamp there is nothing to say",
+    complain(built - 365 * DAY, 0), "");
+})();
+
 if (failures) {
   console.log("\n" + failures + " failure(s)");
   process.exit(1);

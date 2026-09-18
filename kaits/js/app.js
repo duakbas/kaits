@@ -4495,6 +4495,39 @@
     return window.KAITS_VERSION ? "Kaits " + window.KAITS_VERSION : "Kaits (dev)";
   }
 
+  // clockComplaint returns a sentence when this phone's date cannot be right,
+  // or "" when there is nothing to say.
+  //
+  // The build timestamp is the only fixed point available offline: the app
+  // cannot be running before it was packaged. That catches the case that
+  // matters — a drawer phone resuming at its manufacture date — without
+  // needing the network, which is exactly what is broken when it happens.
+  //
+  // The other direction is a guess, so it gets a wide margin: clocks that are
+  // merely a few months fast break nothing, and crying wolf on an old build
+  // someone is still happily running would be worse than silence.
+  function clockComplaint() {
+    var built = window.KAITS_BUILT;
+    if (!built) return "";
+    var now = Date.now();
+    var DAY = 86400000;
+    if (now < built - DAY) {
+      return "this phone's date (" + dateLabel(now) + ") is BEFORE this app "
+           + "was built (" + dateLabel(built) + ") — the clock is wrong";
+    }
+    if (now > built + 730 * DAY) {
+      return "this phone's date (" + dateLabel(now) + ") is more than two "
+           + "years after this build — check the clock";
+    }
+    return "";
+  }
+
+  function dateLabel(ms) {
+    var d = new Date(ms);
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
+  }
+
   function agoLabel(t) {
     if (!t) return "at some point";
     var s = Math.round((Date.now() - t) / 1000);
@@ -4529,7 +4562,12 @@
       case "daemondown":
         return "proxy answered " + p.status + " — the server is up, wad is not";
       case "unreachable":
-        return "NO ANSWER — hostname, port, or https not right" + caveat;
+        // A refused certificate arrives here looking identical to a hostname
+        // that doesn't resolve, because XHR reports both as nothing at all.
+        // Naming TLS is worth the words: it is the one cause of this that the
+        // phone's browser will happily hide from you by offering to continue.
+        return "NO ANSWER — hostname, port, or a certificate this phone "
+             + "refuses (check the date)" + caveat;
       case "timeout":
         return "timed out — reachable name, nothing listening, or a firewall"
              + caveat;
@@ -4596,6 +4634,20 @@
       lines.push("!! INSECURE ORIGIN (" + location.origin + ")");
       lines.push("   notifications need https, localhost, or the packaged app");
     }
+    // Before anything about the network: is the clock believable?
+    //
+    // This goes first because when it is wrong, everything below it is a lie.
+    // A phone whose date is in the past rejects every certificate as
+    // not-yet-valid, and a wss:// socket from a packaged app has no "proceed
+    // anyway" — unlike the browser, which offers one, which is how a phone can
+    // appear to browse the web while this app never connects at all.
+    var clock = clockComplaint();
+    if (clock) {
+      lines.push("!! " + clock);
+      lines.push("   fix this first — a wrong date breaks TLS, and a socket "
+               + "cannot click through the warning the browser shows you");
+    }
+
     // The connection, in as much detail as the platform gives us. This is the
     // top of the screen because it is the first thing that can be wrong and
     // the only thing whose failure is completely silent otherwise.

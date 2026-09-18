@@ -82,6 +82,27 @@ headers and the app is not same-origin with it. In a desktop browser it has no
 such permission, so a failure there may be the browser rather than the server —
 the panel says so when that's the case.
 
+### The one the browser hides from you
+
+If the phone shows **"your connection is not secure"** on ordinary sites — try
+`x.com`, whose certificate chain is in every root store there is — then it is
+refusing TLS across the board, and the app has no way around it. In the browser
+you can click through the warning. A `wss://` socket from a packaged app
+cannot: there is no interstitial and no "proceed anyway", so it fails at the
+TLS layer, closes 1006 and never says why. A phone can therefore appear to
+browse the web perfectly while this app never connects once.
+
+The usual cause is the clock. A handset that has sat with a flat battery
+resumes at its manufacture date, every certificate reads as not-yet-valid, and
+the *time of day* looks entirely normal — it's the year that's wrong. Settings
+→ Date & time.
+
+The app checks this itself now, against the build stamp baked in at package
+time: it cannot be running before it was built, so a date earlier than that is
+proof the clock is wrong, and the settings screen says so above everything
+else. That is the only such check possible offline, which is the situation a
+wrong clock creates.
+
 Two things worth knowing while reading that panel:
 
 - **`socket: NEVER opened`** is categorically different from a dropout. It

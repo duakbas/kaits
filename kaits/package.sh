@@ -72,6 +72,19 @@ fi
 # phone, and you end up testing a fix against the old code.
 printf '\nwindow.KAITS_VERSION = "%s";\n' "$VERSION" >> "$STAGE/js/config.js"
 
+# Stamp WHEN it was built, too, which turns out to answer a different question:
+# is this phone's clock believable?
+#
+# A handset that has been in a drawer with a flat battery comes back at its
+# manufacture date. Every certificate then reads as not-yet-valid, so every
+# TLS connection fails — and a wss:// socket from a packaged app has no
+# "proceed anyway" the way the browser does. It simply never opens, silently,
+# for ever. The app cannot ask anyone what the real time is (that would need
+# the network that is broken), but it does not have to: a phone cannot be
+# running a build from its own future. If the clock reads earlier than this,
+# the clock is wrong, and that is worth saying before anything else.
+printf 'window.KAITS_BUILT = %s;\n' "$(date -u +%s)000" >> "$STAGE/js/config.js"
+
 # Version and app type are the only fields that change per build, so patch them
 # rather than keeping a second copy of the manifest that can drift from the
 # real one.
