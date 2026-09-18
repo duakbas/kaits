@@ -130,7 +130,7 @@ func TestTestCallStartsAndStopsThePhoneLeg(t *testing.T) {
 		t.Fatalf("answer: %v", err)
 	}
 	m.mu.Lock()
-	leg, stop := m.leg, m.stopTone
+	leg, stop := m.leg, m.stopPump
 	m.mu.Unlock()
 	if leg == nil {
 		t.Fatal("answering a test call did not start a phone leg")

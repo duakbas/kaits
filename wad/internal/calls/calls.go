@@ -3,18 +3,28 @@
 //
 // ARCHITECTURE — read this before touching anything:
 //
-//	WA call  <--MLOW-->  meowcaller  <--PCM-->  pion PeerConnection  <--Opus/WebRTC-->  KaiOS app
+//	WA call  <--MLow/SRTP-->  meowcaller  <--16k PCM-->  wad  <--G.711-->  KaiOS app
 //
-// meowcaller gives/takes raw PCM float32 (Source to send, Sink to receive).
-// pion handles the WebRTC leg to the phone and the Opus <-> PCM transcode.
-// This package owns the state machine that ties a WA CallOffer to a pion
-// session and forwards SDP/ICE both ways as ws TCallSignal frames.
+// meowcaller gives and takes 16 kHz mono float32 in 960-sample frames.
+// phoneleg.go owns the WebRTC session with the app; resample.go converts
+// between 16 kHz and the phone leg's 8 kHz; g711.go is the codec, and PCMU is
+// deliberately the only one offered (see phoneleg.go for why not Opus). This
+// file owns the state machine tying a WA CallOffer to both of those and
+// forwarding SDP/ICE as ws TCallSignal frames.
 //
-// STATUS: the meowcaller half is stubbed. meowcaller has no tagged release and
-// its live-media API (the Source side especially) isn't documented in anything
-// I could verify. So we define exactly what the daemon needs as an interface
-// (Backend) and ship a Noop stub so the daemon builds and runs message-only
-// TODAY. Implement meowcaller.go against the real godoc when you `go get` it.
+// STATUS, by step of CALLS.md:
+//
+//	0-1  declining and missed calls — done, first-party whatsmeow
+//	2    meowcaller server-side — built, behind WAD_CALLS=1
+//	3    the phone leg — built, and testable with no account at all:
+//	       curl "https://your.host/debug/call?token=$WAD_TOKEN"
+//	4    joining the two — built (join.go), UNVERIFIED against a live call
+//	5    outgoing — not started
+//
+// Every piece has tests; what nothing here can test is meowcaller against a
+// real account, and Gecko 48 against pion. Step 3's tone test covers the
+// second without touching the first, which is the order to do them in: the
+// account risk is the only part of this that cannot be undone.
 package calls
 
 import (
@@ -48,7 +58,8 @@ type Backend interface {
 	Hangup(ctx context.Context, callID, fromJID string) error
 }
 
-// PCMSink receives 48kHz mono float32 PCM frames from the peer.
+// PCMSink receives the peer's audio as 16 kHz mono float32 — meowcaller's
+// format, and the rate everything on the WhatsApp side of the daemon is in.
 type PCMSink func(pcm []float32)
 
 // PCMSource is pushed OUR audio to send to the peer.
@@ -69,8 +80,11 @@ type Manager struct {
 	activeCallFrom string
 	// The WebRTC session with the phone, when one is up.
 	leg *PhoneLeg
-	// Stops the tone pump on a test call.
-	stopTone chan struct{}
+	// Stops the 20ms pump feeding the phone — the tone on a test call, the
+	// far end on a real one.
+	stopPump chan struct{}
+	// The WhatsApp side of a real call, closed with everything else.
+	source PCMSource
 
 	// STUN servers for the phone leg. Normally empty; see PhoneLegOptions.
 	STUN []string
@@ -150,8 +164,6 @@ func (m *Manager) NotifyEnded(callID, reason string) {
 func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 	switch e.T {
 	case ws.TCallAnswer:
-		// TODO(pion): create PeerConnection, set up transcode, then:
-		//   src, err := m.be.Answer(ctx, m.activeCallID, m.onPeerPCM)
 		if err := m.answer(ctx); err != nil {
 			m.hub.PushT(ws.TError, map[string]string{"code": "answer", "msg": err.Error()})
 		}
@@ -282,7 +294,7 @@ func (m *Manager) answerTestCall(callID string) error {
 
 	stop := make(chan struct{})
 	m.mu.Lock()
-	m.stopTone = stop
+	m.stopPump = stop
 	m.mu.Unlock()
 
 	go func() {
@@ -332,16 +344,22 @@ func dbfs(peak int16) float64 {
 // endCall tears down whatever is up. Safe with nothing running.
 func (m *Manager) endCall() {
 	m.mu.Lock()
-	leg, stop := m.leg, m.stopTone
-	m.leg, m.stopTone = nil, nil
+	leg, stop, src := m.leg, m.stopPump, m.source
+	m.leg, m.stopPump, m.source = nil, nil, nil
 	m.activeCallID, m.activeCallFrom = "", ""
 	m.mu.Unlock()
 
+	// Order matters: stop producing before tearing down what consumes, or the
+	// pump's next tick writes to a closed track and logs an error for
+	// something that is simply a call ending normally.
 	if stop != nil {
 		close(stop)
 	}
 	if leg != nil {
 		_ = leg.Close()
+	}
+	if src != nil {
+		_ = src.Close()
 	}
 }
 
@@ -361,16 +379,16 @@ func (m *Manager) answer(ctx context.Context) error {
 		}
 		return nil
 	}
-	// Ask the backend before telling the app it worked. The old code announced
-	// "accepted" unconditionally, so a phone with no media backend showed a
-	// call in progress and silence — which is a worse failure than being told
-	// the call cannot be answered here.
-	if _, err := m.be.Answer(ctx, m.activeCallID, nil); err != nil {
+	// A real call: both legs, joined. answerRealCall asks the backend before
+	// building anything, so a daemon with no media backend still fails here
+	// rather than announcing success. The old code announced "accepted"
+	// unconditionally, which on the phone is a call in progress and total
+	// silence — a worse failure than being told it cannot be answered.
+	if err := m.answerRealCall(ctx, id); err != nil {
 		m.hub.PushT(ws.TCallState, map[string]any{
-			"callid": m.activeCallID, "state": "ended", "reason": "no-media"})
+			"callid": id, "state": "ended", "reason": "no-media"})
 		return err
 	}
-	m.hub.PushT(ws.TCallState, map[string]any{"callid": m.activeCallID, "state": "accepted"})
 	return nil
 }
 

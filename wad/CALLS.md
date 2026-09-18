@@ -133,8 +133,35 @@ If it says `connected` and you hear nothing, the transport is fine and the
 fault is codec or audio routing. If it never says `connected`, it is ICE or
 DTLS and the SDP is where to look.
 
-**4. Join them.** Resample and forward in both directions. If 2 and 3 both
-work, this is a buffer and a loop.
+**4. Join them.** BUILT — `internal/calls/join.go` and `resample.go`. It was a
+buffer and a loop, and the buffer was the interesting half.
+
+**UNVERIFIED against a live call.** Every piece has tests; what nothing here
+can test is the three running together with a real account at one end, and
+that is deliberately the last thing to do.
+
+Two things were worth getting right rather than hacking:
+
+*The resampler has an actual filter.* 16 kHz to 8 kHz by taking every other
+sample is the obvious implementation and it is wrong in a way you can hear:
+anything above 4 kHz does not vanish, it FOLDS. A 6 kHz component comes back
+at 2 kHz, in the middle of speech, as a metallic warble that follows the voice
+and cannot be removed afterwards. `resample_test.go` feeds a 6 kHz tone
+through and requires 30 dB of rejection; the naive version fails it by 30 dB
+exactly, which is the measure of how audible it would have been.
+
+*The pump runs on its own clock.* meowcaller delivers 60 ms; RTP wants 20 ms.
+Forwarding each arrival straight through sends three packets and then nothing,
+and the two sides are clocked by different things and drift. A bounded queue
+drained on a local ticker absorbs both. It fills with silence when starved —
+a gap should sound like a gap, not like the call seizing up — and drops the
+OLDEST audio when it overflows, because a second-old packet is worth nothing
+to a conversation and an unbounded queue turns a brief stall into a call that
+is minutes behind by the end.
+
+The daemon logs queue depth every five seconds during a call. Steadily growing
+means the clocks disagree; permanently zero means nothing is arriving from
+WhatsApp.
 
 **5. Outgoing.** `calldial` exists in the protocol. Same media path, reversed.
 
