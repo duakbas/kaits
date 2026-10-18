@@ -719,6 +719,11 @@ func notifySummaryHandler(c *wa.Client, token string) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// The service worker's fetch is cross-origin (app:// → https://), and
+		// fetch() reads a response only with CORS consent — without it every
+		// notification fell back to a bare "New message". The token in the
+		// query is the access check; this header only lets the app read it.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		json.NewEncoder(w).Encode(c.SummaryForNotification())

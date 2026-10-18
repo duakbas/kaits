@@ -19,11 +19,37 @@
 var CONFIG = null;
 
 // The worker can't read window.CONFIG, so the page hands its settings over at
-// registration time and they're kept for the next wake-up.
+// registration time. A global alone doesn't survive: the OS kills an idle
+// worker within seconds, and the push that wakes it hours later starts with
+// CONFIG === null — every notification then fell back to "New message". So the
+// settings are also written to the Cache API and read back on wake-up.
+var CONFIG_CACHE = "kaits-config";
+var CONFIG_KEY = "/__kaits_config";
+
+function saveConfig(cfg) {
+  CONFIG = cfg;
+  if (!self.caches) return Promise.resolve();
+  return caches.open(CONFIG_CACHE).then(function (c) {
+    return c.put(CONFIG_KEY, new Response(JSON.stringify(cfg),
+      { headers: { "Content-Type": "application/json" } }));
+  }).catch(function () {});
+}
+
+function loadConfig() {
+  if (CONFIG && CONFIG.DAEMON_WS) return Promise.resolve(CONFIG);
+  if (!self.caches) return Promise.resolve(null);
+  return caches.open(CONFIG_CACHE)
+    .then(function (c) { return c.match(CONFIG_KEY); })
+    .then(function (r) { return r ? r.json() : null; })
+    .then(function (cfg) { if (cfg) CONFIG = cfg; return cfg; })
+    .catch(function () { return null; });
+}
+
 self.addEventListener("message", function (ev) {
   if (!ev.data) return;
   if (ev.data.type === "config") {
-    CONFIG = ev.data.config;
+    var p = saveConfig(ev.data.config);
+    if (ev.waitUntil) ev.waitUntil(p);
   } else if (ev.data.type === "testnotify") {
     // Dev hook: run the real push path without a real push. Chrome refuses to
     // subscribe without an applicationServerKey, so this is the only way to
@@ -59,13 +85,17 @@ self.addEventListener("push", function (ev) {
 // show something generic, because the push already told us a message exists and
 // silence would be worse than vague.
 function showSummaryNotification() {
+  return loadConfig().then(summaryWith);
+}
+
+function summaryWith(cfg) {
   var fallback = { title: "Kaits", body: "New message" };
 
-  if (!CONFIG || !CONFIG.DAEMON_WS) {
+  if (!cfg || !cfg.DAEMON_WS) {
     return notify(fallback, "wa-generic");
   }
-  var base = CONFIG.DAEMON_WS.replace(/^ws/, "http").replace(/\/ws.*$/, "");
-  var url = base + "/notify-summary?token=" + encodeURIComponent(CONFIG.TOKEN || "");
+  var base = cfg.DAEMON_WS.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+  var url = base + "/notify-summary?token=" + encodeURIComponent(cfg.TOKEN || "");
 
   return fetch(url, { cache: "no-store" })
     .then(function (r) { return r.ok ? r.json() : null; })

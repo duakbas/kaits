@@ -115,8 +115,11 @@ func (c *Client) notifyPush(d msgSummary) {
 }
 
 // sendPush rings the doorbell. An empty POST is all the Push API needs to wake
-// a service worker; TTL asks the push service to hold it briefly if the phone
-// is unreachable rather than dropping it immediately.
+// a service worker; TTL asks the push service to hold it if the phone is
+// unreachable (no signal, switched off) rather than dropping it. Six hours: a
+// phone that comes back after a tunnel or a night with no coverage should
+// still buzz, and since the push is only a doorbell, a late one costs nothing
+// — the worker reads what's unread *now*, not what was new back then.
 func (c *Client) sendPush(endpoint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -125,7 +128,7 @@ func (c *Client) sendPush(endpoint string) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("TTL", "300")
+	req.Header.Set("TTL", "21600")
 	req.Header.Set("Content-Length", "0")
 
 	resp, err := c.push.client.Do(req)
