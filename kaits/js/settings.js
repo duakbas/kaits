@@ -86,6 +86,14 @@
   }
 
   var stored = load();
+  // A sideloading installer can bake the daemon address and token into the
+  // package (window.KAITS_PRESET in config.js). Used only when nothing is
+  // stored yet — e.g. an update that changed the app type and wiped its
+  // storage — so a reinstall never means typing a 32-character token on T9.
+  if (!stored && window.KAITS_PRESET && window.KAITS_PRESET.url) {
+    stored = { url: String(window.KAITS_PRESET.url), token: String(window.KAITS_PRESET.token || "") };
+    try { localStorage.setItem(KEY, JSON.stringify(stored)); } catch (e) {}
+  }
   // Repair what an earlier build stored untrimmed, rather than waiting for
   // someone to notice and retype it — a phone already carrying a token with a
   // stray space would otherwise keep failing after an update that fixed the
