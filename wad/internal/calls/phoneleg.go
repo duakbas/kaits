@@ -137,11 +137,14 @@ func NewPhoneLeg(callID string, send func(ws.Signal), opt PhoneLegOptions) (*Pho
 		// the same band as WhatsApp's leg — so it doesn't spend bits or CPU
 		// on audio that would be thrown away. useinbandfec asks it to send
 		// FEC so a lost packet on mobile data is rebuilt instead of clicking.
+		// Only parameters Firefox and Chrome themselves emit: Gecko 48's SDP
+		// parser (sipcc) is strict, and an fmtp it doesn't know can fail
+		// setRemoteDescription outright.
 		capab = webrtc.RTPCodecCapability{
 			MimeType:    webrtc.MimeTypeOpus,
 			ClockRate:   48000,
 			Channels:    2,
-			SDPFmtpLine: "minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;maxplaybackrate=16000;sprop-maxcapturerate=16000;maxaveragebitrate=32000",
+			SDPFmtpLine: "minptime=10;useinbandfec=1;stereo=0;maxplaybackrate=16000",
 		}
 		pt = 111
 	}
