@@ -217,6 +217,44 @@
   var actualMode = "";
   var remoteStream = null;
   var actx = null, actxSrc = null;
+  var lastModeError = "";
+  function errText(e) { return String((e && (e.name || e.message)) || e); }
+
+  // ---- ringback: what the caller hears while the other phone rings ----
+  // 425 Hz, one second on, four off — the European ringing tone. Played on a
+  // telephony-channel audio context when the phone allows one, which also
+  // shows where that channel comes out (earpiece or loudspeaker).
+  var rb = null;
+  function startRingback() {
+    stopRingback();
+    var AC = window.AudioContext || window.mozAudioContext;
+    if (!AC) return "";
+    var ctx = null, chan = "";
+    try { ctx = new AC("telephony"); chan = ctx.mozAudioChannelType || ""; } catch (e) { ctx = null; }
+    if (!ctx) { try { ctx = new AC(); chan = "default"; } catch (e) { return ""; } }
+    try {
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.frequency.value = 425;
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      var t0 = ctx.currentTime + 0.05;
+      for (var i = 0; i < 24; i++) {          // two minutes of cadence
+        gain.gain.setValueAtTime(0.25, t0 + i * 5);
+        gain.gain.setValueAtTime(0, t0 + i * 5 + 1);
+      }
+      osc.start(t0);
+      rb = { ctx: ctx, osc: osc };
+    } catch (e) { try { ctx.close(); } catch (e2) {} return ""; }
+    return chan;
+  }
+  function stopRingback() {
+    if (!rb) return;
+    try { rb.osc.stop(); } catch (e) {}
+    try { if (rb.ctx.close) rb.ctx.close(); } catch (e) {}
+    rb = null;
+  }
 
   function detachOut() {
     if (actxSrc) { try { actxSrc.disconnect(); } catch (e) {} actxSrc = null; }
@@ -266,7 +304,10 @@
           setSpeaker(speakerWanted, true);
           emit("route", route());
           return;
-        } catch (e) { log("telephony audio context:", e); }
+        } catch (e) { log("telephony audio context:", e); lastModeError = "A: " + errText(e); }
+      } else {
+        lastModeError = "A: " + (actx ? "context isn't on the telephony channel (" + actx.mozAudioChannelType + ")"
+                                      : "no telephony audio context");
       }
       if (actx) { try { actx.close(); } catch (e) {} actx = null; }
       m = "el-tel";
@@ -436,6 +477,11 @@
       return actualMode;
     },
     outputMode: function () { return actualMode || MODES[outMode]; },
+    // Why the preferred mode wasn't used, if it wasn't — shown on screen,
+    // since the phone has no console.
+    modeError: function () { return lastModeError; },
+    startRingback: startRingback,
+    stopRingback: stopRingback,
 
     // ---- audio route ----
     route: route,
@@ -459,6 +505,7 @@
         pc = null;
       }
       detachOut();
+      stopRingback();
       remoteStream = null;
       actualMode = "";
       if (audioEl) {

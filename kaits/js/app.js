@@ -3631,6 +3631,8 @@
       onKey: callKeyExtra
     });
     refreshCallKeys();
+    var rbChan = Call.startRingback ? Call.startRingback() : "";
+    if (rbChan) console.log("ringback on channel", rbChan);
     W.send(W.T.CALLDIAL, { jid: jid });
   }
 
@@ -3801,7 +3803,14 @@
     setCallStatus((callConnected ? "connected" : "connecting…") + " · " + routeLabel(r) + (modeNo ? " · " + modeNo : ""));
   }
   var callConnected = false;
-  if (window.Call) Call.onState(function (state) { if (state === "route") refreshCallKeys(); });
+  var modeErrShown = false;
+  if (window.Call) Call.onState(function (state) {
+    if (state !== "route") return;
+    refreshCallKeys();
+    // Say once per call why the preferred audio path wasn't used.
+    var why = Call.modeError ? Call.modeError() : "";
+    if (why && inCall && !modeErrShown) { modeErrShown = true; toast(why); }
+  });
 
   function answerCall() {
     if (!activeCall) return;
@@ -3830,6 +3839,7 @@
     releaseCallLock();
     inCall = false;
     callConnected = false;
+    modeErrShown = false;
   }
 
   function rejectCall() {
@@ -3876,7 +3886,8 @@
   function callKeyExtra(e) {
     if (e.key === "#" && window.Call && Call.cycleOutput) {
       var m = Call.cycleOutput();
-      toast("call audio: " + m);
+      var why = Call.modeError ? Call.modeError() : "";
+      toast("call audio: " + m + (why && m !== "ctx-tel" ? " — " + why : ""));
       refreshCallKeys();
       return true;
     }
@@ -4587,6 +4598,7 @@
     if (d.callid && activeCall && activeCall.callid && d.callid !== activeCall.callid) return;
     if (d.state === "connected") { callConnected = true; refreshCallKeys(); return; }
     if (d.state === "accepted") {
+      if (window.Call && Call.stopRingback) Call.stopRingback();
       if (activeCall && activeCall.outgoing) {
         var label = document.getElementById("call-label");
         if (label) label.textContent = "In call";
