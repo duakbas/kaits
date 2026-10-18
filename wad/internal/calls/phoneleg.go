@@ -22,9 +22,8 @@ package calls
 //
 // Two choices here are about talking to a decade-old stack, not about quality:
 //
-//   - ONE codec in the MediaEngine: Opus (wideband, opus.go) by default,
-//     PCMU (g711.go) as the fallback. The daemon offers, so the daemon picks,
-//     and a one-codec offer cannot be mis-negotiated.
+//   - A short, fixed codec list: Opus, G.722, PCMU (phoneCodecs). The phone
+//     answers with what it can do and legTrack binds to the best of those.
 //   - No interceptors. RegisterDefaultInterceptors adds NACK, TWCC and the
 //     header extensions they need, which put extra a=extmap lines in the offer
 //     for a 2016 parser to have opinions about. For one audio track they buy
@@ -39,12 +38,10 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 
 	"wad/internal/ws"
 )
@@ -66,16 +63,62 @@ const LegFrame = LegRate / 50
 // this; the headroom is for FEC, which spends bits to survive lost packets.
 const opusBitrate = 32000
 
-// phoneCodec picks the wire codec: Opus (wideband) unless built without
-// libopus or WAD_CALL_CODEC=pcmu asks for the old narrowband G.711.
-func phoneCodec(want string) string {
+// legCodec is one codec the daemon can offer the phone.
+type legCodec struct {
+	name string
+	p    webrtc.RTPCodecParameters
+}
+
+var (
+	codecOpus = legCodec{"opus", webrtc.RTPCodecParameters{
+		// RFC 7587: Opus is always signalled as 48000/2, whatever it carries.
+		// maxplaybackrate=16000: we only want wideband, the same band as
+		// WhatsApp's leg. Only parameters Firefox and Chrome themselves emit,
+		// because Gecko 48's SDP parser is strict.
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
+			SDPFmtpLine: "minptime=10;useinbandfec=1;stereo=0;maxplaybackrate=16000",
+		},
+		PayloadType: 111,
+	}}
+	// G.722: 16 kHz audio, but signalled (and timestamped) at 8000 — RFC 3551.
+	codecG722 = legCodec{"g722", webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeG722, ClockRate: 8000, Channels: 1},
+		PayloadType:        9,
+	}}
+	codecPCMU = legCodec{"pcmu", webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU, ClockRate: PhoneRate, Channels: 1},
+		PayloadType:        0,
+	}}
+)
+
+// phoneCodecs is the offer, best first. The phone answers with the ones it
+// can do and the leg uses the best of those — so a phone that can't do Opus
+// (the 2720 Flip rejected an Opus-only offer) still gets wideband G.722, and
+// G.711 is always there as the floor.
+//
+// WAD_CALL_CODEC=pcmu|g722|opus narrows it: that codec first, G.711 behind it.
+func phoneCodecs(want string) []legCodec {
 	if want == "" {
 		want = strings.ToLower(os.Getenv("WAD_CALL_CODEC"))
 	}
-	if want == "pcmu" || !opusAvailable {
-		return "pcmu"
+	var out []legCodec
+	add := func(c legCodec, ok bool) {
+		if ok {
+			out = append(out, c)
+		}
 	}
-	return "opus"
+	switch want {
+	case "pcmu":
+	case "g722":
+		add(codecG722, g722Available)
+	case "opus":
+		add(codecOpus, opusAvailable)
+	default:
+		add(codecOpus, opusAvailable)
+		add(codecG722, g722Available)
+	}
+	return append(out, codecPCMU)
 }
 
 // PhoneLeg is one WebRTC session with the app.
@@ -84,24 +127,25 @@ type PhoneLeg struct {
 	send   func(ws.Signal)
 
 	pc    *webrtc.PeerConnection
-	track *webrtc.TrackLocalStaticSample
+	track *legTrack
 
-	codec string // "opus" or "pcmu"
-
-	// Opus
-	enc     *opusEncoder
-	dec     *opusDecoder
+	// Encoders run on the pump goroutine (under wmu), decoders on pion's
+	// read goroutine (under dmu). Each is created when its direction's codec
+	// is known: sending at Bind, receiving at OnTrack.
+	opusEnc *opusEncoder
+	opusDec *opusDecoder
+	g722Enc *g722Encoder
+	g722Dec *g722Decoder
+	down    *Down2
+	up      *Up2
 	pending []int16 // 16 kHz samples not yet a whole frame
 	lastSeq uint16
 	haveSeq bool
-
-	// G.711: 16 kHz <-> 8 kHz around the wire
-	down *Down2
-	up   *Up2
+	rxCodec string
 
 	mu      sync.Mutex
-	wmu     sync.Mutex // serialises WritePCM (encoder state)
-	dmu     sync.Mutex // serialises decoding against Close
+	wmu     sync.Mutex
+	dmu     sync.Mutex
 	closed  bool
 	onPCM   func([]int16)
 	onState func(string)
@@ -116,51 +160,26 @@ type PhoneLegOptions struct {
 	// behind NAT too.
 	STUN []string
 
-	// Codec: "opus", "pcmu", or "" for the default (see phoneCodec).
+	// Codec: "opus", "g722", "pcmu", or "" for all of them (see phoneCodecs).
 	Codec string
 }
 
 // NewPhoneLeg builds the session but does not offer yet; attach the callbacks
 // first, then call Start.
 func NewPhoneLeg(callID string, send func(ws.Signal), opt PhoneLegOptions) (*PhoneLeg, error) {
-	codec := phoneCodec(opt.Codec)
-	capab := webrtc.RTPCodecCapability{
-		MimeType:  webrtc.MimeTypePCMU,
-		ClockRate: PhoneRate,
-		Channels:  1,
-	}
-	// 0 is PCMU's static payload type, assigned in RFC 3551.
-	var pt webrtc.PayloadType = 0
-	if codec == "opus" {
-		// RFC 7587: Opus is always signalled as 48000/2, whatever it carries.
-		// maxplaybackrate tells the phone's encoder 16 kHz is all we want —
-		// the same band as WhatsApp's leg — so it doesn't spend bits or CPU
-		// on audio that would be thrown away. useinbandfec asks it to send
-		// FEC so a lost packet on mobile data is rebuilt instead of clicking.
-		// Only parameters Firefox and Chrome themselves emit: Gecko 48's SDP
-		// parser (sipcc) is strict, and an fmtp it doesn't know can fail
-		// setRemoteDescription outright.
-		capab = webrtc.RTPCodecCapability{
-			MimeType:    webrtc.MimeTypeOpus,
-			ClockRate:   48000,
-			Channels:    2,
-			SDPFmtpLine: "minptime=10;useinbandfec=1;stereo=0;maxplaybackrate=16000",
-		}
-		pt = 111
-	}
-
-	// One codec, never two: a single-codec offer cannot be mis-negotiated,
-	// and the track below is bound to exactly this one.
+	offer := phoneCodecs(opt.Codec)
 	me := &webrtc.MediaEngine{}
-	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: capab,
-		PayloadType:        pt,
-	}, webrtc.RTPCodecTypeAudio); err != nil {
-		return nil, fmt.Errorf("register %s: %w", codec, err)
+	var names []string
+	for _, c := range offer {
+		if err := me.RegisterCodec(c.p, webrtc.RTPCodecTypeAudio); err != nil {
+			return nil, fmt.Errorf("register %s: %w", c.name, err)
+		}
+		names = append(names, c.name)
 	}
 
 	// An EMPTY registry, passed explicitly. Leaving the option off would make
-	// pion install its defaults; this is how you say "none" out loud.
+	// pion install its defaults (NACK, TWCC and their extmap lines, which a
+	// 2016 SDP parser has opinions about).
 	api := webrtc.NewAPI(
 		webrtc.WithMediaEngine(me),
 		webrtc.WithInterceptorRegistry(&interceptor.Registry{}),
@@ -176,36 +195,19 @@ func NewPhoneLeg(callID string, send func(ws.Signal), opt PhoneLegOptions) (*Pho
 		return nil, fmt.Errorf("peer connection: %w", err)
 	}
 
-	track, err := webrtc.NewTrackLocalStaticSample(capab, "audio", "wad")
-	if err != nil {
-		_ = pc.Close()
-		return nil, fmt.Errorf("local track: %w", err)
-	}
+	l := &PhoneLeg{callID: callID, send: send, pc: pc}
+	l.track = &legTrack{leg: l, prefer: offer}
 
 	// sendrecv explicitly. A phone call is both directions, and letting
 	// AddTrack infer the direction has bitten people when the far end is fussy
 	// about what it gets back.
-	if _, err := pc.AddTransceiverFromTrack(track, webrtc.RTPTransceiverInit{
+	if _, err := pc.AddTransceiverFromTrack(l.track, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		_ = pc.Close()
 		return nil, fmt.Errorf("add track: %w", err)
 	}
-
-	l := &PhoneLeg{callID: callID, send: send, pc: pc, track: track, codec: codec}
-	if codec == "opus" {
-		if l.enc, err = newOpusEncoder(LegRate, opusBitrate); err == nil {
-			l.dec, err = newOpusDecoder(LegRate)
-		}
-		if err != nil {
-			l.enc.Close()
-			_ = pc.Close()
-			return nil, err
-		}
-	} else {
-		l.down, l.up = NewDown2(), NewUp2()
-	}
-	log.Printf("calls: phone leg %s: codec %s", callID, codec)
+	log.Printf("calls: phone leg %s: offering %s", callID, strings.Join(names, ", "))
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -255,7 +257,7 @@ func (l *PhoneLeg) OnState(fn func(string)) {
 
 // Start creates the offer and sends it to the app. The daemon always offers:
 // it is the side that knows a call exists first, in both directions, and being
-// the offerer is what lets us pin the codec list to PCMU alone.
+// the offerer is what lets it choose which codecs are on the table.
 func (l *PhoneLeg) Start() error {
 	offer, err := l.pc.CreateOffer(nil)
 	if err != nil {
@@ -275,10 +277,17 @@ func (l *PhoneLeg) HandleSignal(sig ws.Signal) error {
 		if sig.SDP == "" {
 			return fmt.Errorf("answer with no sdp")
 		}
-		return l.pc.SetRemoteDescription(webrtc.SessionDescription{
+		err := l.pc.SetRemoteDescription(webrtc.SessionDescription{
 			Type: webrtc.SDPTypeAnswer,
 			SDP:  sig.SDP,
 		})
+		if err != nil {
+			// The phone's answer is the only record of what it would accept;
+			// without it a refusal ("no ice-ufrag" = it rejected every codec)
+			// can't be diagnosed.
+			log.Printf("calls: %s: phone's answer was refused (%v):\n%s", l.callID, err, answerSummary(sig.SDP))
+		}
+		return err
 	case "ice":
 		if len(sig.Candidate) == 0 {
 			return nil // end-of-candidates; nothing to add
@@ -300,12 +309,12 @@ func (l *PhoneLeg) HandleSignal(sig ws.Signal) error {
 	return fmt.Errorf("unknown signal kind %q", sig.Kind)
 }
 
-// Codec reports the wire codec, for the logs.
-func (l *PhoneLeg) Codec() string { return l.codec }
+// Codec reports the codec the daemon sends to the phone ("" before the answer).
+func (l *PhoneLeg) Codec() string { return l.track.codecName() }
 
-// WritePCM sends LegRate (16 kHz) mono audio to the phone. Any length is
-// accepted: Opus needs whole 20 ms frames, so a remainder waits for the next
-// call; G.711 is resampled to 8 kHz and sent as it is.
+// WritePCM sends LegRate (16 kHz) mono audio to the phone in whatever codec
+// was negotiated. Any length is accepted: it is re-cut into 20 ms frames, and
+// a remainder waits for the next call.
 func (l *PhoneLeg) WritePCM(pcm []int16) error {
 	if len(pcm) == 0 {
 		return nil
@@ -316,35 +325,50 @@ func (l *PhoneLeg) WritePCM(pcm []int16) error {
 	if closed {
 		return nil
 	}
+	codec := l.track.codecName()
+	if codec == "" {
+		return nil // not negotiated yet; audio before the answer is dropped
+	}
 	l.wmu.Lock()
 	defer l.wmu.Unlock()
 
-	if l.codec != "opus" {
-		f := make([]float32, len(pcm))
-		for i, s := range pcm {
-			f[i] = float32(s) / 32768
-		}
-		nb := l.down.Process(f)
-		if len(nb) == 0 {
-			return nil
-		}
-		return l.track.WriteSample(media.Sample{
-			Data:     EncodeULaw(nb),
-			Duration: time.Duration(len(nb)) * time.Second / PhoneRate,
-		})
-	}
-
 	l.pending = append(l.pending, pcm...)
 	for len(l.pending) >= LegFrame {
-		pkt, err := l.enc.Encode(l.pending[:LegFrame])
-		if err != nil {
-			return err
+		frame := l.pending[:LegFrame]
+		var payload []byte
+		var ticks uint32
+		switch codec {
+		case "opus":
+			if l.opusEnc == nil {
+				enc, err := newOpusEncoder(LegRate, opusBitrate)
+				if err != nil {
+					return err
+				}
+				l.opusEnc = enc
+			}
+			b, err := l.opusEnc.Encode(frame)
+			if err != nil {
+				return err
+			}
+			payload, ticks = b, 960 // 20 ms at Opus's 48 kHz RTP clock
+		case "g722":
+			if l.g722Enc == nil {
+				enc, err := newG722Encoder()
+				if err != nil {
+					return err
+				}
+				l.g722Enc = enc
+			}
+			payload, ticks = l.g722Enc.Encode(frame), 160 // 8000 Hz clock, see codecG722
+		default:
+			if l.down == nil {
+				l.down = NewDown2()
+			}
+			nb := l.down.Process(i16tof32(frame))
+			payload, ticks = EncodeULaw(nb), uint32(len(nb))
 		}
 		l.pending = l.pending[LegFrame:]
-		if err := l.track.WriteSample(media.Sample{
-			Data:     pkt,
-			Duration: 20 * time.Millisecond,
-		}); err != nil {
+		if err := l.track.write(payload, ticks); err != nil {
 			return err
 		}
 	}
@@ -355,6 +379,11 @@ func (l *PhoneLeg) WritePCM(pcm []int16) error {
 }
 
 func (l *PhoneLeg) readTrack(tr *webrtc.TrackRemote) {
+	name := mimeName(tr.Codec().MimeType)
+	l.dmu.Lock()
+	l.rxCodec = name
+	l.dmu.Unlock()
+	log.Printf("calls: phone leg %s: receiving %s from the phone", l.callID, name)
 	for {
 		pkt, _, err := tr.ReadRTP()
 		if err != nil {
@@ -377,23 +406,43 @@ func (l *PhoneLeg) deliver(pkt *rtp.Packet) {
 		return
 	}
 
-	if l.codec != "opus" {
-		f := l.up.Process(DecodeULaw(pkt.Payload))
-		out := make([]int16, len(f))
-		for i, s := range f {
-			out[i] = clamp16(float64(s) * 32767)
+	switch l.rxCodec {
+	case "opus":
+		l.deliverOpus(pkt, cb)
+	case "g722":
+		if l.g722Dec == nil {
+			d, err := newG722Decoder()
+			if err != nil {
+				log.Printf("calls: %s: %v", l.callID, err)
+				return
+			}
+			l.g722Dec = d
 		}
-		cb(out)
-		return
+		cb(l.g722Dec.Decode(pkt.Payload))
+	default:
+		if l.up == nil {
+			l.up = NewUp2()
+		}
+		cb(f32to16(l.up.Process(DecodeULaw(pkt.Payload))))
 	}
+}
 
+func (l *PhoneLeg) deliverOpus(pkt *rtp.Packet, cb func([]int16)) {
+	if l.opusDec == nil {
+		d, err := newOpusDecoder(LegRate)
+		if err != nil {
+			log.Printf("calls: %s: %v", l.callID, err)
+			return
+		}
+		l.opusDec = d
+	}
 	// Lost packets: rebuild the one just before this from this packet's FEC,
 	// conceal any earlier ones. Capped, so a long outage does not dump
 	// seconds of synthesised audio on WhatsApp at once.
 	if l.haveSeq {
 		gap := int(pkt.SequenceNumber - l.lastSeq) // uint16 wraparound
 		if gap <= 0 || gap > 0x8000 {
-			return // duplicate or reordered-late: already played past it
+			return // duplicate or late: already played past it
 		}
 		lost := gap - 1
 		if lost > 5 {
@@ -403,9 +452,9 @@ func (l *PhoneLeg) deliver(pkt *rtp.Packet) {
 			var pcm []int16
 			var err error
 			if i == lost-1 {
-				pcm, err = l.dec.Decode(pkt.Payload, LegFrame, true)
+				pcm, err = l.opusDec.Decode(pkt.Payload, LegFrame, true)
 			} else {
-				pcm, err = l.dec.Decode(nil, LegFrame, false)
+				pcm, err = l.opusDec.Decode(nil, LegFrame, false)
 			}
 			if err == nil && len(pcm) > 0 {
 				cb(pcm)
@@ -414,7 +463,7 @@ func (l *PhoneLeg) deliver(pkt *rtp.Packet) {
 	}
 	l.lastSeq, l.haveSeq = pkt.SequenceNumber, true
 
-	pcm, err := l.dec.Decode(pkt.Payload, 0, false)
+	pcm, err := l.opusDec.Decode(pkt.Payload, 0, false)
 	if err != nil {
 		log.Printf("calls: %s: %v", l.callID, err)
 		return
@@ -444,10 +493,12 @@ func (l *PhoneLeg) Close() error {
 	l.mu.Unlock()
 	err := l.pc.Close()
 	l.wmu.Lock()
-	l.enc.Close()
+	l.opusEnc.Close()
+	l.g722Enc.Close()
 	l.wmu.Unlock()
 	l.dmu.Lock()
-	l.dec.Close()
+	l.opusDec.Close()
+	l.g722Dec.Close()
 	l.dmu.Unlock()
 	return err
 }
