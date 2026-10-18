@@ -329,6 +329,33 @@
     rb = null;
   }
 
+  // ---- hang-up tone: three short beeps when the OTHER side ends the call ----
+  // Same 425 Hz and channel as the ringback, so it comes out where the call
+  // was (earpiece or headset). Own context, closes itself.
+  function playEndTone() {
+    var AC = window.AudioContext || window.mozAudioContext;
+    if (!AC) return;
+    var ctx = null;
+    try { ctx = new AC("telephony"); } catch (e) { ctx = null; }
+    if (!ctx) { try { ctx = new AC(); } catch (e) { return; } }
+    try {
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.frequency.value = 425;
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      var t0 = ctx.currentTime + 0.05;
+      for (var i = 0; i < 3; i++) {
+        gain.gain.setValueAtTime(0.3, t0 + i * 0.4);
+        gain.gain.setValueAtTime(0, t0 + i * 0.4 + 0.2);
+      }
+      osc.start(t0);
+      osc.stop(t0 + 1.3);
+    } catch (e) {}
+    setTimeout(function () { try { if (ctx.close) ctx.close(); } catch (e) {} }, 1600);
+  }
+
   function detachOut() {
     if (bridge) { bridge.stop(); bridge = null; }
     if (actxSrc) { try { actxSrc.disconnect(); } catch (e) {} actxSrc = null; }
@@ -549,6 +576,7 @@
     // since the phone has no console.
     modeError: function () { return lastModeError; },
     startRingback: startRingback,
+    playEndTone: playEndTone,
     _startBridge: startBridge,   // exposed for testing the bridge off-device
     stopRingback: stopRingback,
 

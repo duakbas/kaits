@@ -4620,7 +4620,12 @@
       return;
     }
     if (d.state === "ended") {
+      // activeCall is already null if WE hung up (hangUp clears it); only a
+      // call the other side ended, or one that dropped, gets the beeps.
+      var theirs = !!activeCall;
       if (window.Call) Call.end();
+      if (theirs && window.Call && Call.playEndTone) Call.playEndTone();
+      if (theirs && navigator.vibrate) { try { navigator.vibrate(200); } catch (e) {} }
       activeCall = null;
       callFinished();
       if (elCall.hidden === false) {
