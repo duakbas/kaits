@@ -88,6 +88,10 @@ type Client struct {
 	gapTried map[string]bool
 	gapMu    sync.Mutex
 
+	// recoverTried: collections already asked from the phone this run.
+	recoverMu    sync.Mutex
+	recoverTried map[string]bool
+
 	// presence follows whether the app is on screen; see AppActive.
 	presMu    sync.Mutex
 	presTimer *time.Timer
@@ -129,18 +133,19 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 	}
 
 	c := &Client{
-		WA:         waCli,
-		hub:        hub,
-		groupNames: make(map[string]string),
-		media:      newMediaStore(500),
-		mediaMime:  make(map[string]string),
-		replyCtx:   make(map[string]replyContext),
-		live:       newLiveShares(),
-		tiles:      newTileCache(),
-		avatars:    make(map[string]avatarEntry),
-		hist:       hist,
-		sess:       sess,
-		push:       newPusher(),
+		WA:           waCli,
+		hub:          hub,
+		groupNames:   make(map[string]string),
+		media:        newMediaStore(500),
+		mediaMime:    make(map[string]string),
+		replyCtx:     make(map[string]replyContext),
+		live:         newLiveShares(),
+		tiles:        newTileCache(),
+		avatars:      make(map[string]avatarEntry),
+		hist:         hist,
+		recoverTried: map[string]bool{},
+		sess:         sess,
+		push:         newPusher(),
 	}
 	waCli.AddEventHandler(c.handleEvent)
 	return c, nil
@@ -315,6 +320,21 @@ func (c *Client) handleEvent(evt any) {
 		// Every group subject in one request, so group chats never fall back
 		// to their raw JID for want of a per-group lookup.
 		go c.RefreshGroupNames(context.Background())
+
+	case *events.AppStateSyncError:
+		// A collection whose hash no longer verifies never heals by itself:
+		// every later fetch fails the same way and its pins, mutes and archive
+		// flags stop updating. Ask the main phone for a fresh copy — once per
+		// collection per run, so a phone that never answers isn't nagged.
+		if v.Error != nil && errors.Is(v.Error, appstate.ErrMismatchingLTHash) {
+			c.recoverMu.Lock()
+			tried := c.recoverTried[string(v.Name)]
+			c.recoverTried[string(v.Name)] = true
+			c.recoverMu.Unlock()
+			if !tried {
+				go c.recoverAppState(context.Background(), v.Name)
+			}
+		}
 
 	case *events.AppStateSyncComplete:
 		// Pairs with the "applog" lines: says which collection those
@@ -668,17 +688,19 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 	chat := c.canonicalJID(v.Info.Chat)
 	isGroup := chat.Server == types.GroupServer
 
+	pinned, pinKnown := c.pinState(chat)
 	d := ws.MsgData{
-		MsgID:      v.Info.ID,
-		ChatJID:    chat.String(),
-		SenderJID:  c.canonicalJID(v.Info.Sender).String(),
-		IsGroup:    isGroup,
-		FromMe:     v.Info.IsFromMe,
-		Timestamp:  v.Info.Timestamp.Unix(),
-		SenderName: c.senderName(v),
-		ChatName:   c.chatName(chat, isGroup),
-		Pinned:     c.isPinned(chat),
-		Muted:      c.isMuted(chat),
+		MsgID:       v.Info.ID,
+		ChatJID:     chat.String(),
+		SenderJID:   c.canonicalJID(v.Info.Sender).String(),
+		IsGroup:     isGroup,
+		FromMe:      v.Info.IsFromMe,
+		Timestamp:   v.Info.Timestamp.Unix(),
+		SenderName:  c.senderName(v),
+		ChatName:    c.chatName(chat, isGroup),
+		Pinned:      pinned,
+		PinnedKnown: pinKnown,
+		Muted:       c.isMuted(chat),
 	}
 
 	switch {
@@ -1494,11 +1516,20 @@ func (c *Client) isMuted(chat types.JID) bool {
 }
 
 func (c *Client) isPinned(chat types.JID) bool {
+	p, _ := c.pinState(chat)
+	return p
+}
+
+// pinState also says whether the account's settings know about this chat at
+// all. "Not pinned" and "don't know" must be told apart: writing false for an
+// unknown chat is how pins vanished one by one as messages arrived after a
+// re-pair, before the settings had synced back.
+func (c *Client) pinState(chat types.JID) (pinned, known bool) {
 	settings, err := c.WA.Store.ChatSettings.GetChatSettings(context.Background(), chat)
-	if err != nil {
-		return false
+	if err != nil || !settings.Found {
+		return false, false
 	}
-	return settings.Pinned
+	return settings.Pinned, true
 }
 
 // RunLIDMigration rewrites already-stored @lid chats to their phone JID and

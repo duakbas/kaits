@@ -85,6 +85,9 @@ type MsgData struct {
 	SenderName string `json:"sendername"` // resolved display name of the sender
 	IsGroup    bool   `json:"group"`      // true if chat is a group (@g.us)
 	Pinned     bool   `json:"pinned"`     // chat is pinned (synced from account)
+	// PinnedKnown: Pinned comes from the account's synced settings. When it
+	// doesn't (settings not synced yet), the stored pin must not be cleared.
+	PinnedKnown bool `json:"-"`
 	// Muted travels WITH the message so the app can decide whether to alert
 	// without keeping a chat table. That matters because the app throws away
 	// everything it can when it goes out of sight, and a local mute table was

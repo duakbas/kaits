@@ -203,10 +203,10 @@ func (h *histStore) putMessage(d ws.MsgData) {
 			          THEN COALESCE(NULLIF(chats.name,''), excluded.name)
 			          ELSE excluded.name END,
 			is_group=excluded.is_group,
-			pinned=excluded.pinned,
+			pinned=CASE WHEN ? THEN excluded.pinned ELSE chats.pinned END,
 			last_ts=MAX(chats.last_ts, excluded.last_ts),
 			preview=CASE WHEN excluded.last_ts >= chats.last_ts THEN excluded.preview ELSE chats.preview END`,
-		d.ChatJID, d.ChatName, boolToInt(d.IsGroup), boolToInt(d.Pinned), d.Timestamp, preview)
+		d.ChatJID, d.ChatName, boolToInt(d.IsGroup), boolToInt(d.Pinned), d.Timestamp, preview, d.PinnedKnown)
 }
 
 // listChats returns all known chats, newest first (pinned handled app-side).
