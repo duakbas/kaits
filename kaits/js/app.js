@@ -4085,7 +4085,9 @@
   function isDormant() { return dormant; }
 
   function goDormant() {
-    if (dormant || !Settings.pref("shrink")) return;
+    // Never during a call: the call screen is the one thing that must still be
+    // there when the screen comes back on — it's the only way to hang up.
+    if (dormant || activeCall || !Settings.pref("shrink")) return;
     dormant = true;
     dormantJID = currentJID;
     try { stashDraft(); } catch (e) {}
@@ -4136,6 +4138,17 @@
       enterListScreen();
     }
     dormantJID = null;
+    // A call that started while we were dormant (or is still going) wins over
+    // whatever screen was open before.
+    if (activeCall) restoreCallScreen();
+  }
+
+  function restoreCallScreen() {
+    if (!activeCall) return;
+    if (inCall) { elCallName.textContent = activeCall.name || activeCall.from || ""; enterInCallScreen(); return; }
+    var d = activeCall;
+    activeCall = null;     // let showIncomingCall redraw it
+    showIncomingCall(d);
   }
 
   // osNotify raises a real system notification through the service worker.
