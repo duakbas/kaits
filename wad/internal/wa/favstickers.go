@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"strings"
 	"time"
@@ -36,6 +37,15 @@ func IsFavouriteID(id string) bool { return strings.HasPrefix(id, favPrefix) }
 // handleAppState picks the favourite-sticker mutations out of the app state
 // stream and ignores the rest, which whatsmeow already handles or nobody needs.
 func (c *Client) handleAppState(v *events.AppState) {
+	// Call history syncs between your devices as app-state "call_log"
+	// mutations. Calls placed from this daemon don't write one yet, so they
+	// don't appear in the other devices' call lists; logging the ones WhatsApp
+	// sends us shows exactly what a real client writes, so ours can match.
+	if v != nil && len(v.Index) > 0 && strings.Contains(v.Index[0], "call_log") {
+		val, _ := json.Marshal(v.SyncActionValue)
+		idx, _ := json.Marshal(v.Index)
+		log.Printf("applog %s %s", idx, val)
+	}
 	if v == nil || len(v.Index) < 2 || v.Index[0] != "favoriteSticker" {
 		return
 	}

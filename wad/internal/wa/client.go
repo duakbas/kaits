@@ -316,6 +316,11 @@ func (c *Client) handleEvent(evt any) {
 		// to their raw JID for want of a per-group lookup.
 		go c.RefreshGroupNames(context.Background())
 
+	case *events.AppStateSyncComplete:
+		// Pairs with the "applog" lines: says which collection those
+		// mutations arrived in, which writing our own needs to know.
+		log.Printf("applog-sync %s v%d", v.Name, v.Version)
+
 	case *events.AppState:
 		// whatsmeow has no handler for the favouriteSticker index, but it emits
 		// this for every mutation regardless — which is the only reason
