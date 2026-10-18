@@ -43,10 +43,14 @@
     if (!speakerMgr && navigator.mozSpeakerManager) speakerMgr = navigator.mozSpeakerManager;
     return speakerMgr;
   }
-  function setSpeaker(on) {
+  function setSpeaker(on, fromPlayOut) {
+    var changed = speakerWanted !== !!on;
     speakerWanted = !!on;
     var sm = getSpeakerMgr();
     if (sm) { try { sm.forcespeaker = speakerWanted; } catch (e) { log("forcespeaker:", e); } }
+    // The phone picks the output when a stream starts, so switching back from
+    // the loudspeaker means restarting ours; otherwise it stays on speaker.
+    if (changed && !fromPlayOut && remoteStream) { playOut(); return; }
     emitRoute();
   }
 
@@ -198,23 +202,43 @@
     throw new Error("no way to attach the microphone");
   }
 
-  function attachRemote(stream) {
-    if (!audioEl) {
-      audioEl = document.getElementById("call-audio");
+  // How the far end's audio reaches the speaker or earpiece. KaiOS only
+  // routes to the EARPIECE for audio on the telephony channel, and which way
+  // of getting a WebRTC stream onto that channel works differs by phone, so
+  // there are three, tried in this order and switchable live (# key on the
+  // call screen) — the one that works is remembered:
+  //   ctx-tel     Web Audio context on the telephony channel, fed the stream
+  //   el-tel      the <audio> element on the telephony channel
+  //   el-content  the <audio> element on the media channel (always speaker)
+  var MODES = ["ctx-tel", "el-tel", "el-content"];
+  var MODE_KEY = "kaits.callaudio";
+  var outMode = 0;
+  try { var saved = MODES.indexOf(localStorage.getItem(MODE_KEY)); if (saved >= 0) outMode = saved; } catch (e) {}
+  var actualMode = "";
+  var remoteStream = null;
+  var actx = null, actxSrc = null;
+
+  function detachOut() {
+    if (actxSrc) { try { actxSrc.disconnect(); } catch (e) {} actxSrc = null; }
+    if (actx) { try { if (actx.close) actx.close(); } catch (e) {} actx = null; }
+    if (audioEl) {
+      try {
+        audioEl.pause();
+        if ("srcObject" in audioEl) audioEl.srcObject = null;
+        else if ("mozSrcObject" in audioEl) audioEl.mozSrcObject = null;
+        else audioEl.removeAttribute("src");
+      } catch (e) {}
     }
+  }
+
+  function playElement(stream, chan) {
+    if (!audioEl) audioEl = document.getElementById("call-audio");
     if (!audioEl) { log("no audio element to play into"); return; }
-    // The telephony channel is what puts a call on the EARPIECE (the phone
-    // switches to in-call audio mode for it) and lets the speaker toggle work.
-    // It needs the certified build; a privileged one falls back to the media
-    // channel, which plays from the loudspeaker. Guarded: setting a channel the
-    // app has no permission for throws, and the property doesn't exist
-    // off-device at all.
-    try { audioEl.mozAudioChannelType = "telephony"; channel = "telephony"; }
+    channel = "";
+    try { audioEl.mozAudioChannelType = chan; channel = chan; }
     catch (e) {
       try { audioEl.mozAudioChannelType = "content"; channel = "content"; } catch (e2) {}
     }
-    setSpeaker(speakerWanted);
-
     try {
       if ("srcObject" in audioEl) { audioEl.srcObject = stream; }
       else if ("mozSrcObject" in audioEl) { audioEl.mozSrcObject = stream; }
@@ -223,9 +247,41 @@
       log("attach failed, falling back to object URL:", e);
       try { audioEl.src = URL.createObjectURL(stream); } catch (e2) { log(e2); }
     }
-    // play() returns undefined on this engine, so nothing to catch.
     try { audioEl.play(); } catch (e) { log("play:", e); }
   }
+
+  function playOut() {
+    if (!remoteStream) return;
+    detachOut();
+    var m = MODES[outMode];
+    if (m === "ctx-tel") {
+      var AC = window.AudioContext || window.mozAudioContext;
+      try { actx = AC ? new AC("telephony") : null; } catch (e) { actx = null; }
+      if (actx && actx.mozAudioChannelType === "telephony") {
+        try {
+          actxSrc = actx.createMediaStreamSource(remoteStream);
+          actxSrc.connect(actx.destination);
+          channel = "telephony";
+          actualMode = "ctx-tel";
+          setSpeaker(speakerWanted, true);
+          emit("route", route());
+          return;
+        } catch (e) { log("telephony audio context:", e); }
+      }
+      if (actx) { try { actx.close(); } catch (e) {} actx = null; }
+      m = "el-tel";
+    }
+    playElement(remoteStream, m === "el-content" ? "content" : "telephony");
+    actualMode = m;
+    setSpeaker(speakerWanted, true);
+    emit("route", route());
+  }
+
+  function attachRemote(stream) {
+    remoteStream = stream;
+    playOut();
+  }
+
 
   function sendSignal(kind, body) {
     var d = { callid: callID, kind: kind };
@@ -367,7 +423,19 @@
         for (var i = 0; i < ts.length; i++) { try { ts[i].enabled = !on; } catch (e) {} }
       }
       if (audioEl) { try { audioEl.muted = !!on; } catch (e) {} }
+      if (actx) {
+        try { if (on && actx.suspend) actx.suspend(); else if (!on && actx.resume) actx.resume(); } catch (e) {}
+      }
     },
+
+    // Cycle how the far end's audio is played (see MODES). Remembered.
+    cycleOutput: function () {
+      outMode = (outMode + 1) % MODES.length;
+      try { localStorage.setItem(MODE_KEY, MODES[outMode]); } catch (e) {}
+      playOut();
+      return actualMode;
+    },
+    outputMode: function () { return actualMode || MODES[outMode]; },
 
     // ---- audio route ----
     route: route,
@@ -390,6 +458,9 @@
         try { pc.close(); } catch (e) {}
         pc = null;
       }
+      detachOut();
+      remoteStream = null;
+      actualMode = "";
       if (audioEl) {
         try {
           audioEl.pause();

@@ -3627,7 +3627,8 @@
         refreshCallKeys();
       },
       onSoftRight: hangUp,
-      onBack: hangUp
+      onBack: hangUp,
+      onKey: callKeyExtra
     });
     refreshCallKeys();
     W.send(W.T.CALLDIAL, { jid: jid });
@@ -3795,7 +3796,9 @@
     Nav.setSoftkeys(left, "", "End");
     var st = document.getElementById("call-status");
     if (st) st.setAttribute("data-route", routeLabel(r));
-    setCallStatus((callConnected ? "connected" : "connecting…") + " · " + routeLabel(r));
+    var mode = Call.outputMode ? Call.outputMode() : "";
+    var modeNo = { "ctx-tel": "A", "el-tel": "B", "el-content": "C" }[mode] || "";
+    setCallStatus((callConnected ? "connected" : "connecting…") + " · " + routeLabel(r) + (modeNo ? " · " + modeNo : ""));
   }
   var callConnected = false;
   if (window.Call) Call.onState(function (state) { if (state === "route") refreshCallKeys(); });
@@ -3862,9 +3865,22 @@
         refreshCallKeys();
       },
       onSoftRight: hangUp,
-      onBack: hangUp
+      onBack: hangUp,
+      onKey: callKeyExtra
     });
     refreshCallKeys();
+  }
+
+  // # on the call screen: try the next way of playing call audio (see
+  // call.js MODES) — for finding which one reaches the earpiece on this phone.
+  function callKeyExtra(e) {
+    if (e.key === "#" && window.Call && Call.cycleOutput) {
+      var m = Call.cycleOutput();
+      toast("call audio: " + m);
+      refreshCallKeys();
+      return true;
+    }
+    return false;
   }
 
   function setCallStatus(s) {
