@@ -86,6 +86,11 @@ type Client struct {
 	// so a long-quiet chat doesn't trigger a request on every message.
 	gapTried map[string]bool
 	gapMu    sync.Mutex
+
+	// presence follows whether the app is on screen; see AppActive.
+	presMu    sync.Mutex
+	presTimer *time.Timer
+	presSent  types.Presence
 }
 
 // New opens (or creates) the session store and builds a whatsmeow client.
@@ -140,32 +145,95 @@ func New(ctx context.Context, dbPath string, hub *ws.Hub) (*Client, error) {
 	return c, nil
 }
 
-// announcePresence tells WhatsApp this device is here.
+// announcePresence tells WhatsApp whether this device is here.
 //
-// Without it a linked device connects passively: it receives fine, but the
-// server never marks it active, so the phone's "Linked devices" screen keeps
-// showing an old "last active" and other users see "-" where our push name
-// should be. Sending "available" also enables active receipts, which is what
-// makes the device look genuinely live rather than merely attached.
+// A linked device that never sends presence connects passively: it receives
+// fine, but "Linked devices" on the phone shows a stale "last active" and
+// contacts see "-" where the push name should be. Sending "available" fixes
+// that — but while ANY linked device is available, WhatsApp stops notifying
+// the account's other devices (that's how WhatsApp Web keeps the phone quiet
+// while you're at the desk). A daemon that is online 24/7 and says
+// "available" once at connect therefore silences the phone and every other
+// device for good.
 //
-// The trade-off is real, so it's controllable via WAD_PRESENCE:
+// So by default presence follows the app: available while Kaits is on screen,
+// unavailable otherwise (a short grace period keeps a quick app switch from
+// flapping). WAD_PRESENCE overrides it:
 //
-//	available   (default) appear online, send read receipts
+//	auto        (default) follow the app, as above
+//	available   always online — other devices get no notifications
 //	unavailable register the push name but stay invisible
 //	off         send nothing — the device will look idle
 //
 // Best-effort: a failure here costs visibility, not function, so it's logged
 // rather than propagated.
 func (c *Client) announcePresence() {
-	mode := os.Getenv("WAD_PRESENCE")
-	if mode == "off" {
+	switch presenceMode() {
+	case "off":
+		return
+	case "available":
+		c.sendPresence(types.PresenceAvailable, true)
+	case "unavailable":
+		c.sendPresence(types.PresenceUnavailable, true)
+	default:
+		if c.hub.Active() {
+			c.sendPresence(types.PresenceAvailable, true)
+		} else {
+			c.sendPresence(types.PresenceUnavailable, true)
+		}
+	}
+}
+
+func presenceMode() string {
+	switch m := os.Getenv("WAD_PRESENCE"); m {
+	case "off", "available", "unavailable":
+		return m
+	}
+	return "auto"
+}
+
+// presenceGrace is how long the app may be off screen before this device goes
+// unavailable. Long enough to cover a glance at another app or the screen
+// timing out mid-read; short enough that the phone starts buzzing again soon
+// after Kaits is put away.
+const presenceGrace = 20 * time.Second
+
+// AppActive is the hub's report that the app came on screen somewhere (true)
+// or that nothing is on screen any more (false).
+func (c *Client) AppActive(active bool) {
+	if presenceMode() != "auto" {
 		return
 	}
-	state := types.PresenceAvailable
-	if mode == "unavailable" {
-		state = types.PresenceUnavailable
+	c.presMu.Lock()
+	if c.presTimer != nil {
+		c.presTimer.Stop()
+		c.presTimer = nil
 	}
+	if active {
+		c.presMu.Unlock()
+		go c.sendPresence(types.PresenceAvailable, false)
+		return
+	}
+	c.presTimer = time.AfterFunc(presenceGrace, func() {
+		if !c.hub.Active() {
+			c.sendPresence(types.PresenceUnavailable, false)
+		}
+	})
+	c.presMu.Unlock()
+}
 
+// sendPresence sends state unless it's what we last sent (force resends, for a
+// fresh connection where the server has forgotten).
+func (c *Client) sendPresence(state types.Presence, force bool) {
+	c.presMu.Lock()
+	same := c.presSent == state
+	c.presMu.Unlock()
+	if same && !force {
+		return
+	}
+	if !c.WA.IsConnected() {
+		return // the Connected handler sends the current state
+	}
 	// SendPresence refuses without a push name, and the attribute it sends IS
 	// the push name — so an empty one is worth saying out loud.
 	if c.WA.Store.PushName == "" {
@@ -173,14 +241,16 @@ func (c *Client) announcePresence() {
 			"(contacts may see \"-\" and this device will look idle)")
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := c.WA.SendPresence(ctx, state); err != nil {
-		log.Printf("wa: could not announce presence (%v) — this device may show as inactive", err)
+		log.Printf("wa: could not send presence %q (%v)", state, err)
 		return
 	}
-	log.Printf("wa: presence sent as %q (WAD_PRESENCE=off to stay quiet)", state)
+	c.presMu.Lock()
+	c.presSent = state
+	c.presMu.Unlock()
+	log.Printf("wa: presence %q", state)
 }
 
 // SetCallHook lets the calls package receive raw call events.

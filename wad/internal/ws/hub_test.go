@@ -88,3 +88,53 @@ func TestRemovingOneClientLeavesTheRest(t *testing.T) {
 		t.Error("HasClient says nobody is here while one phone is connected")
 	}
 }
+
+// While the daemon says "available", WhatsApp mutes the account's other
+// devices. So "active" must mean on screen, not merely connected.
+func TestActiveFollowsVisibility(t *testing.T) {
+	h := NewHub()
+	var got []bool
+	h.OnActive(func(a bool) { got = append(got, a) })
+	a, b := newKey(), newKey()
+	add := func(c *websocket.Conn) {
+		h.mu.Lock()
+		h.clients[c] = make(chan Envelope, 1)
+		h.mu.Unlock()
+		h.reportActive()
+	}
+	drop := func(c *websocket.Conn) {
+		h.mu.Lock()
+		delete(h.clients, c)
+		delete(h.visible, c)
+		h.mu.Unlock()
+		h.reportActive()
+	}
+
+	add(a) // an app that hasn't said anything yet counts as on screen
+	if !h.Active() {
+		t.Fatal("fresh connection should count as active")
+	}
+	h.setVisible(a, []byte(`{"visible":false}`))
+	if h.Active() {
+		t.Fatal("hidden app still counted as active")
+	}
+	add(b)
+	h.setVisible(b, []byte(`{"visible":true}`))
+	h.setVisible(b, []byte(`{"visible":true}`)) // repeat: no new report
+	drop(b)
+	h.setVisible(a, []byte(`{"visible":false}`))
+
+	want := []bool{true, false, true, false}
+	if len(got) != len(want) {
+		t.Fatalf("reports %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reports %v, want %v", got, want)
+		}
+	}
+	h.setVisible(b, []byte(`{"visible":true}`)) // gone connection: ignored
+	if h.Active() {
+		t.Fatal("a disconnected app's report must not count")
+	}
+}

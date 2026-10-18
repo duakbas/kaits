@@ -38,11 +38,21 @@ type Hub struct {
 	clients  map[*websocket.Conn]chan Envelope
 	handler  func(Envelope)
 	upgrader websocket.Upgrader
+
+	// visible is what each connection last said about being on screen. A
+	// connection that never said anything (an older app build) isn't in the
+	// map and counts as on screen, which is how every connection used to be
+	// treated.
+	visible    map[*websocket.Conn]bool
+	onActive   func(bool)
+	lastActive int // -1 unknown, 0 no, 1 yes
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients: map[*websocket.Conn]chan Envelope{},
+		clients:    map[*websocket.Conn]chan Envelope{},
+		visible:    map[*websocket.Conn]bool{},
+		lastActive: -1,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -50,6 +60,64 @@ func NewHub() *Hub {
 }
 
 func (h *Hub) OnFrame(fn func(Envelope)) { h.handler = fn }
+
+// OnActive is called whenever "is the app on screen anywhere" changes.
+//
+// It drives this device's WhatsApp presence. While a linked device is
+// "available", WhatsApp stops notifying the account's other devices — that is
+// how WhatsApp Web keeps your phone quiet while you type at a desk. A daemon
+// that announces itself available and stays connected all day therefore
+// silences the phone and every other device permanently. Being available only
+// while the app is actually being looked at restores the normal behaviour.
+func (h *Hub) OnActive(fn func(bool)) { h.onActive = fn }
+
+// Active reports whether any attached app is on screen.
+func (h *Hub) Active() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.activeLocked()
+}
+
+func (h *Hub) activeLocked() bool {
+	for c := range h.clients {
+		if v, said := h.visible[c]; !said || v {
+			return true
+		}
+	}
+	return false
+}
+
+// reportActive fires OnActive if the aggregate changed.
+func (h *Hub) reportActive() {
+	h.mu.Lock()
+	now := 0
+	if h.activeLocked() {
+		now = 1
+	}
+	changed := now != h.lastActive
+	h.lastActive = now
+	fn := h.onActive
+	h.mu.Unlock()
+	if changed && fn != nil {
+		fn(now == 1)
+	}
+}
+
+// setVisible records what one connection said about being on screen.
+func (h *Hub) setVisible(c *websocket.Conn, data json.RawMessage) {
+	var v struct {
+		Visible bool `json:"visible"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return
+	}
+	h.mu.Lock()
+	if _, ok := h.clients[c]; ok {
+		h.visible[c] = v.Visible
+	}
+	h.mu.Unlock()
+	h.reportActive()
+}
 
 // HasClient reports whether the app is currently attached.
 //
@@ -127,6 +195,7 @@ func (h *Hub) adopt(c *websocket.Conn) {
 	h.clients[c] = ch
 	n := len(h.clients)
 	h.mu.Unlock()
+	h.reportActive()
 
 	// How long the phone stays connected is the number that decides whether
 	// notifications are possible at all on this platform. KaiOS's push service
@@ -193,12 +262,18 @@ func (h *Hub) readLoop(c *websocket.Conn) string {
 			log.Printf("ws: read closed: %v", err)
 			h.mu.Lock()
 			delete(h.clients, c)
+			delete(h.visible, c)
 			h.mu.Unlock()
+			h.reportActive()
 			return err.Error()
 		}
 		var e Envelope
 		if err := json.Unmarshal(data, &e); err != nil {
 			log.Printf("ws: bad frame: %v", err)
+			continue
+		}
+		if e.T == TVisible {
+			h.setVisible(c, e.Data)
 			continue
 		}
 		if h.handler != nil {

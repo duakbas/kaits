@@ -24,7 +24,7 @@
     CHATACTION: "chataction", GETPROFILE: "getprofile", SAVECONTACT: "savecontact",
     SENDREACTION: "sendreaction", SEARCH: "search", WATCH: "watch",
     GETSTICKERS: "getstickers", GIFSEARCH: "gifsearch",
-    PUSHSUB: "pushsub", EDIT: "edit", LIVELOC: "liveloc",
+    PUSHSUB: "pushsub", EDIT: "edit", LIVELOC: "liveloc", VISIBLE: "visible",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
     CALLDIAL: "calldial", CALLHANGUP: "callhangup"
   };
@@ -186,6 +186,11 @@
        diag.lastOpenAt = Date.now();
        diag.lastError = "";
        setStatus("open");
+       // First thing: say whether we're on screen. The daemon is "online" to
+       // WhatsApp only while the app is actually being looked at; otherwise
+       // WhatsApp mutes every other device's notifications for as long as
+       // this socket happens to stay open.
+       reportVisible(true);
        // Anything typed while offline goes out before we ask for state, so the
        // chat list we get back already reflects it.
        flushOutbox();
@@ -249,12 +254,31 @@
     connect();                         // clears any pending retry itself
   }
 
+  function isHidden() {
+    if (typeof document.hidden === "boolean") return document.hidden;
+    if (typeof document.mozHidden === "boolean") return document.mozHidden;
+    return false;
+  }
+
+  // Tell the daemon whether the app is on screen. Not queued: a stale answer
+  // is worse than none, and every new connection reports afresh on open.
+  var lastReported = null;
+  function reportVisible(force) {
+    var v = !isHidden();
+    if (!(ws && ws.readyState === WebSocket.OPEN)) { lastReported = null; return; }
+    if (!force && lastReported === v) return;   // Gecko fires both events
+    lastReported = v;
+    send(T.VISIBLE, { visible: v });
+  }
+
   if (window.addEventListener) {
     window.addEventListener("online", function () { kick("network back"); }, false);
     document.addEventListener("visibilitychange", function () {
+      reportVisible();
       if (!document.hidden) kick("app visible");
     }, false);
     document.addEventListener("mozvisibilitychange", function () {
+      reportVisible();
       if (!document.mozHidden) kick("app visible");
     }, false);
   }

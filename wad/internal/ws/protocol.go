@@ -71,6 +71,7 @@ const (
 	TPushSub      = "pushsub"      // {endpoint} register/forget a Web Push endpoint
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
 	TLiveLoc      = "liveloc"      // {chat, action:"start"|"update"|"stop", lat, lon, acc, secs}
+	TVisible      = "visible"      // {visible} the app is on screen / went to the background (handled by the hub)
 )
 
 // MsgData is an inbound message pushed to the app.

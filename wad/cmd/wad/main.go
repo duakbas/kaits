@@ -180,6 +180,9 @@ func main() {
 	})
 
 	// Route frames coming from the phone.
+	// WhatsApp presence follows whether Kaits is on screen, so the phone and
+	// other devices keep getting notifications while it isn't. See AppActive.
+	hub.OnActive(waCli.AppActive)
 	hub.OnFrame(func(e ws.Envelope) {
 		routeAppFrame(ctx, e, waCli, callMgr, hub)
 	})
