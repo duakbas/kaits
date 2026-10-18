@@ -161,6 +161,7 @@ type PhoneLeg struct {
 	wmu     sync.Mutex
 	dmu     sync.Mutex
 	closed  bool
+	nCands  int
 	onPCM   func([]int16)
 	onState func(string)
 }
@@ -235,6 +236,21 @@ func NewPhoneLeg(callID string, send func(ws.Signal), opt PhoneLegOptions) (*Pho
 		l.emit(ws.Signal{CallID: callID, Kind: "ice", Candidate: b})
 	})
 
+	// Transport detail, for a call stuck at "connecting": ICE (did the
+	// candidates reach each other?) and DTLS (did encryption come up?) are
+	// separate stages and fail for different reasons.
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		log.Printf("calls: phone leg %s: ice %s (%d candidates from the phone)", callID, s, l.remoteCands())
+		if s == webrtc.ICEConnectionStateConnected {
+			if st := pc.GetStats(); st != nil {
+				for _, v := range st {
+					if p, ok := v.(webrtc.ICECandidatePairStats); ok && p.Nominated {
+						log.Printf("calls: phone leg %s: ice pair %s", callID, p.ID)
+					}
+				}
+			}
+		}
+	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		log.Printf("calls: phone leg %s: %s", callID, s)
 		l.mu.Lock()
@@ -295,6 +311,15 @@ func (l *PhoneLeg) HandleSignal(sig ws.Signal) error {
 			Type: webrtc.SDPTypeAnswer,
 			SDP:  sig.SDP,
 		})
+		if err == nil {
+			if trs := l.pc.GetTransceivers(); len(trs) > 0 && trs[0].Sender() != nil {
+				if dt := trs[0].Sender().Transport(); dt != nil {
+					dt.OnStateChange(func(st webrtc.DTLSTransportState) {
+						log.Printf("calls: phone leg %s: dtls %s", l.callID, st)
+					})
+				}
+			}
+		}
 		if err != nil {
 			// The phone's answer is the only record of what it would accept;
 			// without it a refusal ("no ice-ufrag" = it rejected every codec)
@@ -314,7 +339,18 @@ func (l *PhoneLeg) HandleSignal(sig ws.Signal) error {
 		if c.Candidate == "" {
 			return nil
 		}
-		return l.pc.AddICECandidate(c)
+		l.mu.Lock()
+		l.nCands++
+		n := l.nCands
+		l.mu.Unlock()
+		if n <= 4 {
+			log.Printf("calls: phone leg %s: phone candidate %s", l.callID, candSummary(c.Candidate))
+		}
+		err := l.pc.AddICECandidate(c)
+		if err != nil {
+			log.Printf("calls: phone leg %s: candidate refused: %v", l.callID, err)
+		}
+		return err
 	case "offer":
 		// The app never offers. If it does, something is confused, and
 		// answering it would half-establish a session nobody is driving.
@@ -521,4 +557,25 @@ func (l *PhoneLeg) Close() error {
 // "connected" but carries no audio always ends up needing.
 func (l *PhoneLeg) ConnectionState() string {
 	return l.pc.ConnectionState().String()
+}
+
+func (l *PhoneLeg) remoteCands() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.nCands
+}
+
+// candSummary is "udp host 10.x.x.x" style: the type and transport, with the
+// address shortened so the log shows the shape, not a full IP.
+func candSummary(c string) string {
+	f := strings.Fields(c)
+	// candidate:<foundation> <component> <transport> <priority> <ip> <port> typ <type> ...
+	if len(f) < 8 {
+		return c
+	}
+	ip := f[4]
+	if i := strings.LastIndexAny(ip, ".:"); i > 0 {
+		ip = ip[:i] + ".x"
+	}
+	return strings.Join([]string{f[2], f[7], ip}, " ")
 }
