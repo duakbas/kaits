@@ -91,6 +91,7 @@ type Client struct {
 	// recoverTried: collections already asked from the phone this run.
 	recoverMu    sync.Mutex
 	recoverTried map[string]bool
+	recoverBusy  map[string]bool
 
 	// presence follows whether the app is on screen; see AppActive.
 	presMu    sync.Mutex
@@ -1959,7 +1960,32 @@ func (c *Client) ResyncContacts(ctx context.Context) error {
 // flags and resetting the collection's hash so later patches verify again.
 // This sends the request and waits for that to land. Needs the phone online.
 func (c *Client) recoverAppState(ctx context.Context, name appstate.WAPatchName) bool {
-	before, _, _ := c.WA.Store.AppState.GetAppStateVersion(ctx, string(name))
+	// whatsmeow ignores a recovery copy that isn't newer than what it has
+	// stored ("current version 229 is newer than or equal to recovery version
+	// 229") — and what it has stored is the very state that doesn't verify.
+	// Forget it first, so the phone's copy is taken.
+	//
+	// One request per collection at a time: a second one would reset the
+	// version again right after the first answer was applied.
+	c.recoverMu.Lock()
+	if c.recoverBusy == nil {
+		c.recoverBusy = map[string]bool{}
+	}
+	if c.recoverBusy[string(name)] {
+		c.recoverMu.Unlock()
+		return false
+	}
+	c.recoverBusy[string(name)] = true
+	c.recoverMu.Unlock()
+	defer func() {
+		c.recoverMu.Lock()
+		delete(c.recoverBusy, string(name))
+		c.recoverMu.Unlock()
+	}()
+	if err := c.WA.Store.AppState.DeleteAppStateVersion(ctx, string(name)); err != nil {
+		log.Printf("app state: %s: couldn't reset the stored version: %v", name, err)
+	}
+	before := uint64(0)
 	if _, err := c.WA.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(name)); err != nil {
 		log.Printf("app state: %s: recovery request failed: %v", name, err)
 		return false
