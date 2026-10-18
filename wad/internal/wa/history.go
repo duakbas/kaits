@@ -322,6 +322,34 @@ func (h *histStore) chatNamesFor(jids []string) map[string]string {
 	return out
 }
 
+// keepNewestUnread marks a chat's incoming messages read except the newest n.
+func (h *histStore) keepNewestUnread(chat string, n int) {
+	if h == nil || h.db == nil || chat == "" {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	h.db.Exec(`UPDATE messages SET status='read'
+		WHERE chat=? AND fromme=0 AND COALESCE(status,'')<>'read'
+		  AND msgid NOT IN (SELECT msgid FROM messages WHERE chat=? AND fromme=0 ORDER BY ts DESC LIMIT ?)`,
+		chat, chat, n)
+}
+
+// markReadBefore flags all incoming messages older than ts (unix s) as read.
+func (h *histStore) markReadBefore(ts int64) int {
+	if h == nil || h.db == nil {
+		return 0
+	}
+	res, err := h.db.Exec(`UPDATE messages SET status='read'
+		WHERE fromme=0 AND COALESCE(status,'')<>'read' AND ts < ?`, ts)
+	if err != nil || res == nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
+}
+
 // unreadCount is the number of incoming messages in a chat not yet marked read.
 func (h *histStore) unreadCount(chat string) int {
 	if h == nil || h.db == nil {

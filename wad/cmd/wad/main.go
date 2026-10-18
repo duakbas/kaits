@@ -141,6 +141,20 @@ func main() {
 		return
 	}
 
+	// WAD_MARK_READ_HOURS=N marks every incoming message older than N hours as
+	// read, then exits. One-shot repair for history that a re-pair stored as
+	// unread (see keepNewestUnread, which prevents it from now on).
+	if v := os.Getenv("WAD_MARK_READ_HOURS"); v != "" {
+		h, err := strconv.Atoi(v)
+		if err != nil || h < 0 {
+			log.Fatalf("WAD_MARK_READ_HOURS must be a number of hours, got %q", v)
+		}
+		n := waCli.MarkReadBefore(time.Now().Add(-time.Duration(h) * time.Hour))
+		log.Printf("mark read: %d messages older than %dh marked read", n, h)
+		log.Printf("mark read: %d chat previews rebuilt", waCli.RebuildPreviewsNow())
+		return
+	}
+
 	// WAD_REFETCH_MEDIA=1 asks the phone to re-send history for chats whose
 	// attachments have no stored keys, so old photos become viewable again.
 	// Answers arrive asynchronously as HistorySync events, so this stays

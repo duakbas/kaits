@@ -849,6 +849,17 @@ func (c *Client) handleHistorySync(v *events.HistorySync) {
 			c.handleMsg(evt, false) // persist only, don't spam the app
 			total++
 		}
+		// History arrives with no read state, and an empty state counts as
+		// unread — so a re-pair made years of old messages "unread" and every
+		// notification surfaced them. WhatsApp tells us how many are really
+		// unread per conversation; everything older than those is read.
+		if len(conv.GetMessages()) > 0 {
+			n := int(conv.GetUnreadCount())
+			if conv.GetMarkedAsUnread() && n == 0 {
+				n = 1
+			}
+			c.hist.keepNewestUnread(c.canonicalJID(chatJID).String(), n)
+		}
 	}
 	if total > 0 {
 		log.Printf("wa: history sync stored %d messages across %d chats", total, len(convs))
@@ -1554,6 +1565,12 @@ func (c *Client) RefreshGroupNames(ctx context.Context) int {
 		log.Printf("wa: group names: %d of %d groups renamed", fixed, len(groups))
 	}
 	return fixed
+}
+
+// MarkReadBefore flags every incoming message older than cutoff as read — the
+// one-shot repair for a store whose history sync predates keepNewestUnread.
+func (c *Client) MarkReadBefore(cutoff time.Time) int {
+	return c.hist.markReadBefore(cutoff.Unix())
 }
 
 // RebuildPreviewsNow regenerates chat-list previews from the newest stored
