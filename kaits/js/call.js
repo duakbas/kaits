@@ -207,16 +207,89 @@
   // of getting a WebRTC stream onto that channel works differs by phone, so
   // there are three, tried in this order and switchable live (# key on the
   // call screen) — the one that works is remembered:
-  //   ctx-tel     Web Audio context on the telephony channel, fed the stream
+  //   bridge-tel  the stream is read in a normal Web Audio context and the
+  //               samples are played by a second one on the telephony channel
+  //               (feeding a telephony context the stream directly is
+  //               NotSupportedError on Gecko 48: different audio graphs)
   //   el-tel      the <audio> element on the telephony channel
   //   el-content  the <audio> element on the media channel (always speaker)
-  var MODES = ["ctx-tel", "el-tel", "el-content"];
-  var MODE_KEY = "kaits.callaudio";
+  var MODES = ["bridge-tel", "el-tel", "el-content"];
+  var MODE_KEY = "kaits.callaudio2";
   var outMode = 0;
   try { var saved = MODES.indexOf(localStorage.getItem(MODE_KEY)); if (saved >= 0) outMode = saved; } catch (e) {}
   var actualMode = "";
   var remoteStream = null;
   var actx = null, actxSrc = null;
+  var bridge = null;
+
+  // Copy the remote stream's samples from a normal-channel context (the only
+  // one that can read it) to a telephony-channel context that plays them.
+  function startBridge(stream) {
+    var AC = window.AudioContext || window.mozAudioContext;
+    if (!AC) throw new Error("no AudioContext");
+    var tel = new AC("telephony");
+    if (tel.mozAudioChannelType !== "telephony") {
+      try { tel.close(); } catch (e) {}
+      throw new Error("context isn't on the telephony channel");
+    }
+    var cap = new AC();
+    var src = cap.createMediaStreamSource(stream);
+    var grab = cap.createScriptProcessor(1024, 1, 1);
+    var mute = cap.createGain();
+    mute.gain.value = 0;
+    src.connect(grab);
+    grab.connect(mute);
+    mute.connect(cap.destination);
+
+    // Ring buffer, half a second deep; anything older is dropped so a stall
+    // never turns into a call that lags further and further behind.
+    var size = Math.max(4096, Math.round(tel.sampleRate * 0.5));
+    var ring = new Float32Array(size);
+    var w = 0, r = 0, fill = 0;
+    var step = cap.sampleRate / tel.sampleRate;   // usually 1
+    var pos = 0;
+    grab.onaudioprocess = function (e) {
+      var d = e.inputBuffer.getChannelData(0);
+      if (step === 1) {
+        for (var i = 0; i < d.length; i++) {
+          ring[w] = d[i]; w = (w + 1) % size;
+          if (fill < size) fill++; else r = (r + 1) % size;
+        }
+      } else {
+        for (; pos < d.length; pos += step) {
+          ring[w] = d[pos | 0]; w = (w + 1) % size;
+          if (fill < size) fill++; else r = (r + 1) % size;
+        }
+        pos -= d.length;
+      }
+    };
+    var out = tel.createScriptProcessor(1024, 1, 1);
+    var primed = false;
+    out.onaudioprocess = function (e) {
+      var o = e.outputBuffer.getChannelData(0);
+      // Wait for ~60 ms of audio before starting, then play whatever is there.
+      if (!primed && fill < tel.sampleRate * 0.06) { for (var z = 0; z < o.length; z++) o[z] = 0; return; }
+      primed = true;
+      for (var j = 0; j < o.length; j++) {
+        if (fill > 0) { o[j] = ring[r]; r = (r + 1) % size; fill--; }
+        else o[j] = 0;
+      }
+    };
+    out.connect(tel.destination);
+    return {
+      stop: function () {
+        try { src.disconnect(); grab.disconnect(); mute.disconnect(); out.disconnect(); } catch (e) {}
+        grab.onaudioprocess = null; out.onaudioprocess = null;
+        try { if (cap.close) cap.close(); } catch (e) {}
+        try { if (tel.close) tel.close(); } catch (e) {}
+      },
+      hold: function (on) {
+        try {
+          if (on) { if (tel.suspend) tel.suspend(); } else if (tel.resume) tel.resume();
+        } catch (e) {}
+      }
+    };
+  }
   var lastModeError = "";
   function errText(e) { return String((e && (e.name || e.message)) || e); }
 
@@ -257,6 +330,7 @@
   }
 
   function detachOut() {
+    if (bridge) { bridge.stop(); bridge = null; }
     if (actxSrc) { try { actxSrc.disconnect(); } catch (e) {} actxSrc = null; }
     if (actx) { try { if (actx.close) actx.close(); } catch (e) {} actx = null; }
     if (audioEl) {
@@ -292,24 +366,20 @@
     if (!remoteStream) return;
     detachOut();
     var m = MODES[outMode];
-    if (m === "ctx-tel") {
-      var AC = window.AudioContext || window.mozAudioContext;
-      try { actx = AC ? new AC("telephony") : null; } catch (e) { actx = null; }
-      if (actx && actx.mozAudioChannelType === "telephony") {
-        try {
-          actxSrc = actx.createMediaStreamSource(remoteStream);
-          actxSrc.connect(actx.destination);
-          channel = "telephony";
-          actualMode = "ctx-tel";
-          setSpeaker(speakerWanted, true);
-          emit("route", route());
-          return;
-        } catch (e) { log("telephony audio context:", e); lastModeError = "A: " + errText(e); }
-      } else {
-        lastModeError = "A: " + (actx ? "context isn't on the telephony channel (" + actx.mozAudioChannelType + ")"
-                                      : "no telephony audio context");
+    if (m === "bridge-tel") {
+      try {
+        bridge = startBridge(remoteStream);
+        channel = "telephony";
+        actualMode = "bridge-tel";
+        lastModeError = "";
+        setSpeaker(speakerWanted, true);
+        emit("route", route());
+        return;
+      } catch (e) {
+        log("bridge:", e);
+        lastModeError = "A: " + errText(e);
+        bridge = null;
       }
-      if (actx) { try { actx.close(); } catch (e) {} actx = null; }
       m = "el-tel";
     }
     playElement(remoteStream, m === "el-content" ? "content" : "telephony");
@@ -464,9 +534,7 @@
         for (var i = 0; i < ts.length; i++) { try { ts[i].enabled = !on; } catch (e) {} }
       }
       if (audioEl) { try { audioEl.muted = !!on; } catch (e) {} }
-      if (actx) {
-        try { if (on && actx.suspend) actx.suspend(); else if (!on && actx.resume) actx.resume(); } catch (e) {}
-      }
+      if (bridge) bridge.hold(!!on);
     },
 
     // Cycle how the far end's audio is played (see MODES). Remembered.
@@ -481,6 +549,7 @@
     // since the phone has no console.
     modeError: function () { return lastModeError; },
     startRingback: startRingback,
+    _startBridge: startBridge,   // exposed for testing the bridge off-device
     stopRingback: stopRingback,
 
     // ---- audio route ----

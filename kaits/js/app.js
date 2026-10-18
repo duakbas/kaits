@@ -3799,7 +3799,7 @@
     var st = document.getElementById("call-status");
     if (st) st.setAttribute("data-route", routeLabel(r));
     var mode = Call.outputMode ? Call.outputMode() : "";
-    var modeNo = { "ctx-tel": "A", "el-tel": "B", "el-content": "C" }[mode] || "";
+    var modeNo = { "bridge-tel": "A", "el-tel": "B", "el-content": "C" }[mode] || "";
     setCallStatus((callConnected ? "connected" : "connecting…") + " · " + routeLabel(r) + (modeNo ? " · " + modeNo : ""));
   }
   var callConnected = false;
@@ -3887,7 +3887,7 @@
     if (e.key === "#" && window.Call && Call.cycleOutput) {
       var m = Call.cycleOutput();
       var why = Call.modeError ? Call.modeError() : "";
-      toast("call audio: " + m + (why && m !== "ctx-tel" ? " — " + why : ""));
+      toast("call audio: " + m + (why && m !== "bridge-tel" ? " — " + why : ""));
       refreshCallKeys();
       return true;
     }
