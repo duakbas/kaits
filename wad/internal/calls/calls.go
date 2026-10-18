@@ -650,7 +650,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 }
 
 var (
-	errBusy    = errorString("already in a call")
+	errBusy     = errorString("already in a call")
 	errNoCallID = errorString("the call backend returned no call id (is WAD_CALLS=1 set?)")
 )
 
