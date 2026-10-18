@@ -312,6 +312,9 @@ func (c *Client) handleEvent(evt any) {
 		// learn about ones favourited AFTER this daemon was paired. Once per
 		// connect, in the background: it is one request and nothing waits on it.
 		go c.SyncFavouriteStickers(context.Background())
+		// Every group subject in one request, so group chats never fall back
+		// to their raw JID for want of a per-group lookup.
+		go c.RefreshGroupNames(context.Background())
 
 	case *events.AppState:
 		// whatsmeow has no handler for the favouriteSticker index, but it emits
@@ -1231,18 +1234,24 @@ func (c *Client) chatName(chat types.JID, isGroup bool) string {
 		}
 		c.groupNamesMu.RUnlock()
 
-		// Not cached — ask the server once, then remember it.
+		// Not cached — ask the server, and remember only a real answer.
+		//
+		// A failed lookup used to be cached as the raw JID for the life of the
+		// process, and that JID was then written over the stored group name
+		// with every message. Right after pairing, when history sync fires
+		// hundreds of these at once, many fail — which is how groups ended up
+		// named "1203…@g.us". RefreshGroupNames fills the cache in bulk instead.
 		info, err := c.WA.GetGroupInfo(context.Background(), chat)
-		name := key
-		if err == nil && info != nil && info.Name != "" {
-			name = info.Name
-		} else if err != nil {
-			log.Printf("wa: GetGroupInfo(%s): %v", key, err)
+		if err != nil || info == nil || info.Name == "" {
+			if err != nil {
+				log.Printf("wa: GetGroupInfo(%s): %v", key, err)
+			}
+			return key
 		}
 		c.groupNamesMu.Lock()
-		c.groupNames[key] = name
+		c.groupNames[key] = info.Name
 		c.groupNamesMu.Unlock()
-		return name
+		return info.Name
 	}
 
 	// 1:1 chat: resolve the contact through the same path as message senders,
@@ -1511,6 +1520,34 @@ func (c *Client) MarkUnsavedNamesNow() (int, int, int) {
 		_, saved := c.displayNameSourced(jid, "")
 		return saved
 	})
+}
+
+// RefreshGroupNames fetches the subject of every group the account is in, with
+// one request, fills the name cache and repairs stored chat names. Returns how
+// many stored chats were renamed.
+func (c *Client) RefreshGroupNames(ctx context.Context) int {
+	groups, err := c.WA.GetJoinedGroups(ctx)
+	if err != nil {
+		log.Printf("wa: group names: %v", err)
+		return 0
+	}
+	fixed := 0
+	c.groupNamesMu.Lock()
+	for _, g := range groups {
+		if g != nil && g.Name != "" {
+			c.groupNames[g.JID.String()] = g.Name
+		}
+	}
+	c.groupNamesMu.Unlock()
+	for _, g := range groups {
+		if g != nil && g.Name != "" {
+			fixed += c.hist.setChatName(g.JID.String(), g.Name)
+		}
+	}
+	if fixed > 0 {
+		log.Printf("wa: group names: %d of %d groups renamed", fixed, len(groups))
+	}
+	return fixed
 }
 
 // RebuildPreviewsNow regenerates chat-list previews from the newest stored

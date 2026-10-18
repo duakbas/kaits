@@ -197,7 +197,11 @@ func (h *histStore) putMessage(d ws.MsgData) {
 		INSERT INTO chats (jid, name, is_group, pinned, last_ts, preview)
 		VALUES (?,?,?,?,?,?)
 		ON CONFLICT(jid) DO UPDATE SET
-			name=excluded.name,
+			-- A raw group JID or an empty name is a failed lookup, never a
+			-- better answer than the name already stored.
+			name=CASE WHEN excluded.name='' OR excluded.name LIKE '%@g.us'
+			          THEN COALESCE(NULLIF(chats.name,''), excluded.name)
+			          ELSE excluded.name END,
 			is_group=excluded.is_group,
 			pinned=excluded.pinned,
 			last_ts=MAX(chats.last_ts, excluded.last_ts),
@@ -750,6 +754,19 @@ func (h *histStore) setLocalContact(jid, name string, ts int64) {
 // renameChatAndMessages applies a newly saved nickname to already-stored rows,
 // so saving a contact updates the chat list and past messages immediately
 // instead of only affecting new traffic.
+// setChatName sets a chat's stored name if it differs. Returns rows changed.
+func (h *histStore) setChatName(jid, name string) int {
+	if h == nil || h.db == nil || jid == "" || name == "" {
+		return 0
+	}
+	res, err := h.db.Exec(`UPDATE chats SET name=? WHERE jid=? AND (name IS NULL OR name<>?)`, name, jid, name)
+	if err != nil || res == nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
+}
+
 func (h *histStore) renameChatAndMessages(jid, name string) {
 	if h == nil || h.db == nil || jid == "" || name == "" {
 		return

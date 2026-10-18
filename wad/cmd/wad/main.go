@@ -103,6 +103,7 @@ func main() {
 					"re-run WAD_RESYNC=1 later to pick up the rest", failed)
 			}
 		}
+		log.Printf("LID migration: %d group names repaired", waCli.RefreshGroupNames(ctx))
 		seen, merged, unmapped := waCli.RunLIDMigration()
 		log.Printf("LID migration: %d lid-chats seen, %d merged, %d unmapped", seen, merged, unmapped)
 		log.Printf("LID migration: %d chat names backfilled", waCli.BackfillChatNamesNow())
