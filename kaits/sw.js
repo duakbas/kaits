@@ -101,6 +101,16 @@ function summaryWith(cfg) {
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (s) {
       if (!s || !s.chats) return notify(fallback, "wa-generic");
+      var keep = s.chats.map(function (ch) { return "wa-" + ch.jid; });
+      // A ringing call outranks everything: it's why the phone was woken.
+      // Tapping it opens the app, which gets the call offer again on connect.
+      if (s.call) {
+        keep.push("wa-call");
+        return Promise.all([
+          notify({ title: "Incoming call", body: s.call.name || "WhatsApp call" }, "wa-call", { call: s.call.id }),
+          clearStale(keep)
+        ]);
+      }
       // Nothing unread means it was read elsewhere between the push being sent
       // and the phone waking. Clear any stale bubbles instead of buzzing.
       if (!s.chats.length) return clearStale([]);

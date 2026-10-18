@@ -88,6 +88,34 @@ type Manager struct {
 
 	// STUN servers for the phone leg. Normally empty; see PhoneLegOptions.
 	STUN []string
+
+	// ringing holds the offer while the phone hasn't answered yet, so an app
+	// that only opens because of the push notification still gets the call.
+	ringing *ws.CallData
+
+	// NameFor turns a caller's JID into a display name (contacts, push name).
+	NameFor func(jid string) string
+	// OnRing is called for every incoming WhatsApp call — used to wake a
+	// closed app through push, since the offer frame only reaches a running one.
+	OnRing func()
+}
+
+// Ringing reports the call currently waiting for an answer, if any.
+func (m *Manager) Ringing() (ws.CallData, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ringing == nil {
+		return ws.CallData{}, false
+	}
+	return *m.ringing, true
+}
+
+// ResendOffer re-rings an app that connected (or came on screen) while a call
+// is still waiting. Harmless if the app already shows it.
+func (m *Manager) ResendOffer() {
+	if d, ok := m.Ringing(); ok {
+		m.hub.PushT(ws.TCallOffer, d)
+	}
 }
 
 func NewManager(be Backend, hub *ws.Hub) *Manager {
@@ -109,18 +137,25 @@ func IsTestCall(id string) bool { return strings.HasPrefix(id, testCallPrefix) }
 // back, which between them prove the phone leg in both directions.
 func (m *Manager) StartTestCall() string {
 	id := testCallPrefix + strconv.FormatInt(time.Now().UnixNano(), 36)
-	m.mu.Lock()
-	m.activeCallID = id
-	m.activeCallFrom = ""
-	m.mu.Unlock()
-
-	m.hub.PushT(ws.TCallOffer, ws.CallData{
+	d := ws.CallData{
 		CallID:    id,
 		FromJID:   "test@wad.local",
 		FromName:  "Tone test",
 		Timestamp: time.Now().Unix(),
-	})
+	}
+	m.mu.Lock()
+	m.activeCallID = id
+	m.activeCallFrom = ""
+	m.ringing = &d
+	m.mu.Unlock()
+
+	m.hub.PushT(ws.TCallOffer, d)
 	log.Printf("calls: test call %s ringing", id)
+	// Rings a closed app through push too, exactly like a real call — so the
+	// wake-up path can be tested without anyone calling.
+	if m.OnRing != nil {
+		go m.OnRing()
+	}
 	return id
 }
 
@@ -132,17 +167,34 @@ func (m *Manager) StartTestCall() string {
 // events.CallTerminate. Do the type switch in the file that has the whatsmeow
 // import (see wacall.go) and call the methods below.
 func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, ts int64) {
-	m.mu.Lock()
-	m.activeCallID = callID
-	m.activeCallFrom = fromJID
-	m.mu.Unlock()
-	m.hub.PushT(ws.TCallOffer, ws.CallData{
+	if m.NameFor != nil {
+		if n := m.NameFor(fromJID); n != "" {
+			fromName = n
+		}
+	}
+	d := ws.CallData{
 		CallID:    callID,
 		FromJID:   fromJID,
 		FromName:  fromName,
 		Video:     video,
 		Timestamp: ts,
-	})
+	}
+	m.mu.Lock()
+	if m.ringing != nil && m.ringing.CallID == callID {
+		// whatsmeow can report the same call as both an offer and an offer
+		// notice; ring once.
+		m.mu.Unlock()
+		return
+	}
+	m.activeCallID = callID
+	m.activeCallFrom = fromJID
+	m.ringing = &d
+	m.mu.Unlock()
+	m.hub.PushT(ws.TCallOffer, d)
+	log.Printf("calls: incoming call from %s", fromName)
+	if m.OnRing != nil {
+		go m.OnRing()
+	}
 	// The phone now rings. It will reply with TCallAnswer or TCallReject,
 	// handled in HandleAppFrame.
 }
@@ -150,7 +202,13 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 func (m *Manager) NotifyEnded(callID, reason string) {
 	m.mu.Lock()
 	ours := callID == m.activeCallID
+	wasRinging := m.ringing != nil && m.ringing.CallID == callID
 	m.mu.Unlock()
+	if wasRinging && m.OnRing != nil {
+		// Wake the phone again so its "incoming call" notification is replaced
+		// by the current state (the missed call) instead of ringing on.
+		defer func() { go m.OnRing() }()
+	}
 	if ours {
 		// Tears down the phone leg too. The far end going away has to take the
 		// WebRTC session with it, or the phone sits in a call with nobody on
@@ -347,6 +405,7 @@ func (m *Manager) endCall() {
 	leg, stop, src := m.leg, m.stopPump, m.source
 	m.leg, m.stopPump, m.source = nil, nil, nil
 	m.activeCallID, m.activeCallFrom = "", ""
+	m.ringing = nil
 	m.mu.Unlock()
 
 	// Order matters: stop producing before tearing down what consumes, or the
@@ -366,6 +425,7 @@ func (m *Manager) endCall() {
 func (m *Manager) answer(ctx context.Context) error {
 	m.mu.Lock()
 	id := m.activeCallID
+	m.ringing = nil
 	m.mu.Unlock()
 	if id == "" {
 		return nil

@@ -67,6 +67,15 @@ func main() {
 		log.Printf("calls: using STUN %v", callMgr.STUN)
 	}
 	waCli.SetCallHook(calls.WACallHook(callMgr))
+	callMgr.NameFor = waCli.NameForJID
+	// A call only reaches a running app over the socket. If Kaits isn't on
+	// screen, ring the push doorbell; the service worker sees the call in
+	// /notify-summary and shows "Incoming call".
+	callMgr.OnRing = func() {
+		if !hub.Active() {
+			waCli.WakePhone()
+		}
+	}
 
 	// WAD_MIGRATE_LIDS=1 does a one-shot repair of already-stored rows against
 	// the current resolver, then exits: merge duplicate @lid chats into their
@@ -183,7 +192,15 @@ func main() {
 	// Route frames coming from the phone.
 	// WhatsApp presence follows whether Kaits is on screen, so the phone and
 	// other devices keep getting notifications while it isn't. See AppActive.
-	hub.OnActive(waCli.AppActive)
+	// Coming on screen also re-delivers a call that is still ringing: an app
+	// opened from the "incoming call" notification wasn't connected when the
+	// offer went out.
+	hub.OnActive(func(active bool) {
+		waCli.AppActive(active)
+		if active {
+			callMgr.ResendOffer()
+		}
+	})
 	hub.OnFrame(func(e ws.Envelope) {
 		routeAppFrame(ctx, e, waCli, callMgr, hub)
 	})
@@ -194,7 +211,7 @@ func main() {
 	mux.HandleFunc("/media/", mediaHandler(waCli))
 	mux.HandleFunc("/avatar/", avatarHandler(waCli))
 	mux.HandleFunc("/locthumb/", locThumbHandler(waCli))
-	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, token))
+	mux.HandleFunc("/notify-summary", notifySummaryHandler(waCli, callMgr, token))
 	mux.HandleFunc("/videoinfo/", videoInfoHandler(waCli))
 	mux.HandleFunc("/gifproxy", gifProxyHandler())
 	mux.HandleFunc("/qr", qrHandler(waCli)) // convenience: view current QR in a browser
@@ -717,7 +734,7 @@ func testCallHandler(cm *calls.Manager, token string) http.HandlerFunc {
 	}
 }
 
-func notifySummaryHandler(c *wa.Client, token string) http.HandlerFunc {
+func notifySummaryHandler(c *wa.Client, cm *calls.Manager, token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("token") != token {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -730,7 +747,11 @@ func notifySummaryHandler(c *wa.Client, token string) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(c.SummaryForNotification())
+		s := c.SummaryForNotification()
+		if d, ok := cm.Ringing(); ok {
+			s["call"] = map[string]any{"id": d.CallID, "name": d.FromName, "jid": d.FromJID}
+		}
+		json.NewEncoder(w).Encode(s)
 	}
 }
 

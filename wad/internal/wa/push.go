@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.mau.fi/whatsmeow/types"
 )
 
 // Waking the phone.
@@ -198,6 +200,31 @@ func (c *Client) SummaryForNotification() map[string]any {
 		})
 	}
 	return map[string]any{"chats": out, "count": total}
+}
+
+// WakePhone rings the push doorbell right away, for an incoming call: no
+// per-chat coalescing and no mute check, because a call is not a message.
+func (c *Client) WakePhone() {
+	subs := c.hist.listPushSubs()
+	for _, s := range subs {
+		go c.sendPush(s.Endpoint)
+	}
+	if len(subs) > 0 {
+		log.Printf("push: woke the phone for a call (%d endpoint(s))", len(subs))
+	}
+}
+
+// NameForJID is the display name for a caller: saved contact, push name or,
+// failing those, the number.
+func (c *Client) NameForJID(jidStr string) string {
+	jid, err := types.ParseJID(jidStr)
+	if err != nil {
+		return jidStr
+	}
+	if n := c.displayName(jid, ""); n != "" {
+		return n
+	}
+	return c.canonicalJID(jid).User
 }
 
 // itoa avoids pulling strconv in for one call site.
