@@ -3538,16 +3538,95 @@
 
   // ---------- incoming call screen ----------
   function showIncomingCall(d) {
+    // The daemon re-sends a still-ringing offer whenever the app comes on
+    // screen; if we're already showing (or in) that call, there's nothing to do.
+    if (activeCall && activeCall.callid === d.callid) return;
     activeCall = d;
+    inCall = false;
+    var label = document.getElementById("call-label");
+    if (label) label.textContent = "Incoming call";
+    setCallStatus("");
     elCallName.textContent = (d.name || d.from) + (d.video ? " (video)" : "");
     show(elCall);
+    // Answer with the green key or the centre key. Not a softkey: the right
+    // softkey is "options" everywhere else, and a press meant for a menu must
+    // never pick up a call by accident.
     Nav.setScreen({
-      onSoftLeft: rejectCall,   // red
-      onSoftRight: answerCall,  // green
+      onCall: answerCall,
+      onEnter: answerCall,
+      onSoftLeft: rejectCall,
       onBack: rejectCall
     });
-    Nav.setSoftkeys("Reject", "", "Answer");
+    Nav.setSoftkeys("Reject", "Answer", "");
+    startRinging();
+    bringToFront();
   }
+
+  // ---- ringing, staying awake, the lid ----
+
+  var ringTimer = null;
+  function startRinging() {
+    stopRinging();
+    var buzz = function () { try { navigator.vibrate([700, 300, 700]); } catch (e) {} };
+    buzz();
+    ringTimer = setInterval(buzz, 2200);
+  }
+  function stopRinging() {
+    if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+    try { navigator.vibrate(0); } catch (e) {}
+  }
+
+  // A call arriving while Kaits is in the background should put Kaits in
+  // front, the way the phone app does.
+  function bringToFront() {
+    if (!document.hidden) return;
+    try {
+      var r = navigator.mozApps && navigator.mozApps.getSelf();
+      if (r) r.onsuccess = function () { if (r.result) r.result.launch(); };
+    } catch (e) {}
+  }
+
+  // Keep the phone from suspending us mid-call with the lid shut.
+  var callLock = null;
+  function holdCallLock() {
+    if (callLock || !navigator.requestWakeLock) return;
+    try { callLock = navigator.requestWakeLock("cpu"); } catch (e) {}
+  }
+  function releaseCallLock() {
+    if (callLock) { try { callLock.unlock(); } catch (e) {} callLock = null; }
+  }
+
+  // Closing the lid ends a call that's on the earpiece — the same as on the
+  // phone's own calls. On speaker, wired or bluetooth it carries on.
+  var inCall = false;
+  if (navigator.getFlipManager) {
+    try {
+      navigator.getFlipManager().then(function (fm) {
+        fm.addEventListener("flipchange", function () {
+          if (fm.flipOpened === false && inCall && activeCall && window.Call && !Call.survivesLidClosed()) {
+            hangUp();
+          }
+        });
+      }, function () {});
+    } catch (e) {}
+  }
+
+  function routeLabel(r) {
+    return { earpiece: "earpiece", speaker: "speaker", wired: "headphones", bluetooth: "bluetooth" }[r] || r;
+  }
+  function refreshCallKeys() {
+    if (!inCall || !window.Call) return;
+    var r = Call.route();
+    // Headphones and bluetooth take over by themselves; the toggle is only
+    // between the phone's own earpiece and loudspeaker.
+    var left = (r === "wired" || r === "bluetooth") ? "" : (Call.speakerOn() ? "Earpiece" : "Speaker");
+    Nav.setSoftkeys(left, "", "End");
+    var st = document.getElementById("call-status");
+    if (st) st.setAttribute("data-route", routeLabel(r));
+    setCallStatus((callConnected ? "connected" : "connecting…") + " · " + routeLabel(r));
+  }
+  var callConnected = false;
+  if (window.Call) Call.onState(function (state) { if (state === "route") refreshCallKeys(); });
 
   function answerCall() {
     if (!activeCall) return;
@@ -3561,9 +3640,20 @@
     // Arm the media side BEFORE telling the daemon, because the daemon sends
     // its offer the moment it hears "answer" and the first frame can arrive
     // before the next line of this function would have run.
+    stopRinging();
     Call.begin(activeCall.callid);
     W.send(W.T.CALLANSWER, { callid: activeCall.callid });
+    inCall = true;
+    callConnected = false;
+    holdCallLock();
     enterInCallScreen();
+  }
+
+  function callFinished() {
+    stopRinging();
+    releaseCallLock();
+    inCall = false;
+    callConnected = false;
   }
 
   function rejectCall() {
@@ -3571,30 +3661,37 @@
     W.send(W.T.CALLREJECT, { callid: activeCall.callid });
     if (window.Call) Call.end();
     activeCall = null;
+    callFinished();
     enterListScreen();
   }
 
   function hangUp() {
-    if (!activeCall) { enterListScreen(); return; }
+    if (!activeCall) { callFinished(); enterListScreen(); return; }
     W.send(W.T.CALLHANGUP, { callid: activeCall.callid });
     if (window.Call) Call.end();
     activeCall = null;
+    callFinished();
     enterListScreen();
   }
 
-  // The in-call screen is the ring screen with different words and one softkey.
-  // A feature phone call needs exactly one affordance: end it.
+  // The in-call screen: left softkey switches earpiece <-> loudspeaker, right
+  // softkey (and back) ends the call.
   function enterInCallScreen() {
     var label = document.getElementById("call-label");
     if (label) label.textContent = "In call";
-    setCallStatus("connecting…");
     show(elCall);
     Nav.setScreen({
-      onSoftLeft: hangUp,
+      onSoftLeft: function () {
+        if (!window.Call) return;
+        var r = Call.route();
+        if (r === "wired" || r === "bluetooth") return;
+        Call.toggleSpeaker();
+        refreshCallKeys();
+      },
       onSoftRight: hangUp,
       onBack: hangUp
     });
-    Nav.setSoftkeys("End", "", "End");
+    refreshCallKeys();
   }
 
   function setCallStatus(s) {
@@ -4282,11 +4379,12 @@
 
   W.on(W.T.CALLSTATE, function (d) {
     console.log("call state:", d.state, d.reason || "");
-    if (d.state === "connected") { setCallStatus("connected"); return; }
-    if (d.state === "accepted") { setCallStatus("connecting…"); return; }
+    if (d.state === "connected") { callConnected = true; refreshCallKeys(); return; }
+    if (d.state === "accepted") { refreshCallKeys(); return; }
     if (d.state === "ended") {
       if (window.Call) Call.end();
       activeCall = null;
+      callFinished();
       if (elCall.hidden === false) {
         // Say why before leaving, or a call that failed to connect and one
         // the other side hung up on look identical.

@@ -106,6 +106,10 @@ function summaryWith(cfg) {
       // Tapping it opens the app, which gets the call offer again on connect.
       if (s.call) {
         keep.push("wa-call");
+        // KaiOS lets a service worker launch its app; for a call, put Kaits
+        // in front right away rather than waiting for a tap. The notification
+        // stays as the fallback if this isn't allowed here.
+        try { if (self.clients && self.clients.openApp) self.clients.openApp({ msg: "call" }); } catch (e) {}
         return Promise.all([
           notify({ title: "Incoming call", body: s.call.name || "WhatsApp call" }, "wa-call", { call: s.call.id }),
           clearStale(keep)

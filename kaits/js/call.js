@@ -28,6 +28,68 @@
   var localStream = null;
   var callID = null;
   var audioEl = null;
+  var channel = "";
+
+  // ---- audio route: earpiece / speaker / wired / bluetooth ----
+
+  var speakerWanted = false;
+  var speakerMgr = null;
+  function getSpeakerMgr() {
+    if (speakerMgr) return speakerMgr;
+    try {
+      var SM = window.SpeakerManager || window.MozSpeakerManager;
+      if (SM) speakerMgr = new SM();
+    } catch (e) {}
+    if (!speakerMgr && navigator.mozSpeakerManager) speakerMgr = navigator.mozSpeakerManager;
+    return speakerMgr;
+  }
+  function setSpeaker(on) {
+    speakerWanted = !!on;
+    var sm = getSpeakerMgr();
+    if (sm) { try { sm.forcespeaker = speakerWanted; } catch (e) { log("forcespeaker:", e); } }
+    emitRoute();
+  }
+
+  // Bluetooth headsets, tracked the way the system app does it: ask the
+  // adapter once, then follow its per-profile status events.
+  var bt = { hfp: false, a2dp: false, sco: false };
+  var btAdapter = null;
+  function btQuery(a, uuid, key) {
+    try {
+      var r = a.getConnectedDevices(uuid);
+      var done = function (list) { if (list && list.length) { bt[key] = true; emitRoute(); } };
+      if (r && typeof r.then === "function") r.then(done, function () {});
+      else if (r) r.onsuccess = function () { done(r.result); };
+    } catch (e) {}
+  }
+  function btHook(a) {
+    if (!a || a === btAdapter) return;
+    btAdapter = a;
+    ["hfp", "a2dp", "sco"].forEach(function (k) {
+      try {
+        a.addEventListener(k + "statuschanged", function (ev) { bt[k] = !!ev.status; emitRoute(); });
+      } catch (e) {}
+    });
+    btQuery(a, "0x111E", "hfp");
+    btQuery(a, "0x110D", "a2dp");
+    btQuery(a, "0x110B", "a2dp");
+  }
+  function btInit() {
+    var m = navigator.mozBluetooth;
+    if (!m) return;
+    try { btHook(m.defaultAdapter); } catch (e) {}
+    try { m.addEventListener("attributechanged", function () { btHook(m.defaultAdapter); }); } catch (e) {}
+  }
+
+  function route() {
+    if (bt.hfp || bt.sco || bt.a2dp) return "bluetooth";
+    if (navigator.mozAudioChannelManager && navigator.mozAudioChannelManager.headphones) return "wired";
+    if (speakerWanted) return "speaker";
+    // Without the telephony channel, call audio comes out of the loudspeaker
+    // whatever we ask for — say so instead of claiming the earpiece.
+    return channel === "content" ? "speaker" : "earpiece";
+  }
+  function emitRoute() { emit("route", route()); }
 
   // ICE can arrive before the description it belongs to, and adding it then is
   // an error. Queue until the remote description is in.
@@ -35,6 +97,7 @@
   var haveRemote = false;
 
   var listeners = { state: [] };
+  // (route tracking starts once listeners exist; see the bottom of this file)
 
   function log() {
     if (window.console && console.log) {
@@ -140,10 +203,17 @@
       audioEl = document.getElementById("call-audio");
     }
     if (!audioEl) { log("no audio element to play into"); return; }
-    // The call belongs on the media channel so the volume keys move it.
-    // Guarded: the property does not exist off-device, and setting an audio
-    // channel the app has no permission for throws.
-    try { audioEl.mozAudioChannelType = "content"; } catch (e) {}
+    // The telephony channel is what puts a call on the EARPIECE (the phone
+    // switches to in-call audio mode for it) and lets the speaker toggle work.
+    // It needs the certified build; a privileged one falls back to the media
+    // channel, which plays from the loudspeaker. Guarded: setting a channel the
+    // app has no permission for throws, and the property doesn't exist
+    // off-device at all.
+    try { audioEl.mozAudioChannelType = "telephony"; channel = "telephony"; }
+    catch (e) {
+      try { audioEl.mozAudioChannelType = "content"; channel = "content"; } catch (e2) {}
+    }
+    setSpeaker(speakerWanted);
 
     try {
       if ("srcObject" in audioEl) { audioEl.srcObject = stream; }
@@ -289,6 +359,15 @@
       }
     },
 
+    // ---- audio route ----
+    route: route,
+    speakerOn: function () { return speakerWanted; },
+    setSpeaker: setSpeaker,
+    toggleSpeaker: function () { setSpeaker(!speakerWanted); return speakerWanted; },
+    // A call may outlive the lid only if the sound isn't coming out of the
+    // earpiece you just closed: headset, bluetooth or loudspeaker.
+    survivesLidClosed: function () { return route() !== "earpiece"; },
+
     end: function () {
       if (localStream) {
         var ts = localStream.getTracks ? localStream.getTracks() : [];
@@ -311,6 +390,9 @@
       callID = null;
       pending = [];
       haveRemote = false;
+      // Next call starts on the earpiece again, and the speaker override must
+      // not leak into other apps' audio.
+      if (speakerWanted) setSpeaker(false);
     },
 
     onState: function (fn) { listeners.state.push(fn); },
@@ -322,4 +404,10 @@
         (("connectionState" in pc) ? " pc=" + pc.connectionState : "");
     }
   };
+  btInit();
+  if (navigator.mozAudioChannelManager) {
+    try {
+      navigator.mozAudioChannelManager.addEventListener("headphoneschange", function () { emitRoute(); });
+    } catch (e) {}
+  }
 })();

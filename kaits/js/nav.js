@@ -12,7 +12,7 @@
   // The active screen handler set. Each is optional.
   var screen = {
     onUp: null, onDown: null, onLeft: null, onRight: null,
-    onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null,
+    onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null, onCall: null,
     onFocusChange: null, onKey: null,
     // container element whose [nav] children are focusable, if using
     // built-in list focus:
@@ -218,6 +218,11 @@
       case "F2":
         if (screen.onSoftRight) { screen.onSoftRight(e); e.preventDefault(); }
         break;
+      // The green key. Only screens that mean something by it (the incoming
+      // call) take it; elsewhere the system keeps it.
+      case "Call":
+        if (screen.onCall) { screen.onCall(e); e.preventDefault(); }
+        break;
       // Back / End / Escape
       case "Backspace":
         // While a text field has focus, Backspace has to delete a character —
@@ -287,7 +292,7 @@
     setScreen: function (handlers) {
       screen = {
         onUp: null, onDown: null, onLeft: null, onRight: null,
-        onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null,
+        onEnter: null, onSoftLeft: null, onSoftRight: null, onBack: null, onCall: null,
         onFocusChange: null,
         list: null
       };

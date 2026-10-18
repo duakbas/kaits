@@ -32,8 +32,8 @@ VERSION="${1:-0.0.2}"
 APPTYPE="${2:-web}"
 
 case "$APPTYPE" in
-  web|privileged) ;;
-  *) echo "app type must be 'web' or 'privileged', got '$APPTYPE'" >&2; exit 2 ;;
+  web|privileged|certified) ;;
+  *) echo "app type must be 'web', 'privileged' or 'certified', got '$APPTYPE'" >&2; exit 2 ;;
 esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,8 +143,22 @@ PRIVILEGED = {
     },
 }
 
-if apptype == "privileged":
+# Certified: only installable by sideloading through the debugger (no store
+# signs it), and what calls need to behave like calls — the telephony audio
+# channel puts the voice on the earpiece, speaker-control toggles the
+# loudspeaker, flip ends an earpiece call when the lid shuts, bluetooth knows
+# when a headset is carrying the audio.
+CERTIFIED = {
+    "audio-channel-telephony": {"description": "Play calls through the earpiece"},
+    "speaker-control": {"description": "Switch a call between earpiece and loudspeaker"},
+    "flip": {"description": "End an earpiece call when the phone is closed"},
+    "bluetooth": {"description": "Keep a call going on a bluetooth headset"},
+}
+
+if apptype in ("privileged", "certified"):
     m["permissions"].update(PRIVILEGED)
+if apptype == "certified":
+    m["permissions"].update(CERTIFIED)
 
 json.dump(m, open(dst, "w"), indent=2)
 
@@ -160,7 +174,7 @@ PY
 # relaxed. An inline script or an inline event handler works everywhere you'd
 # test it and is then silently dead on the phone, so check here rather than
 # find out from a screenshot of a blank screen.
-if [ "$APPTYPE" = "privileged" ]; then
+if [ "$APPTYPE" != "web" ]; then
   BAD=0
   if grep -rlP '<script(?![^>]*\bsrc=)' --include='*.html' "$STAGE" 2>/dev/null | grep -q .; then
     echo "PROBLEM: inline <script> found; privileged CSP forbids it:" >&2
