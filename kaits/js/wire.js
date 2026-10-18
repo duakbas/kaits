@@ -26,7 +26,8 @@
     GETSTICKERS: "getstickers", GIFSEARCH: "gifsearch",
     PUSHSUB: "pushsub", EDIT: "edit", LIVELOC: "liveloc", VISIBLE: "visible",
     CALLANSWER: "callanswer", CALLREJECT: "callreject",
-    CALLDIAL: "calldial", CALLHANGUP: "callhangup"
+    CALLDIAL: "calldial", CALLHANGUP: "callhangup",
+    CALLSWITCH: "callswitch", CALLWAITING: "callwaiting"
   };
 
   var ws = null;

@@ -58,6 +58,8 @@ const (
 	TCallAnswer   = "callanswer"   // user pressed green key on an incoming call
 	TCallReject   = "callreject"   // user pressed red key / declined
 	TCallDial     = "calldial"     // {jid} place an outgoing call
+	TCallSwitch   = "callswitch"   // {callid} end the current call and answer the waiting one
+	TCallWaiting  = "callwaiting"  // daemon->app: CallData of a second call arriving mid-call
 	TCallHangup   = "callhangup"   // end the active call
 	TCallSignalA  = "callsignal"   // WebRTC signalling from app -> pion (same type both ways)
 	TChatAction   = "chataction"   // {chat, action, on} pin/mute/archive/delete a chat
@@ -224,6 +226,9 @@ type CallData struct {
 	FromName  string `json:"name"`
 	Video     bool   `json:"video"`
 	Timestamp int64  `json:"ts"`
+	// AutoAnswer: answer without ringing. Set when the person we were already
+	// calling calls us at the same moment — both of you want this call.
+	AutoAnswer bool `json:"autoanswer,omitempty"`
 }
 
 // Signal carries opaque WebRTC signalling (SDP offer/answer or an ICE

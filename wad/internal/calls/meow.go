@@ -110,6 +110,24 @@ func (b *MeowBackend) Dial(ctx context.Context, dest string, sink PCMSink) (PCMS
 	return src, call.ID(), nil
 }
 
+// Watch reports an outgoing call's pickup and end. OnEnd replaces the
+// forget-only handler set in Dial, so it forgets as well.
+func (b *MeowBackend) Watch(callID string, accepted func(), ended func(reason string)) {
+	call, ok := b.lookup(callID)
+	if !ok {
+		return
+	}
+	if accepted != nil {
+		call.OnPeerAccept(accepted)
+	}
+	call.OnEnd(func(reason string) {
+		b.forget(callID)
+		if ended != nil {
+			ended(reason)
+		}
+	})
+}
+
 func (b *MeowBackend) start(call *meowcaller.Call, sink PCMSink) (PCMSource, error) {
 	src, err := b.attach(call, sink)
 	if err != nil {

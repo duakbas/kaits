@@ -359,6 +359,16 @@
       }
     },
 
+    // Hold while a phone-network call is live: stop sending our microphone
+    // and mute theirs. The WhatsApp call itself stays up.
+    hold: function (on) {
+      if (localStream) {
+        var ts = localStream.getAudioTracks ? localStream.getAudioTracks() : [];
+        for (var i = 0; i < ts.length; i++) { try { ts[i].enabled = !on; } catch (e) {} }
+      }
+      if (audioEl) { try { audioEl.muted = !!on; } catch (e) {} }
+    },
+
     // ---- audio route ----
     route: route,
     speakerOn: function () { return speakerWanted; },
@@ -383,6 +393,7 @@
       if (audioEl) {
         try {
           audioEl.pause();
+          audioEl.muted = false;
           if ("srcObject" in audioEl) audioEl.srcObject = null;
           else audioEl.removeAttribute("src");
         } catch (e) {}

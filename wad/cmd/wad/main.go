@@ -68,6 +68,7 @@ func main() {
 	}
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 	callMgr.NameFor = waCli.NameForJID
+	callMgr.SamePerson = waCli.SamePerson
 	// A call only reaches a running app over the socket. If Kaits isn't on
 	// screen, ring the push doorbell; the service worker sees the call in
 	// /notify-summary and shows "Incoming call".
@@ -397,8 +398,23 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 				"code": "badliveloc", "msg": "unknown action " + d.Action})
 		}
 
-	case ws.TCallAnswer, ws.TCallReject, ws.TCallHangup, ws.TCallSignalA:
+	case ws.TCallAnswer, ws.TCallReject, ws.TCallHangup, ws.TCallSignalA, ws.TCallSwitch:
 		cm.HandleAppFrame(ctx, e)
+
+	case ws.TCallDial:
+		var d struct {
+			JID string `json:"jid"`
+		}
+		if json.Unmarshal(e.Data, &d) != nil || d.JID == "" {
+			return
+		}
+		name := waCli.NameForJID(d.JID)
+		go func() {
+			if err := cm.Dial(context.Background(), d.JID, name); err != nil {
+				log.Printf("calls: dial %s: %v", name, err)
+				hub.PushT(ws.TCallState, map[string]any{"state": "ended", "reason": err.Error(), "dial": true})
+			}
+		}()
 
 	case ws.TEdit:
 		var d struct {

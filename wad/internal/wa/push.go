@@ -231,6 +231,18 @@ func (c *Client) NameForJID(jidStr string) string {
 	return c.canonicalJID(jid).User
 }
 
+// SamePerson reports whether two JIDs belong to the same contact, seeing
+// through the phone-number vs LID forms of the same person.
+func (c *Client) SamePerson(a, b string) bool {
+	ja, err1 := types.ParseJID(a)
+	jb, err2 := types.ParseJID(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	ua, ub := c.canonicalJID(ja).User, c.canonicalJID(jb).User
+	return ua != "" && ua == ub
+}
+
 // itoa avoids pulling strconv in for one call site.
 func itoa(n int) string {
 	if n == 0 {

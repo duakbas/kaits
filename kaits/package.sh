@@ -153,6 +153,7 @@ CERTIFIED = {
     "speaker-control": {"description": "Switch a call between earpiece and loudspeaker"},
     "flip": {"description": "End an earpiece call when the phone is closed"},
     "bluetooth": {"description": "Keep a call going on a bluetooth headset"},
+    "telephony": {"description": "Know about phone-network calls, so a WhatsApp call doesn't talk over one"},
 }
 
 if apptype in ("privileged", "certified"):

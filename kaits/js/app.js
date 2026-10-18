@@ -509,12 +509,13 @@
       { action: "mute", label: c.muted ? "Unmute" : "Mute" },
       { action: "archive", label: c.archived ? "Unarchive" : "Archive" },
       { action: "info", label: c.group ? "Group info" : "Contact info" },
+    ].concat(c.group ? [] : [{ action: "call", label: "Call" }]).concat([
       { action: "delete", label: "Delete chat" },
       // Not about this chat, but it's the only menu reachable from the list
       // without scrolling past every conversation — and the settings screen is
       // where the diagnostics live, so it has to be quick to reach.
       { action: "settings", label: "⚙  App settings" }
-    ].forEach(function (item) {
+    ]).forEach(function (item) {
       var row = document.createElement("div");
       row.className = "menu-item" + (item.action === "delete" ? " danger" : "");
       row.setAttribute("data-nav", "");
@@ -549,6 +550,13 @@
     if (!jid) { closeChatMenu(); return; }
     var c = chats[jid] || {};
     var back = chatMenuReturn || enterListScreen;
+    if (action === "call") {
+      elChatMenu.hidden = true;
+      chatMenuJID = null;
+      chatMenuReturn = null;
+      placeCall(jid);
+      return;
+    }
     if (action === "settings") {
       elChatMenu.hidden = true;
       chatMenuJID = null;
@@ -664,7 +672,8 @@
       // Send moved to the centre label accordingly — Enter already sent, so the
       // old right-softkey Send was the odd one out.
       onSoftRight: openThreadOptions,
-      onEnter: sendCurrent
+      onEnter: sendCurrent,
+      onCall: function () { placeCall(currentJID); }
     });
     Nav.setSoftkeys(notifSoftLabel(), "SEND", "•••");
     setTimeout(function () { elInput.focus(); }, 0);
@@ -684,7 +693,8 @@
       onEnter: enterOnSelected,
       onSoftLeft: enterComposeMode,   // "Cancel" back to typing
       onSoftRight: openActionMenu,    // "Actions"
-      onBack: enterComposeMode
+      onBack: enterComposeMode,
+      onCall: function () { placeCall(currentJID); }
     });
     // Centre advertises the Enter action here too; "•••" does the same thing,
     // so the options key means the same in both thread modes.
@@ -3541,8 +3551,24 @@
     // The daemon re-sends a still-ringing offer whenever the app comes on
     // screen; if we're already showing (or in) that call, there's nothing to do.
     if (activeCall && activeCall.callid === d.callid) return;
+    hideWaiting();
+    var gsm = gsmState();
+    // They're calling me on WhatsApp while I'm dialling them on the phone
+    // network: they're not going to pick that up — switch to their call.
+    if (!d.autoanswer && gsm.dialing && sameNumber(gsm.dialing.number, d.from)) {
+      gsmHangUpAll();
+      d.autoanswer = true;
+    }
     activeCall = d;
     inCall = false;
+    if (d.autoanswer) {
+      // Both sides called each other at once (or see above): no ringing,
+      // just connect.
+      elCallName.textContent = d.name || d.from;
+      show(elCall);
+      answerCall();
+      return;
+    }
     var label = document.getElementById("call-label");
     if (label) label.textContent = "Incoming call";
     setCallStatus("");
@@ -3558,9 +3584,155 @@
       onBack: rejectCall
     });
     Nav.setSoftkeys("Reject", "Answer", "");
+    if (gsm.busy) {
+      // On a phone-network call: don't grab the screen from the dialer or
+      // vibrate through the conversation. One short buzz and a notification;
+      // answering from Kaits ends the phone call first.
+      setCallStatus("you're on a phone call — Answer ends it");
+      try { navigator.vibrate(200); } catch (e) {}
+      try {
+        new Notification("WhatsApp call: " + (d.name || d.from), {
+          body: "Open Kaits to answer (ends the phone call)", tag: "wa-call"
+        });
+      } catch (e) {}
+      return;
+    }
     startRinging();
     bringToFront();
   }
+
+  // ---- outgoing ----
+
+  function placeCall(jid) {
+    if (!jid || (chats[jid] && chats[jid].group)) return;
+    if (activeCall) { toast("Already in a call"); return; }
+    if (!window.Call || !Call.supported()) { toast("This phone can't carry call audio"); return; }
+    var name = (chats[jid] && chats[jid].name) || jid;
+    activeCall = { callid: "", from: jid, name: name, outgoing: true };
+    // No id yet — the daemon picks it. Call.signal adopts the first one it sees.
+    Call.begin(null);
+    inCall = true;
+    callConnected = false;
+    holdCallLock();
+    elCallName.textContent = name;
+    var label = document.getElementById("call-label");
+    show(elCall);
+    if (label) label.textContent = "Calling…";
+    Nav.setScreen({
+      onSoftLeft: function () {
+        if (!window.Call) return;
+        var r = Call.route();
+        if (r === "wired" || r === "bluetooth") return;
+        Call.toggleSpeaker();
+        refreshCallKeys();
+      },
+      onSoftRight: hangUp,
+      onBack: hangUp
+    });
+    refreshCallKeys();
+    W.send(W.T.CALLDIAL, { jid: jid });
+  }
+
+  // ---- call waiting ----
+
+  var waitingCall = null;
+  function showWaiting(d) {
+    waitingCall = d;
+    var el = document.getElementById("call-waiting");
+    if (el) { el.textContent = (d.name || d.from) + " is calling"; el.hidden = false; }
+    try { navigator.vibrate([150, 150, 150]); } catch (e) {}
+    // Green: end this call and take theirs. Left: decline theirs.
+    Nav.setScreen({
+      onCall: switchToWaiting,
+      onEnter: switchToWaiting,
+      onSoftLeft: declineWaiting,
+      onSoftRight: hangUp,
+      onBack: hangUp
+    });
+    Nav.setSoftkeys("Decline", "Answer", "End");
+  }
+  function hideWaiting() {
+    waitingCall = null;
+    var el = document.getElementById("call-waiting");
+    if (el) el.hidden = true;
+  }
+  function declineWaiting() {
+    if (!waitingCall) return;
+    W.send(W.T.CALLREJECT, { callid: waitingCall.callid });
+    hideWaiting();
+    if (inCall) enterInCallScreen();
+  }
+  function switchToWaiting() {
+    if (!waitingCall) return;
+    var w = waitingCall;
+    hideWaiting();
+    if (window.Call) { Call.end(); Call.begin(w.callid); }
+    activeCall = w;
+    inCall = true;
+    callConnected = false;
+    holdCallLock();
+    elCallName.textContent = w.name || w.from;
+    W.send(W.T.CALLSWITCH, { callid: w.callid });
+    enterInCallScreen();
+  }
+
+  // ---- the phone network (GSM) ----
+  //
+  // Needs the certified build's telephony permission; without it these all
+  // report "nothing going on", and WhatsApp calls behave as before.
+
+  function gsmCalls() {
+    var t = navigator.mozTelephony;
+    if (!t || !t.calls) return [];
+    var out = [];
+    for (var i = 0; i < t.calls.length; i++) out.push(t.calls[i]);
+    if (t.conferenceGroup && t.conferenceGroup.calls) {
+      for (var j = 0; j < t.conferenceGroup.calls.length; j++) out.push(t.conferenceGroup.calls[j]);
+    }
+    return out;
+  }
+  function gsmState() {
+    var st = { busy: false, dialing: null, connected: false };
+    gsmCalls().forEach(function (c) {
+      var s = c.state;
+      if (s === "dialing" || s === "alerting") {
+        st.busy = true;
+        st.dialing = { number: (c.id && c.id.number) || c.number || "" };
+      } else if (s === "connected" || s === "held" || s === "connecting" || s === "holding" || s === "resuming") {
+        st.busy = true;
+        st.connected = true;
+      }
+    });
+    return st;
+  }
+  function gsmHangUpAll() {
+    gsmCalls().forEach(function (c) { try { c.hangUp(); } catch (e) {} });
+  }
+  function digits(s) { return String(s || "").split("@")[0].replace(/[^0-9]/g, ""); }
+  // Same person if the last nine digits agree — enough to see through "+41",
+  // "0041" and "0" prefixes without matching strangers.
+  function sameNumber(a, b) {
+    var x = digits(a), y = digits(b);
+    if (x.length < 6 || y.length < 6) return false;
+    return x.slice(-9) === y.slice(-9);
+  }
+
+  // While a phone-network call is live, the WhatsApp call is on hold: our
+  // microphone stops and their audio is muted, and both come back when the
+  // phone call ends.
+  var gsmHold = false;
+  setInterval(function () {
+    if (!inCall || !window.Call) {
+      if (gsmHold) { gsmHold = false; if (Call.hold) Call.hold(false); }
+      return;
+    }
+    var busy = gsmState().connected;
+    if (busy !== gsmHold) {
+      gsmHold = busy;
+      if (Call.hold) Call.hold(busy);
+      if (busy) setCallStatus("on hold — phone call"); else refreshCallKeys();
+    }
+  }, 1000);
 
   // ---- ringing, staying awake, the lid ----
 
@@ -3641,6 +3813,7 @@
     // its offer the moment it hears "answer" and the first frame can arrive
     // before the next line of this function would have run.
     stopRinging();
+    if (gsmState().busy) gsmHangUpAll();
     Call.begin(activeCall.callid);
     W.send(W.T.CALLANSWER, { callid: activeCall.callid });
     inCall = true;
@@ -4377,10 +4550,34 @@
     if (window.Call) Call.signal(d);
   });
 
+  W.on(W.T.CALLWAITING, function (d) {
+    if (!activeCall) { showIncomingCall(d); return; }
+    showWaiting(d);
+  });
+
   W.on(W.T.CALLSTATE, function (d) {
-    console.log("call state:", d.state, d.reason || "");
+    console.log("call state:", d.state, d.reason || "", d.callid || "");
+    if (d.state === "dialing" && activeCall && activeCall.outgoing && !activeCall.callid) {
+      activeCall.callid = d.callid;
+      return;
+    }
+    // A waiting caller that gave up (or was declined): only the banner goes.
+    if (waitingCall && d.callid === waitingCall.callid) {
+      if (d.state === "ended") { hideWaiting(); if (inCall) enterInCallScreen(); }
+      return;
+    }
+    // Events for a call we've already left (e.g. the one we switched away
+    // from) must not touch the current one.
+    if (d.callid && activeCall && activeCall.callid && d.callid !== activeCall.callid) return;
     if (d.state === "connected") { callConnected = true; refreshCallKeys(); return; }
-    if (d.state === "accepted") { refreshCallKeys(); return; }
+    if (d.state === "accepted") {
+      if (activeCall && activeCall.outgoing) {
+        var label = document.getElementById("call-label");
+        if (label) label.textContent = "In call";
+      }
+      refreshCallKeys();
+      return;
+    }
     if (d.state === "ended") {
       if (window.Call) Call.end();
       activeCall = null;

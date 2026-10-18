@@ -93,6 +93,21 @@ type Manager struct {
 	// that only opens because of the push notification still gets the call.
 	ringing *ws.CallData
 
+	// The active call's direction ("in"/"out"), who's on the other end, and
+	// whether it has been picked up. An outgoing call that's still ringing is
+	// what makes "they call me while I call them" detectable.
+	activeDir       string
+	activePeer      string
+	activeConnected bool
+
+	// waiting is a second incoming call that arrived while one was going on.
+	// The app shows it as call waiting; it's answered with callswitch.
+	waiting *ws.CallData
+
+	// SamePerson reports whether two JIDs are the same contact (phone vs LID
+	// forms). Defaults to comparing the user part.
+	SamePerson func(a, b string) bool
+
 	// NameFor turns a caller's JID into a display name (contacts, push name).
 	NameFor func(jid string) string
 	// OnRing is called for every incoming WhatsApp call — used to wake a
@@ -180,12 +195,43 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 		Timestamp: ts,
 	}
 	m.mu.Lock()
-	if m.ringing != nil && m.ringing.CallID == callID {
+	if (m.ringing != nil && m.ringing.CallID == callID) ||
+		(m.waiting != nil && m.waiting.CallID == callID) || m.activeCallID == callID {
 		// whatsmeow can report the same call as both an offer and an offer
 		// notice; ring once.
 		m.mu.Unlock()
 		return
 	}
+	if m.activeCallID != "" && !IsTestCall(m.activeCallID) {
+		// Already in (or placing) a call.
+		if m.activeDir == "out" && !m.activeConnected && m.same(m.activePeer, fromJID) {
+			// We're calling them and they're calling us: both want the same
+			// call. Drop ours and take theirs without making anyone press
+			// anything.
+			outID, outPeer := m.activeCallID, m.activePeer
+			m.mu.Unlock()
+			log.Printf("calls: %s called back while we were calling them — switching to their call", fromName)
+			if err := m.be.Hangup(context.Background(), outID, outPeer); err != nil {
+				log.Printf("calls: cancel %s: %v", outID, err)
+			}
+			m.endCall()
+			d.AutoAnswer = true
+			m.mu.Lock()
+			m.activeCallID, m.activeCallFrom = callID, fromJID
+			m.activeDir, m.activePeer, m.activeConnected = "in", fromJID, false
+			m.ringing = &d
+			m.mu.Unlock()
+			m.hub.PushT(ws.TCallOffer, d)
+			return
+		}
+		// Anything else is call waiting: tell the app, let the user choose.
+		m.waiting = &d
+		m.mu.Unlock()
+		log.Printf("calls: call waiting from %s", fromName)
+		m.hub.PushT(ws.TCallWaiting, d)
+		return
+	}
+	m.activeDir, m.activePeer, m.activeConnected = "in", fromJID, false
 	m.activeCallID = callID
 	m.activeCallFrom = fromJID
 	m.ringing = &d
@@ -201,6 +247,13 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 
 func (m *Manager) NotifyEnded(callID, reason string) {
 	m.mu.Lock()
+	if m.waiting != nil && m.waiting.CallID == callID {
+		// The waiting caller gave up; the current call carries on.
+		m.waiting = nil
+		m.mu.Unlock()
+		m.hub.PushT(ws.TCallState, map[string]any{"callid": callID, "state": "ended", "reason": reason})
+		return
+	}
 	ours := callID == m.activeCallID
 	wasRinging := m.ringing != nil && m.ringing.CallID == callID
 	m.mu.Unlock()
@@ -216,6 +269,9 @@ func (m *Manager) NotifyEnded(callID, reason string) {
 		m.endCall()
 	}
 	m.hub.PushT(ws.TCallState, map[string]any{"callid": callID, "state": "ended", "reason": reason})
+	if ours {
+		m.promoteWaiting()
+	}
 }
 
 // HandleAppFrame processes call-related frames coming FROM the phone.
@@ -226,7 +282,20 @@ func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 			m.hub.PushT(ws.TError, map[string]string{"code": "answer", "msg": err.Error()})
 		}
 	case ws.TCallReject:
+		var want struct {
+			CallID string `json:"callid"`
+		}
+		_ = json.Unmarshal(e.Data, &want)
 		m.mu.Lock()
+		if w := m.waiting; w != nil && want.CallID == w.CallID {
+			m.waiting = nil
+			m.mu.Unlock()
+			if err := m.be.Reject(ctx, w.CallID, w.FromJID); err != nil {
+				log.Printf("calls: reject waiting %s: %v", w.CallID, err)
+			}
+			m.hub.PushT(ws.TCallState, map[string]any{"callid": w.CallID, "state": "ended", "reason": "rejected"})
+			return
+		}
 		id, from := m.activeCallID, m.activeCallFrom
 		m.mu.Unlock()
 		if id != "" {
@@ -241,6 +310,7 @@ func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 				}
 			}
 			m.endCall()
+			m.promoteWaiting()
 		}
 	case ws.TCallHangup:
 		m.mu.Lock()
@@ -253,6 +323,31 @@ func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 				}
 			}
 			m.endCall()
+			m.promoteWaiting()
+		}
+	case ws.TCallSwitch:
+		// End what's going on and answer the waiting call. The app has
+		// already armed its media side for the new call id.
+		m.mu.Lock()
+		w := m.waiting
+		id, peer := m.activeCallID, m.activePeer
+		m.waiting = nil
+		m.mu.Unlock()
+		if w == nil {
+			return
+		}
+		if id != "" && !IsTestCall(id) {
+			if err := m.be.Hangup(ctx, id, peer); err != nil {
+				log.Printf("calls: hangup %s for switch: %v", id, err)
+			}
+		}
+		m.endCall()
+		m.mu.Lock()
+		m.activeCallID, m.activeCallFrom = w.CallID, w.FromJID
+		m.activeDir, m.activePeer, m.activeConnected = "in", w.FromJID, false
+		m.mu.Unlock()
+		if err := m.answer(ctx); err != nil {
+			m.hub.PushT(ws.TError, map[string]string{"code": "answer", "msg": err.Error()})
 		}
 	case ws.TCallSignalA:
 		m.mu.Lock()
@@ -405,6 +500,7 @@ func (m *Manager) endCall() {
 	leg, stop, src := m.leg, m.stopPump, m.source
 	m.leg, m.stopPump, m.source = nil, nil, nil
 	m.activeCallID, m.activeCallFrom = "", ""
+	m.activeDir, m.activePeer, m.activeConnected = "", "", false
 	m.ringing = nil
 	m.mu.Unlock()
 
@@ -426,6 +522,7 @@ func (m *Manager) answer(ctx context.Context) error {
 	m.mu.Lock()
 	id := m.activeCallID
 	m.ringing = nil
+	m.activeConnected = true
 	m.mu.Unlock()
 	if id == "" {
 		return nil
@@ -451,6 +548,115 @@ func (m *Manager) answer(ctx context.Context) error {
 	}
 	return nil
 }
+
+// promoteWaiting turns a waiting call into a normal ringing one once the call
+// it was waiting behind has ended — the phone simply rings for it now.
+func (m *Manager) promoteWaiting() {
+	m.mu.Lock()
+	w := m.waiting
+	if w == nil || m.activeCallID != "" {
+		m.mu.Unlock()
+		return
+	}
+	m.waiting = nil
+	m.activeCallID, m.activeCallFrom = w.CallID, w.FromJID
+	m.activeDir, m.activePeer, m.activeConnected = "in", w.FromJID, false
+	m.ringing = w
+	m.mu.Unlock()
+	m.hub.PushT(ws.TCallOffer, *w)
+	if m.OnRing != nil {
+		go m.OnRing()
+	}
+}
+
+func (m *Manager) same(a, b string) bool {
+	if m.SamePerson != nil {
+		return m.SamePerson(a, b)
+	}
+	user := func(j string) string {
+		if i := strings.IndexAny(j, "@:"); i >= 0 {
+			return j[:i]
+		}
+		return j
+	}
+	return user(a) != "" && user(a) == user(b)
+}
+
+// CallEventer is implemented by backends that can report an outgoing call's
+// progress: the far end picking up, and the call ending for any reason.
+type CallEventer interface {
+	Watch(callID string, accepted func(), ended func(reason string))
+}
+
+// Dial places an outgoing WhatsApp call and brings up the phone leg for it.
+// The app has already shown its "calling…" screen and armed its media side.
+func (m *Manager) Dial(ctx context.Context, dest, name string) error {
+	m.mu.Lock()
+	if m.activeCallID != "" {
+		m.mu.Unlock()
+		return errBusy
+	}
+	m.mu.Unlock()
+
+	down := NewDown2()
+	up := NewUp2()
+	q := newJitter(PhoneRate)
+	src, id, err := m.be.Dial(ctx, dest, func(pcm []float32) { q.push(down.Process(pcm)) })
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		_ = src.Close()
+		return errNoMedia
+	}
+	m.mu.Lock()
+	m.activeCallID, m.activeCallFrom = id, dest
+	m.activeDir, m.activePeer, m.activeConnected = "out", dest, false
+	m.source = src
+	m.mu.Unlock()
+	if w, ok := m.be.(CallEventer); ok {
+		w.Watch(id, func() {
+			m.mu.Lock()
+			ours := m.activeCallID == id
+			if ours {
+				m.activeConnected = true
+			}
+			m.mu.Unlock()
+			if ours {
+				m.hub.PushT(ws.TCallState, map[string]any{"callid": id, "state": "accepted"})
+			}
+		}, func(reason string) { m.NotifyEnded(id, reason) })
+	}
+	m.hub.PushT(ws.TCallState, map[string]any{"callid": id, "state": "dialing", "name": name, "peer": dest})
+
+	leg, err := m.startPhoneLeg(id)
+	if err != nil {
+		_ = m.be.Hangup(ctx, id, dest)
+		m.endCall()
+		return err
+	}
+	leg.OnPCM(func(pcm []int16) {
+		if err := src.Write(up.Process(pcm)); err != nil {
+			log.Printf("calls: %s: writing to WhatsApp: %v", id, err)
+		}
+	})
+	stop := make(chan struct{})
+	m.mu.Lock()
+	m.stopPump = stop
+	m.mu.Unlock()
+	go m.pump(id, leg, q, stop)
+	log.Printf("calls: calling %s (%s)", name, id)
+	return nil
+}
+
+var (
+	errBusy    = errorString("already in a call")
+	errNoMedia = errorString("this daemon has no call backend (WAD_CALLS=1)")
+)
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
 
 // ---- Noop backend so the daemon compiles & runs message-only today ----
 
