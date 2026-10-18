@@ -817,7 +817,13 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		c.hub.PushT(ws.TMessage, d)
 		// Wake the phone if the app isn't there to receive that push. When it
 		// IS connected the frame above already did the job.
-		if !c.hub.HasClient() {
+		//
+		// Not for old messages, though. After every reconnect WhatsApp replays
+		// what arrived while we were away as "live" events, and waking the
+		// phone for each of those buzzed it once per backlogged message — a
+		// storm after every restart. They're stored and show up when the app
+		// opens; only something that just happened is worth a buzz.
+		if !c.hub.HasClient() && time.Since(time.Unix(d.Timestamp, 0)) < pushMaxAge {
 			c.notifyPush(msgSummary{Chat: d.ChatJID, FromMe: d.FromMe})
 		}
 	}

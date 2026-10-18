@@ -113,21 +113,52 @@ function summaryWith(cfg) {
       }
       // Nothing unread means it was read elsewhere between the push being sent
       // and the phone waking. Clear any stale bubbles instead of buzzing.
-      if (!s.chats.length) return clearStale([]);
+      if (!s.chats.length) return saveNotified({}).then(function () { return clearStale([]); });
 
-      var jobs = s.chats.map(function (ch) {
-        return notify(
-          { title: ch.title, body: ch.body },
-          "wa-" + ch.jid,
-          { jid: ch.jid }
-        );
+      // Only chats with something NEW since the last time we showed them get a
+      // notification. Re-showing every unread chat on every push made each
+      // message in one chat buzz once per unread chat — an avalanche once a
+      // few groups had unread messages.
+      return loadNotified().then(function (seen) {
+        var next = {};
+        var jobs = [];
+        s.chats.forEach(function (ch) {
+          var last = seen[ch.jid] || 0;
+          next[ch.jid] = Math.max(last, ch.ts || 0);
+          if ((ch.ts || 0) > last) {
+            jobs.push(notify({ title: ch.title, body: ch.body }, "wa-" + ch.jid, { jid: ch.jid }));
+          }
+        });
+        // Drop bubbles for conversations that are no longer unread — read on
+        // another device, most likely. Forgetting them means their next
+        // message notifies again.
+        jobs.push(clearStale(s.chats.map(function (ch) { return "wa-" + ch.jid; })));
+        jobs.push(saveNotified(next));
+        return Promise.all(jobs);
       });
-      // Drop bubbles for conversations that are no longer unread — read on
-      // another device, most likely.
-      jobs.push(clearStale(s.chats.map(function (ch) { return "wa-" + ch.jid; })));
-      return Promise.all(jobs);
     })
     .catch(function () { return notify(fallback, "wa-generic"); });
+}
+
+// What each chat's notification last showed (chat jid -> message ts), kept in
+// the Cache API for the same reason as the config: the worker doesn't live
+// between pushes.
+var NOTIFIED_KEY = "/__kaits_notified";
+
+function loadNotified() {
+  if (!self.caches) return Promise.resolve({});
+  return caches.open(CONFIG_CACHE)
+    .then(function (c) { return c.match(NOTIFIED_KEY); })
+    .then(function (r) { return r ? r.json() : {}; })
+    .catch(function () { return {}; });
+}
+
+function saveNotified(map) {
+  if (!self.caches) return Promise.resolve();
+  return caches.open(CONFIG_CACHE).then(function (c) {
+    return c.put(NOTIFIED_KEY, new Response(JSON.stringify(map),
+      { headers: { "Content-Type": "application/json" } }));
+  }).catch(function () {});
 }
 
 function notify(s, tag, data) {

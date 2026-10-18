@@ -49,6 +49,10 @@ type pushSub struct {
 // message.
 const pushCoalesce = 3 * time.Second
 
+// pushMaxAge: a message older than this when it reaches us is backlog
+// (replayed after a reconnect), not news, and doesn't wake the phone.
+const pushMaxAge = 2 * time.Minute
+
 type pusher struct {
 	mu     sync.Mutex
 	last   map[string]time.Time // chat JID -> when we last woke the phone for it
