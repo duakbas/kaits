@@ -81,6 +81,18 @@ var (
 		},
 		PayloadType: 111,
 	}}
+	// KaiOS's Gecko registers Opus as opus/48000/1 (mono) instead of the
+	// standard /2, and only accepts an offer whose channel count matches
+	// exactly — webrtc-probe.py showed it. Offered as well as the standard
+	// one, so Chrome-style peers and the phone each find theirs. The packets
+	// are the same mono Opus either way.
+	codecOpusMono = legCodec{"opus", webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 1,
+			SDPFmtpLine: "minptime=10;useinbandfec=1;stereo=0;maxplaybackrate=16000",
+		},
+		PayloadType: 110,
+	}}
 	// G.722: 16 kHz audio, but signalled (and timestamped) at 8000 — RFC 3551.
 	codecG722 = legCodec{"g722", webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeG722, ClockRate: 8000, Channels: 1},
@@ -114,8 +126,10 @@ func phoneCodecs(want string) []legCodec {
 		add(codecG722, g722Available)
 	case "opus":
 		add(codecOpus, opusAvailable)
+		add(codecOpusMono, opusAvailable)
 	default:
 		add(codecOpus, opusAvailable)
+		add(codecOpusMono, opusAvailable)
 		add(codecG722, g722Available)
 	}
 	return append(out, codecPCMU)

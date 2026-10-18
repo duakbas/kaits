@@ -89,10 +89,10 @@ func TestOfferDefaultIsOpusG722PCMU(t *testing.T) {
 			audio = strings.TrimSpace(line)
 		}
 	}
-	if f := strings.Fields(audio); len(f) != 6 || f[3] != "111" || f[4] != "9" || f[5] != "0" {
-		t.Errorf("m=audio = %q, want payload types 111 9 0", audio)
+	if f := strings.Fields(audio); len(f) != 7 || strings.Join(f[3:], " ") != "111 110 9 0" {
+		t.Errorf("m=audio = %q, want payload types 111 110 9 0", audio)
 	}
-	for _, want := range []string{"a=rtpmap:111 opus/48000/2", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000", "maxplaybackrate=16000"} {
+	for _, want := range []string{"a=rtpmap:111 opus/48000/2", "a=rtpmap:110 opus/48000/1", "a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000", "maxplaybackrate=16000"} {
 		if !strings.Contains(sdp, want) {
 			t.Errorf("offer is missing %s:\n%s", want, sdp)
 		}
@@ -205,6 +205,11 @@ func newFakePhone(t *testing.T, codec string) *fakePhone {
 	case "g722":
 		capab = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeG722, ClockRate: 8000, Channels: 1}
 		pt = 9
+	case "opusmono":
+		// What KaiOS's Gecko registers (webrtc-probe.py on a 2720 Flip).
+		capab = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 1,
+			SDPFmtpLine: "maxplaybackrate=48000;stereo=0"}
+		pt = 109
 	}
 	me := &webrtc.MediaEngine{}
 	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
@@ -227,6 +232,9 @@ func newFakePhone(t *testing.T, codec string) *fakePhone {
 		Direction: webrtc.RTPTransceiverDirectionSendrecv,
 	}); err != nil {
 		t.Fatalf("phone add track: %v", err)
+	}
+	if codec == "opusmono" {
+		codec = "opus"
 	}
 	fp := &fakePhone{pc: pc, track: track, codec: codec}
 	if codec == "g722" {
@@ -295,6 +303,14 @@ func TestLoopbackFallsBackToG722(t *testing.T) {
 }
 
 func TestLoopbackFallsBackToPCMU(t *testing.T) { loopback(t, "pcmu", "") }
+
+// The 2720 Flip itself: Opus registered as opus/48000/1.
+func TestLoopbackKaiOSMonoOpus(t *testing.T) {
+	if !opusAvailable {
+		t.Skip("built without libopus")
+	}
+	loopback(t, "opusmono", "")
+}
 
 // loopback runs a whole session: phoneCodec is the only codec the fake phone
 // has; legOffer is the leg's Codec option ("" = the full default offer).
@@ -442,6 +458,10 @@ func loopback(t *testing.T, codec, legOffer string) {
 	defer close(stop)
 
 	legTone := NewTone(440, LegRate)
+	want := codec
+	if want == "opusmono" {
+		want = "opus"
+	}
 	phoneRate := PhoneRate
 	if codec != "pcmu" {
 		phoneRate = LegRate
@@ -467,8 +487,8 @@ func loopback(t *testing.T, codec, legOffer string) {
 		}
 	}()
 
-	if got := leg.Codec(); got != codec {
-		t.Errorf("leg sends %q, want %q", got, codec)
+	if got := leg.Codec(); got != want {
+		t.Errorf("leg sends %q, want %q", got, want)
 	}
 	if !waitForLoudFrame(t, toPhone, "daemon -> phone") {
 		return
