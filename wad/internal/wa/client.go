@@ -1792,11 +1792,51 @@ func (c *Client) lookupMessage(msgID string) (sender, chat types.JID, quoted *wa
 // without touching the session, and our own message db is never involved.
 // Afterwards the resolver's caches are dropped so previously-missing names get
 // looked up again rather than waiting out their negative-cache TTL.
+//
+// It fetches every app-state collection, not only contacts: pins, mutes and
+// archive flags (regular_low / regular_high) live in the same machinery, and
+// after a re-pair the initial sync often runs before the phone has shared the
+// keys for them — whatsmeow logs "didn't find app state key", asks the phone
+// for the keys, and never retries. The chat list then has no pins and no
+// names until something forces a full fetch, which is this. Failed
+// collections are retried a few times, since the key request is answered
+// asynchronously.
 func (c *Client) ResyncContacts(ctx context.Context) error {
-	if err := c.WA.FetchAppState(ctx, appstate.WAPatchCriticalUnblockLow, true, false); err != nil {
-		return fmt.Errorf("contact resync: %w", err)
+	names := []appstate.WAPatchName{
+		appstate.WAPatchCriticalUnblockLow, // contacts: names
+		appstate.WAPatchCriticalBlock,      // push name, settings
+		appstate.WAPatchRegularLow,         // pins, archive
+		appstate.WAPatchRegularHigh,        // mutes, stars
+		appstate.WAPatchRegular,            // the rest
+	}
+	var contactsErr error
+	pending := names
+	for attempt := 1; attempt <= 4 && len(pending) > 0; attempt++ {
+		if attempt > 1 {
+			log.Printf("app state: %d collection(s) failed, waiting for keys from the phone and retrying…", len(pending))
+			time.Sleep(10 * time.Second)
+		}
+		var failed []appstate.WAPatchName
+		for _, name := range pending {
+			if err := c.WA.FetchAppState(ctx, name, true, false); err != nil {
+				log.Printf("app state: %s: %v", name, err)
+				failed = append(failed, name)
+				if name == appstate.WAPatchCriticalUnblockLow {
+					contactsErr = err
+				}
+				continue
+			}
+			log.Printf("app state: %s synced", name)
+			if name == appstate.WAPatchCriticalUnblockLow {
+				contactsErr = nil
+			}
+		}
+		pending = failed
 	}
 	c.sess.reset()
+	if contactsErr != nil {
+		return fmt.Errorf("contact resync: %w", contactsErr)
+	}
 	return nil
 }
 
