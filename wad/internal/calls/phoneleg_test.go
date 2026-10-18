@@ -2,6 +2,7 @@ package calls
 
 import (
 	"encoding/json"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -314,6 +315,27 @@ func TestLoopbackKaiOSMonoOpus(t *testing.T) {
 
 // loopback runs a whole session: phoneCodec is the only codec the fake phone
 // has; legOffer is the leg's Codec option ("" = the full default offer).
+// The 4G fix: every call's audio on one fixed UDP port.
+func TestLoopbackOnAFixedUDPPort(t *testing.T) {
+	muxLoopback = true
+	loopbackPort = freeUDPPort(t)
+	defer func() { loopbackPort = 0 }()
+	loopback(t, "pcmu", "pcmu")
+}
+
+var loopbackPort int
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := c.LocalAddr().(*net.UDPAddr).Port
+	c.Close()
+	return p
+}
+
 func loopback(t *testing.T, codec, legOffer string) {
 	phone := newFakePhone(t, codec)
 	defer phone.pc.Close()
@@ -402,7 +424,7 @@ func loopback(t *testing.T, codec, legOffer string) {
 	}
 
 	var err error
-	leg, err = NewPhoneLeg("c1", send, PhoneLegOptions{Codec: legOffer})
+	leg, err = NewPhoneLeg("c1", send, PhoneLegOptions{Codec: legOffer, UDPPort: loopbackPort})
 	if err != nil {
 		t.Fatalf("new leg: %v", err)
 	}

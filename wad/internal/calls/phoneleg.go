@@ -36,9 +36,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -177,6 +179,51 @@ type PhoneLegOptions struct {
 
 	// Codec: "opus", "g722", "pcmu", or "" for all of them (see phoneCodecs).
 	Codec string
+
+	// UDPPort: all call audio on this one UDP port, so a firewall needs one
+	// rule for it. 0 = WAD_CALL_UDP_PORT from the environment; unset or -1 =
+	// a random port per call (the old behaviour, which only works where
+	// every UDP port is reachable).
+	UDPPort int
+}
+
+// The UDP mux is per process, shared by every call: one socket per local
+// address on the fixed port.
+var (
+	muxMu       sync.Mutex
+	muxes       = map[int]ice.UDPMux{}
+	muxLoopback bool // tests only: also listen on 127.0.0.1
+)
+
+func udpMux(port int) (ice.UDPMux, error) {
+	muxMu.Lock()
+	defer muxMu.Unlock()
+	if m, ok := muxes[port]; ok {
+		return m, nil
+	}
+	opts := []ice.UDPMuxFromPortOption{ice.UDPMuxFromPortWithNetworks(ice.NetworkTypeUDP4)}
+	if muxLoopback {
+		opts = append(opts, ice.UDPMuxFromPortWithLoopback())
+	}
+	m, err := ice.NewMultiUDPMuxFromPort(port, opts...)
+	if err != nil {
+		return nil, err
+	}
+	muxes[port] = m
+	log.Printf("calls: call audio on udp/%d", port)
+	return m, nil
+}
+
+func legUDPPort(opt int) int {
+	if opt != 0 {
+		return opt
+	}
+	if v := os.Getenv("WAD_CALL_UDP_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 65536 {
+			return n
+		}
+	}
+	return -1
 }
 
 // NewPhoneLeg builds the session but does not offer yet; attach the callbacks
@@ -195,9 +242,21 @@ func NewPhoneLeg(callID string, send func(ws.Signal), opt PhoneLegOptions) (*Pho
 	// An EMPTY registry, passed explicitly. Leaving the option off would make
 	// pion install its defaults (NACK, TWCC and their extmap lines, which a
 	// 2016 SDP parser has opinions about).
+	se := webrtc.SettingEngine{}
+	if port := legUDPPort(opt.UDPPort); port > 0 {
+		mux, err := udpMux(port)
+		if err != nil {
+			// Worse than a fixed port, but a call on Wi-Fi still works.
+			log.Printf("calls: can't listen on udp/%d (%v); using random ports", port, err)
+		} else {
+			se.SetICEUDPMux(mux)
+			se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+		}
+	}
 	api := webrtc.NewAPI(
 		webrtc.WithMediaEngine(me),
 		webrtc.WithInterceptorRegistry(&interceptor.Registry{}),
+		webrtc.WithSettingEngine(se),
 	)
 
 	cfg := webrtc.Configuration{}
