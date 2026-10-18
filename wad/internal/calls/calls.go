@@ -607,7 +607,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 	}
 	if id == "" {
 		_ = src.Close()
-		return errNoMedia
+		return errNoCallID
 	}
 	m.mu.Lock()
 	m.activeCallID, m.activeCallFrom = id, dest
@@ -651,7 +651,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 
 var (
 	errBusy    = errorString("already in a call")
-	errNoMedia = errorString("this daemon has no call backend (WAD_CALLS=1)")
+	errNoCallID = errorString("the call backend returned no call id (is WAD_CALLS=1 set?)")
 )
 
 type errorString string
