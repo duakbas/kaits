@@ -159,3 +159,21 @@ func clamp16(v float64) int16 {
 	}
 	return int16(v)
 }
+
+// f32to16 / i16tof32: meowcaller's float32 PCM <-> the phone leg's int16, at
+// the same 16 kHz. No filtering — the rates already match.
+func f32to16(in []float32) []int16 {
+	out := make([]int16, len(in))
+	for i, s := range in {
+		out[i] = clamp16(float64(s) * 32767)
+	}
+	return out
+}
+
+func i16tof32(in []int16) []float32 {
+	out := make([]float32, len(in))
+	for i, s := range in {
+		out[i] = float32(s) / 32768
+	}
+	return out
+}

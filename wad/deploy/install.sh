@@ -179,7 +179,7 @@ apt-get install -y -qq curl ca-certificates ufw >/dev/null
 apt-get install -y -qq ffmpeg >/dev/null 2>&1 || \
   echo "    note: ffmpeg not installed; animated stickers will show as stills"
 # gcc is only for building — the SQLite driver is CGO.
-[ -n "$PREBUILT" ] || apt-get install -y -qq gcc >/dev/null
+[ -n "$PREBUILT" ] || apt-get install -y -qq gcc libopus-dev pkg-config >/dev/null
 
 # Debian's golang is too old for this module, so take it from upstream. The
 # download list is authoritative for both the version and its checksum, so this

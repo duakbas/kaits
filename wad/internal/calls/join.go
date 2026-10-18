@@ -83,16 +83,14 @@ func (j *jitter) depth() int {
 // because doing that is the step with the risk that cannot be undone. Run the
 // tone test first (`/debug/call`); it proves everything here except meowcaller.
 func (m *Manager) answerRealCall(ctx context.Context, callID string) error {
-	down := NewDown2()
-	up := NewUp2()
 	// One second. Past that the audio is no longer part of the conversation.
-	q := newJitter(PhoneRate)
+	q := newJitter(LegRate)
 
 	// Ask the backend BEFORE building the phone leg. It is the cheaper of the
 	// two to fail, and audio that arrives before the leg exists simply lands
 	// in the queue — which is what the queue is for.
 	src, err := m.be.Answer(ctx, callID, func(pcm []float32) {
-		q.push(down.Process(pcm))
+		q.push(f32to16(pcm))
 	})
 	if err != nil {
 		return err
@@ -108,7 +106,7 @@ func (m *Manager) answerRealCall(ctx context.Context, callID string) error {
 	// the far side re-cuts it into the 960-sample frames meowcaller wants, so
 	// nothing here has to care about frame sizes.
 	leg.OnPCM(func(pcm []int16) {
-		if err := src.Write(up.Process(pcm)); err != nil {
+		if err := src.Write(i16tof32(pcm)); err != nil {
 			log.Printf("calls: %s: writing to WhatsApp: %v", callID, err)
 		}
 	})
@@ -138,7 +136,7 @@ func (m *Manager) pump(callID string, leg *PhoneLeg, q *jitter, stop chan struct
 		case <-stop:
 			return
 		case <-tick.C:
-			frame, real := q.take(PhoneFrame)
+			frame, real := q.take(LegFrame)
 			frames++
 			if !real {
 				silent++

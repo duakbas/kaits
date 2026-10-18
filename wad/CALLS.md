@@ -229,3 +229,16 @@ minutes, not hours, and expect the phone to be warm.
    the more useful half on a phone that gets killed in the background.
 3. Audio only. Video is possible — meowcaller supports it — and is not worth a
    sentence of effort on a 240×320 screen.
+
+## Update: wideband (Opus) on the phone leg
+
+G.711 worked and sounded narrowband — everything above 3.4 kHz gone, which is
+why a VoLTE call (AMR-WB, 16 kHz) on the same phone sounded clearer. The phone
+leg now offers Opus alone, asking the phone for 16 kHz (`maxplaybackrate=16000`)
+with in-band FEC. 16 kHz is also meowcaller's rate, so nothing is resampled in
+either direction. Lost packets from the phone are rebuilt from FEC or
+concealed by libopus rather than skipped.
+
+Needs `libopus-dev` + `pkg-config` on the build host (`deploy-wad.py` and
+`install.sh` install them). `WAD_CALL_CODEC=pcmu` brings back G.711; a build
+with `-tags noopus` or `CGO_ENABLED=0` falls back to it automatically.

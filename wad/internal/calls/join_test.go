@@ -115,15 +115,14 @@ func TestJitterIgnoresEmptyPushes(t *testing.T) {
 // exactly three 20 ms frames at the phone, so a steady stream in is a steady
 // stream out with no residue accumulating.
 func TestOneWhatsAppFrameIsExactlyThreePhoneFrames(t *testing.T) {
-	down := NewDown2()
-	q := newJitter(PhoneRate)
+	q := newJitter(LegRate)
 
-	// Ten 960-sample frames in, thirty 160-sample frames out, nothing left.
+	// Ten 960-sample frames in, thirty 320-sample frames out, nothing left.
 	for i := 0; i < 10; i++ {
-		q.push(down.Process(make([]float32, 960)))
+		q.push(f32to16(make([]float32, 960)))
 	}
 	for i := 0; i < 30; i++ {
-		if _, real := q.take(PhoneFrame); !real {
+		if _, real := q.take(LegFrame); !real {
 			t.Fatalf("starved at phone frame %d; ten WhatsApp frames should "+
 				"fill exactly thirty", i)
 		}

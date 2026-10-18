@@ -3,12 +3,12 @@
 //
 // ARCHITECTURE — read this before touching anything:
 //
-//	WA call  <--MLow/SRTP-->  meowcaller  <--16k PCM-->  wad  <--G.711-->  KaiOS app
+//	WA call  <--MLow/SRTP-->  meowcaller  <--16k PCM-->  wad  <--Opus 16k-->  KaiOS app
 //
 // meowcaller gives and takes 16 kHz mono float32 in 960-sample frames.
-// phoneleg.go owns the WebRTC session with the app; resample.go converts
-// between 16 kHz and the phone leg's 8 kHz; g711.go is the codec, and PCMU is
-// deliberately the only one offered (see phoneleg.go for why not Opus). This
+// phoneleg.go owns the WebRTC session with the app and takes/gives 16 kHz;
+// on the wire that is Opus (opus.go, wideband, no resampling) or, with
+// WAD_CALL_CODEC=pcmu or a build without libopus, G.711 at 8 kHz. This
 // file owns the state machine tying a WA CallOffer to both of those and
 // forwarding SDP/ICE as ws TCallSignal frames.
 //
@@ -451,8 +451,8 @@ func (m *Manager) answerTestCall(callID string) error {
 	m.mu.Unlock()
 
 	go func() {
-		warble := NewWarble(440, 880, 400, PhoneRate)
-		buf := make([]int16, PhoneFrame)
+		warble := NewWarble(440, 880, 400, LegRate)
+		buf := make([]int16, LegFrame)
 		tick := time.NewTicker(20 * time.Millisecond)
 		defer tick.Stop()
 		report := time.NewTicker(2 * time.Second)
@@ -598,10 +598,8 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 	}
 	m.mu.Unlock()
 
-	down := NewDown2()
-	up := NewUp2()
-	q := newJitter(PhoneRate)
-	src, id, err := m.be.Dial(ctx, dest, func(pcm []float32) { q.push(down.Process(pcm)) })
+	q := newJitter(LegRate)
+	src, id, err := m.be.Dial(ctx, dest, func(pcm []float32) { q.push(f32to16(pcm)) })
 	if err != nil {
 		return err
 	}
@@ -636,7 +634,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 		return err
 	}
 	leg.OnPCM(func(pcm []int16) {
-		if err := src.Write(up.Process(pcm)); err != nil {
+		if err := src.Write(i16tof32(pcm)); err != nil {
 			log.Printf("calls: %s: writing to WhatsApp: %v", id, err)
 		}
 	})

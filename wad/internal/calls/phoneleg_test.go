@@ -17,7 +17,7 @@ import (
 // The offer is the one artefact the phone has to understand, and the phone is
 // a browser engine from 2016 that nothing here can run. So assert its shape.
 
-func offerFrom(t *testing.T) string {
+func offerFrom(t *testing.T, codec ...string) string {
 	t.Helper()
 	var got string
 	var mu sync.Mutex
@@ -27,7 +27,7 @@ func offerFrom(t *testing.T) string {
 			got = s.SDP
 			mu.Unlock()
 		}
-	}, PhoneLegOptions{})
+	}, PhoneLegOptions{Codec: strings.Join(codec, "")})
 	if err != nil {
 		t.Fatalf("new leg: %v", err)
 	}
@@ -48,7 +48,7 @@ func offerFrom(t *testing.T) string {
 // daemon's whole codec burden at g711.go. If this ever picks up a second
 // payload type, the transcode path has a case it does not handle.
 func TestOfferAdvertisesPCMUAndNothingElse(t *testing.T) {
-	sdp := offerFrom(t)
+	sdp := offerFrom(t, "pcmu")
 
 	var audio string
 	for _, line := range strings.Split(sdp, "\n") {
@@ -74,6 +74,31 @@ func TestOfferAdvertisesPCMUAndNothingElse(t *testing.T) {
 		if strings.Contains(sdp, unwanted) {
 			t.Errorf("offer mentions %s; the media engine should carry PCMU alone", unwanted)
 		}
+	}
+}
+
+// The default: Opus alone, asking the phone for 16 kHz with FEC.
+func TestOfferDefaultIsOpusAlone(t *testing.T) {
+	if !opusAvailable {
+		t.Skip("built without libopus")
+	}
+	sdp := offerFrom(t)
+	var audio string
+	for _, line := range strings.Split(sdp, "\n") {
+		if strings.HasPrefix(line, "m=audio") {
+			audio = strings.TrimSpace(line)
+		}
+	}
+	if f := strings.Fields(audio); len(f) != 4 || f[3] != "111" {
+		t.Errorf("m=audio = %q, want payload type 111 alone", audio)
+	}
+	for _, want := range []string{"a=rtpmap:111 opus/48000/2", "maxplaybackrate=16000", "useinbandfec=1"} {
+		if !strings.Contains(sdp, want) {
+			t.Errorf("offer is missing %s:\n%s", want, sdp)
+		}
+	}
+	if strings.Contains(sdp, "PCMU") {
+		t.Errorf("offer carries PCMU as well:\n%s", sdp)
 	}
 }
 
@@ -144,7 +169,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 		t.Errorf("second close: %v", err)
 	}
 	// And writing to a closed leg is a no-op rather than a panic.
-	if err := leg.WritePCM(make([]int16, PhoneFrame)); err != nil {
+	if err := leg.WritePCM(make([]int16, LegFrame)); err != nil {
 		t.Errorf("write after close: %v", err)
 	}
 }
@@ -163,16 +188,25 @@ func TestCloseIsIdempotent(t *testing.T) {
 type fakePhone struct {
 	pc    *webrtc.PeerConnection
 	track *webrtc.TrackLocalStaticSample
+	codec string
+	enc   *opusEncoder
+	dec   *opusDecoder
 }
 
-func newFakePhone(t *testing.T) *fakePhone {
+func newFakePhone(t *testing.T, codec string) *fakePhone {
 	t.Helper()
+	capab := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU, ClockRate: PhoneRate, Channels: 1}
+	var pt webrtc.PayloadType = 0
+	if codec == "opus" {
+		// What Firefox registers.
+		capab = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
+			SDPFmtpLine: "maxplaybackrate=48000;stereo=1;useinbandfec=1"}
+		pt = 109
+	}
 	me := &webrtc.MediaEngine{}
 	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType: webrtc.MimeTypePCMU, ClockRate: PhoneRate, Channels: 1,
-		},
-		PayloadType: 0,
+		RTPCodecCapability: capab,
+		PayloadType:        pt,
 	}, webrtc.RTPCodecTypeAudio); err != nil {
 		t.Fatalf("phone codec: %v", err)
 	}
@@ -182,9 +216,7 @@ func newFakePhone(t *testing.T) *fakePhone {
 	if err != nil {
 		t.Fatalf("phone pc: %v", err)
 	}
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypePCMU, ClockRate: PhoneRate, Channels: 1,
-	}, "audio", "phone")
+	track, err := webrtc.NewTrackLocalStaticSample(capab, "audio", "phone")
 	if err != nil {
 		t.Fatalf("phone track: %v", err)
 	}
@@ -193,11 +225,50 @@ func newFakePhone(t *testing.T) *fakePhone {
 	}); err != nil {
 		t.Fatalf("phone add track: %v", err)
 	}
-	return &fakePhone{pc: pc, track: track}
+	fp := &fakePhone{pc: pc, track: track, codec: codec}
+	if codec == "opus" {
+		if fp.enc, err = newOpusEncoder(LegRate, 32000); err != nil {
+			t.Fatalf("phone encoder: %v", err)
+		}
+		if fp.dec, err = newOpusDecoder(LegRate); err != nil {
+			t.Fatalf("phone decoder: %v", err)
+		}
+	}
+	return fp
 }
 
-func TestLoopbackNegotiatesAndCarriesAudioBothWays(t *testing.T) {
-	phone := newFakePhone(t)
+// decode / encode what the fake phone receives and sends, in its codec.
+func (p *fakePhone) decode(b []byte) []int16 {
+	if p.codec == "opus" {
+		pcm, _ := p.dec.Decode(b, 0, false)
+		return pcm
+	}
+	return DecodeULaw(b)
+}
+
+func (p *fakePhone) frame(tone *Tone) []byte {
+	if p.codec == "opus" {
+		b := make([]int16, LegFrame)
+		tone.Fill(b)
+		pkt, _ := p.enc.Encode(b)
+		return pkt
+	}
+	b := make([]int16, PhoneFrame)
+	tone.Fill(b)
+	return EncodeULaw(b)
+}
+
+func TestLoopbackPCMU(t *testing.T) { loopback(t, "pcmu") }
+
+func TestLoopbackOpus(t *testing.T) {
+	if !opusAvailable {
+		t.Skip("built without libopus")
+	}
+	loopback(t, "opus")
+}
+
+func loopback(t *testing.T, codec string) {
+	phone := newFakePhone(t, codec)
 	defer phone.pc.Close()
 
 	// Candidates can arrive before the description they belong to, and pion
@@ -284,7 +355,7 @@ func TestLoopbackNegotiatesAndCarriesAudioBothWays(t *testing.T) {
 	}
 
 	var err error
-	leg, err = NewPhoneLeg("c1", send, PhoneLegOptions{})
+	leg, err = NewPhoneLeg("c1", send, PhoneLegOptions{Codec: codec})
 	if err != nil {
 		t.Fatalf("new leg: %v", err)
 	}
@@ -310,7 +381,7 @@ func TestLoopbackNegotiatesAndCarriesAudioBothWays(t *testing.T) {
 				return
 			}
 			select {
-			case toPhone <- DecodeULaw(pkt.Payload):
+			case toPhone <- phone.decode(pkt.Payload):
 			default:
 			}
 		}
@@ -339,8 +410,12 @@ func TestLoopbackNegotiatesAndCarriesAudioBothWays(t *testing.T) {
 	stop := make(chan struct{})
 	defer close(stop)
 
-	legTone := NewTone(440, PhoneRate)
-	phoneTone := NewTone(1000, PhoneRate)
+	legTone := NewTone(440, LegRate)
+	phoneRate := PhoneRate
+	if codec == "opus" {
+		phoneRate = LegRate
+	}
+	phoneTone := NewTone(1000, phoneRate)
 	go func() {
 		tick := time.NewTicker(20 * time.Millisecond)
 		defer tick.Stop()
@@ -349,14 +424,12 @@ func TestLoopbackNegotiatesAndCarriesAudioBothWays(t *testing.T) {
 			case <-stop:
 				return
 			case <-tick.C:
-				a := make([]int16, PhoneFrame)
+				a := make([]int16, LegFrame)
 				legTone.Fill(a)
 				_ = leg.WritePCM(a)
 
-				b := make([]int16, PhoneFrame)
-				phoneTone.Fill(b)
 				_ = phone.track.WriteSample(media.Sample{
-					Data:     EncodeULaw(b),
+					Data:     phone.frame(phoneTone),
 					Duration: 20 * time.Millisecond,
 				})
 			}
