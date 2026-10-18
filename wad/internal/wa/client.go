@@ -4,6 +4,7 @@ package wa
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -1811,33 +1812,73 @@ func (c *Client) ResyncContacts(ctx context.Context) error {
 	}
 	var contactsErr error
 	pending := names
+	var broken []appstate.WAPatchName // hash mismatch: retrying can't help
 	for attempt := 1; attempt <= 4 && len(pending) > 0; attempt++ {
 		if attempt > 1 {
-			log.Printf("app state: %d collection(s) failed, waiting for keys from the phone and retrying…", len(pending))
+			log.Printf("app state: %d collection(s) waiting for keys from the phone, retrying…", len(pending))
 			time.Sleep(10 * time.Second)
 		}
 		var failed []appstate.WAPatchName
 		for _, name := range pending {
-			if err := c.WA.FetchAppState(ctx, name, true, false); err != nil {
-				log.Printf("app state: %s: %v", name, err)
-				failed = append(failed, name)
+			err := c.WA.FetchAppState(ctx, name, true, false)
+			if err == nil {
+				log.Printf("app state: %s synced", name)
 				if name == appstate.WAPatchCriticalUnblockLow {
-					contactsErr = err
+					contactsErr = nil
 				}
 				continue
 			}
-			log.Printf("app state: %s synced", name)
+			log.Printf("app state: %s: %v", name, err)
 			if name == appstate.WAPatchCriticalUnblockLow {
-				contactsErr = nil
+				contactsErr = err
+			}
+			if errors.Is(err, appstate.ErrMismatchingLTHash) {
+				broken = append(broken, name)
+			} else {
+				failed = append(failed, name)
 			}
 		}
 		pending = failed
+	}
+	for _, name := range broken {
+		if c.recoverAppState(ctx, name) && name == appstate.WAPatchCriticalUnblockLow {
+			contactsErr = nil
+		}
 	}
 	c.sess.reset()
 	if contactsErr != nil {
 		return fmt.Errorf("contact resync: %w", contactsErr)
 	}
 	return nil
+}
+
+// recoverAppState asks the main phone for a fresh copy of one app-state
+// collection.
+//
+// "mismatching LTHash" means the server's patch history for the collection no
+// longer adds up — not a missing key, so retrying the fetch fails the same way
+// for ever. Official linked devices recover by asking the primary phone for
+// the whole collection directly (a peer "fatal recovery" request); whatsmeow
+// already applies the answer when it arrives, storing pins, mutes and archive
+// flags and resetting the collection's hash so later patches verify again.
+// This sends the request and waits for that to land. Needs the phone online.
+func (c *Client) recoverAppState(ctx context.Context, name appstate.WAPatchName) bool {
+	before, _, _ := c.WA.Store.AppState.GetAppStateVersion(ctx, string(name))
+	if _, err := c.WA.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(name)); err != nil {
+		log.Printf("app state: %s: recovery request failed: %v", name, err)
+		return false
+	}
+	log.Printf("app state: %s: asked the phone for a fresh copy…", name)
+	for i := 0; i < 30; i++ {
+		time.Sleep(2 * time.Second)
+		v, _, err := c.WA.Store.AppState.GetAppStateVersion(ctx, string(name))
+		if err == nil && v > before {
+			log.Printf("app state: %s recovered from the phone (v%d)", name, v)
+			return true
+		}
+	}
+	log.Printf("app state: %s: no answer from the phone within a minute (is it online?)", name)
+	return false
 }
 
 // ResyncLIDMappings fills in whatsmeow_lid_map for contacts that have no
