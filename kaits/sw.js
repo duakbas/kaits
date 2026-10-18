@@ -122,6 +122,15 @@ function summaryWith(cfg) {
       return loadNotified().then(function (seen) {
         var next = {};
         var jobs = [];
+        // First wake-up after an update: nothing remembered yet. Treat every
+        // unread chat as already seen except the newest one, or the first push
+        // would show the whole unread backlog at once.
+        if (!seen || !Object.keys(seen).length) {
+          seen = {};
+          var newest = 0;
+          s.chats.forEach(function (ch) { newest = Math.max(newest, ch.ts || 0); });
+          s.chats.forEach(function (ch) { if ((ch.ts || 0) < newest) seen[ch.jid] = ch.ts || 0; });
+        }
         s.chats.forEach(function (ch) {
           var last = seen[ch.jid] || 0;
           next[ch.jid] = Math.max(last, ch.ts || 0);
