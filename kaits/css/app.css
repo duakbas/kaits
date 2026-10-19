@@ -22,7 +22,10 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: "Open Sans", "Helvetica Neue", Arial, sans-serif;
+  /* OpenMoji by name: emojis Open Sans lacks come straight from the phone's
+     emoji font instead of depending on the engine's system-wide fallback,
+     which on KaiOS 2.5 left most of them as boxes. */
+  font-family: "Open Sans", "Helvetica Neue", Arial, "OpenMoji", sans-serif;
   font-size: 14px;
   line-height: 1.3;
   overflow: hidden;           /* the app manages its own scroll regions */
