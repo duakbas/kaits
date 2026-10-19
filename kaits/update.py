@@ -99,17 +99,30 @@ def read_preset():
     return None
 
 
-def with_preset(pkg, preset):
-    if not preset:
-        return pkg
+def with_preset(pkg, preset, tag):
+    """Bake in the daemon preset, and give the launcher icons a per-build name:
+    KaiOS's app menu caches an app's icon by its URL and never notices that the
+    file behind an unchanged URL was replaced by an in-place update."""
     zin = zipfile.ZipFile(io.BytesIO(pkg))
+    manifest = json.loads(zin.read("manifest.webapp"))
+    extra = {}
+    for size, path in (manifest.get("icons") or {}).items():
+        name = path.lstrip("/")
+        if name in zin.namelist():
+            new = "icons/launcher-%s-%s.png" % (tag, size)
+            extra[new] = zin.read(name)
+            manifest["icons"][size] = "/" + new
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         for info in zin.infolist():
             data = zin.read(info.filename)
-            if info.filename == "js/config.js":
+            if info.filename == "js/config.js" and preset:
                 data += ("\nwindow.KAITS_PRESET = %s;\n" % json.dumps(preset)).encode()
+            if info.filename == "manifest.webapp":
+                data = json.dumps(manifest, indent=2).encode()
             zout.writestr(info, data)
+        for name, data in extra.items():
+            zout.writestr(name, data)
     return out.getvalue()
 
 
@@ -142,7 +155,7 @@ def main():
     preset = read_preset()
 
     def install(kind):
-        pkg = with_preset(pkgs[kind], preset)
+        pkg = with_preset(pkgs[kind], preset, re.sub(r"[^0-9a-z]", "", a.version))
         up = rdp.request({"to": webapps, "type": "uploadPackage"})["actor"]
         for i in range(0, len(pkg), 20480):
             rdp.request({"to": up, "type": "chunk", "chunk": pkg[i:i + 20480].decode("latin-1")})
