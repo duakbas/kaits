@@ -131,3 +131,42 @@ func TestOneWhatsAppFrameIsExactlyThreePhoneFrames(t *testing.T) {
 		t.Errorf("%d samples left over — the frame sizes do not divide evenly", q.depth())
 	}
 }
+
+// The bug behind "a second of delay on every call": audio from WhatsApp piles
+// up while the phone leg is still connecting, and a queue that only drops at
+// its one-second bound keeps that backlog for the whole call. Held above the
+// high-water mark for longer than a burst, the queue cuts back to its target.
+func TestJitterCatchesUpAfterABacklog(t *testing.T) {
+	q := newJitter(LegRate)
+	// 900 ms arrive before the pump starts...
+	q.push(make([]int16, LegRate*9/10))
+	// ...then the call runs at a steady rate: one 60 ms frame in per three out.
+	for i := 0; i < 150; i++ {
+		if i%3 == 0 {
+			q.push(make([]int16, 3*LegFrame))
+		}
+		q.take(LegFrame)
+	}
+	if d, max := q.depth(), LegRate*jitterHighMs/1000; d > max {
+		t.Fatalf("after 3 s of steady audio the queue is still %d ms deep — the "+
+			"start-up backlog became permanent delay", d*1000/LegRate)
+	}
+	if q.takeTrimmed() == 0 {
+		t.Error("nothing was cut, yet the backlog is gone?")
+	}
+}
+
+// A burst (meowcaller's 60 ms frames, a network hiccup that delivers several
+// at once) must NOT be cut: that would turn ordinary jitter into lost audio.
+func TestJitterLeavesBurstsAlone(t *testing.T) {
+	q := newJitter(LegRate)
+	for round := 0; round < 20; round++ {
+		q.push(make([]int16, LegRate/4)) // 250 ms at once
+		for i := 0; i < 13; i++ {        // drained over 260 ms
+			q.take(LegFrame)
+		}
+	}
+	if c := q.takeTrimmed(); c != 0 {
+		t.Errorf("cut %d samples from audio that was only bursty", c)
+	}
+}

@@ -233,9 +233,18 @@ type pcmBridge struct {
 	mu     sync.Mutex
 	buf    []float32
 	closed bool
+	over   int // reads in a row that found a backlog (see ReadFrame)
 	// wake is signalled on every write so a starved reader does not spin.
 	wake chan struct{}
 }
+
+// Backlog rule for pcmBridge: meowcaller reads a 60 ms frame at a time, so
+// more than 200 ms waiting for 8 reads (~0.5 s) is a backlog; keep 80 ms.
+const (
+	bridgeHigh     = meowcaller.SampleRate / 5
+	bridgeTarget   = meowcaller.SampleRate * 8 / 100
+	bridgePatience = 8
+)
 
 func newPCMBridge() *pcmBridge {
 	return &pcmBridge{wake: make(chan struct{}, 1)}
@@ -280,6 +289,20 @@ func (p *pcmBridge) ReadFrame() ([]float32, error) {
 		if p.closed && len(p.buf) == 0 {
 			p.mu.Unlock()
 			return nil, io.EOF
+		}
+		// Same latency rule as the queue towards the phone: the phone's
+		// microphone starts before meowcaller starts pulling, and whatever
+		// piles up in between would otherwise be a delay for the whole call.
+		// A backlog held across several reads is cut back to one frame plus
+		// a little.
+		if len(p.buf) > bridgeHigh {
+			p.over++
+			if p.over >= bridgePatience {
+				p.buf = p.buf[len(p.buf)-bridgeTarget:]
+				p.over = 0
+			}
+		} else {
+			p.over = 0
 		}
 		if len(p.buf) >= meowcaller.FrameSamples {
 			frame := make([]float32, meowcaller.FrameSamples)

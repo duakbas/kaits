@@ -32,14 +32,40 @@ import (
 // a second-old packet is worth nothing to a conversation: better a brief
 // glitch now than permanently growing delay.
 
-// jitter is a bounded queue of 8 kHz samples that hands out fixed-size frames.
+// jitter is a bounded queue of samples that hands out fixed-size frames.
+//
+// The bound alone is not enough. Audio from WhatsApp starts arriving before
+// the phone leg is up (ICE + DTLS take most of a second), and the pump only
+// starts draining once it is — so the queue opens a call already most of a
+// second deep, and with nothing ever taking out more than it puts in, it stays
+// that deep: a permanent one-second delay. So the queue also has a latency
+// target: if it stays above highWater for longer than a burst would explain,
+// the oldest audio is cut until only target is left. One small skip, once,
+// instead of a call that lags by a second throughout.
 type jitter struct {
-	mu  sync.Mutex
-	buf []int16
-	max int
+	mu      sync.Mutex
+	buf     []int16
+	max     int
+	target  int // samples to keep after a trim
+	high    int // above this for `patience` takes in a row → trim
+	over    int
+	trimmed int // samples cut since the last report
 }
 
-func newJitter(max int) *jitter { return &jitter{max: max} }
+// Latency target for the queue towards the phone. meowcaller delivers 60 ms
+// frames, so a healthy queue swings between 0 and ~60 ms; 200 ms held for half
+// a second is a backlog, not a burst.
+const (
+	jitterTargetMs = 80
+	jitterHighMs   = 200
+	jitterPatience = 25 // takes of 20 ms
+)
+
+// newJitter: max is in samples; it is also the sample RATE the latency
+// target is computed from when max is a whole second (LegRate/PhoneRate).
+func newJitter(max int) *jitter {
+	return &jitter{max: max, target: max * jitterTargetMs / 1000, high: max * jitterHighMs / 1000}
+}
 
 func (j *jitter) push(s []int16) {
 	if len(s) == 0 {
@@ -61,6 +87,17 @@ func (j *jitter) take(n int) ([]int16, bool) {
 	out := make([]int16, n)
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.high > 0 && len(j.buf) > j.high {
+		j.over++
+		if j.over >= jitterPatience {
+			cut := len(j.buf) - j.target
+			j.buf = j.buf[cut:]
+			j.trimmed += cut
+			j.over = 0
+		}
+	} else {
+		j.over = 0
+	}
 	if len(j.buf) == 0 {
 		return out, false
 	}
@@ -73,6 +110,15 @@ func (j *jitter) depth() int {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return len(j.buf)
+}
+
+// takeTrimmed returns how many samples were cut to catch up since the last call.
+func (j *jitter) takeTrimmed() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	t := j.trimmed
+	j.trimmed = 0
+	return t
 }
 
 // answerRealCall answers a WhatsApp call and bridges it to the phone.
@@ -149,8 +195,8 @@ func (m *Manager) pump(callID string, leg *PhoneLeg, q *jitter, stop chan struct
 			// Depth is the number worth watching: steadily growing means the
 			// two clocks disagree and delay is accumulating; permanently zero
 			// means nothing is arriving from WhatsApp at all.
-			log.Printf("calls: %s: %d frames, %d starved, queue %d samples",
-				callID, frames, silent, q.depth())
+			log.Printf("calls: %s: %d frames, %d starved, queue %d samples, cut %d to catch up",
+				callID, frames, silent, q.depth(), q.takeTrimmed())
 			frames, silent = 0, 0
 		}
 	}
