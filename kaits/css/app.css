@@ -62,30 +62,44 @@ html, body {
   height: 100%;
 }
 
-header {
+/* Home tabs: Chats · Calls · People. Only shown on the home screen. */
+#tabs {
   flex: 0 0 auto;
-  height: 26px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 8px;
+  align-items: flex-end;
+  height: 28px;
+  padding: 0 4px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
+}
+#tabs[hidden] { display: none; }
+#tabs .tab {
+  padding: 0 7px 4px;
   font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.02em;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
 }
-header .status { font-size: 11px; color: var(--muted); }
-header .status.open { color: var(--accent); }
-header .status.connecting { color: #d9a441; }
-header .status.closed { color: var(--danger); }
+#tabs .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+/* Connection dot: a few pixels in the top-right corner, on every screen. */
+#status {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  z-index: 70;
+  font-size: 8px;
+  line-height: 8px;
+}
+#status.open { color: var(--accent); }
+#status.connecting { color: #d9a441; }
+#status.closed { color: var(--danger); }
 
 /* In-app notification bar: pinned just under the header, above everything.
    Deliberately thin — it is a glance, not a screen, and the thread behind it
    stays readable. */
 #notif-bar {
   position: absolute;
-  top: 26px;                  /* header height */
+  top: 0;
   left: 0;
   right: 0;
   z-index: 60;
@@ -129,7 +143,7 @@ header .status.closed { color: var(--danger); }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--line);
 }
 .chat-row.focused {
@@ -137,13 +151,13 @@ header .status.closed { color: var(--danger); }
 }
 .avatar {
   flex: 0 0 auto;
-  width: 34px; height: 34px;
+  width: 32px; height: 32px;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 700; color: #fff;
   overflow: hidden;
 }
-.avatar-img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
+.avatar-img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; }
 .chat-text { flex: 1 1 auto; min-width: 0; }
 .chat-name {
   font-weight: 700;
@@ -162,9 +176,35 @@ header .status.closed { color: var(--danger); }
 .chat-row.focused .chat-prev { color: #cfe9d8; }
 /* unread count badge. min-width + auto width so "1" is a circle and "9+"
    stretches into a pill rather than being clipped. */
+/* Right-hand column of a row: time on top, badges below. */
+.chat-meta {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: 2px;
+}
+.chat-time { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.chat-time.fresh { color: var(--accent); }
+.chat-row.focused .chat-time { color: #cfe9d8; }
+.chat-marks { display: flex; align-items: center; gap: 2px; font-size: 10px; min-height: 16px; }
+.unread.muted { background: #6a7a74; }
+/* Calls tab: a missed call reads in red, like the phone's own call log. */
+.call-row.missed .chat-name, .call-row.missed .chat-prev { color: var(--danger); }
+/* TeleKram-style search box, first row of the chat list. */
+.search-entry {
+  margin: 5px 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+}
+.search-entry::before { content: "\2315  "; }
+.search-entry.focused { border-color: var(--accent); color: var(--text); }
 .unread {
-  position: absolute;
-  top: 8px; right: 8px;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;

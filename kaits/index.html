@@ -8,10 +8,16 @@
 </head>
 <body>
   <div id="app">
-    <header>
-      <span>Kaits</span>
-      <span id="status" class="status closed">○</span>
-    </header>
+    <!-- Home tabs (Chats · Calls · People), Left/Right to switch. Only on the
+         home screen; every other screen has its own title, so there is no
+         app-name bar eating a row everywhere. -->
+    <div id="tabs">
+      <span class="tab on" data-tab="chats">Chats</span>
+      <span class="tab" data-tab="calls">Calls</span>
+      <span class="tab" data-tab="people">People</span>
+    </div>
+    <!-- Connection dot, top-right on every screen. -->
+    <span id="status" class="status closed">●</span>
 
     <!-- In-app notification bar. Overlays the top of whatever screen is up
          rather than sitting in the flex column, so showing it never reflows

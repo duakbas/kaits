@@ -68,6 +68,7 @@ func main() {
 	}
 	waCli.SetCallHook(calls.WACallHook(callMgr))
 	callMgr.NameFor = waCli.NameForJID
+	callMgr.OnCallLog = waCli.LogCall
 	callMgr.SamePerson = waCli.SamePerson
 	// A call only reaches a running app over the socket. If Kaits isn't on
 	// screen, ring the push doorbell; the service worker sees the call in
@@ -569,6 +570,14 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		}
 		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
 			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
+
+	case ws.TGetCalls:
+		var d struct {
+			Limit int `json:"limit"`
+		}
+		_ = json.Unmarshal(e.Data, &d)
+		hub.Push(ws.Envelope{T: ws.TCallLog, ID: e.ID,
+			Data: mustJSON(map[string]any{"calls": waCli.RecentCalls(d.Limit)})})
 
 	case ws.TGetContacts:
 		hub.Push(ws.Envelope{T: ws.TContacts, ID: e.ID,

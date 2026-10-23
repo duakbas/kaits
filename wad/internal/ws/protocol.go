@@ -45,6 +45,7 @@ const (
 	TEdited       = "edited"       // {chat, msgid, text} a message's body changed
 	TLiveLocState = "livelocstate" // {chat, active, until} state of an outgoing live share
 	TContacts     = "contacts"     // reply to "getcontacts": [{jid,name}] everyone you can start a chat with
+	TCallLog      = "calllog"      // reply to "getcalls": [{id,peer,name,dir,ts,secs}] newest first
 )
 
 // ---- app -> daemon ----
@@ -75,6 +76,7 @@ const (
 	TEdit         = "edit"         // {chat, msgid, text} edit one of our own messages
 	TLiveLoc      = "liveloc"      // {chat, action:"start"|"update"|"stop", lat, lon, acc, secs}
 	TGetContacts  = "getcontacts"  // {} the address book, for search / new chats
+	TGetCalls     = "getcalls"     // {limit?} the call log
 	TVisible      = "visible"      // {visible} the app is on screen / went to the background (handled by the hub)
 )
 

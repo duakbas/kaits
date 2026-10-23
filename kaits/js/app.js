@@ -154,6 +154,9 @@
   function show(el) {
     SCREENS.forEach(function (s) { if (s) s.hidden = true; });
     el.hidden = false;
+    // The tab bar belongs to the home screen only.
+    var tabs = document.getElementById("tabs");
+    if (tabs) tabs.hidden = el !== elList;
     releaseInput(el);
   }
 
@@ -206,6 +209,7 @@
     if (!el || !el.getAttribute) return "";
     if (el.getAttribute("data-settings")) return "\u0000settings";
     if (el.getAttribute("data-archived")) return "\u0000archived";
+    if (el.getAttribute("data-search")) return "\u0000search";
     return el.getAttribute("data-jid") || "";
   }
 
@@ -219,8 +223,15 @@
         var r = rows[i];
         var id = r.getAttribute("data-settings") ? "\u0000settings"
                : r.getAttribute("data-archived") ? "\u0000archived"
+               : r.getAttribute("data-search") ? "\u0000search"
                : r.getAttribute("data-jid");
         if (id === key) { want = i; break; }
+      }
+    }
+    if (want < 0) {
+      // Nothing remembered: the first real row, not the search box above it.
+      for (var j = 0; j < rows.length; j++) {
+        if (rows[j].getAttribute("data-jid")) { want = j; break; }
       }
     }
     Nav.focusIndexAt(want >= 0 ? want : 0);
@@ -230,6 +241,12 @@
     if (dormant) return;
     // Remember before the rebuild destroys the rows.
     var keepFocus = listFocusKey;
+    if (homeTab !== "chats") {
+      if (homeTab === "calls") renderCallsTab(); else renderPeopleTab();
+      scheduleAvatarLoad();
+      restoreChatFocus(keepFocus);
+      return;
+    }
     var arr = Object.keys(chats).map(function (j) { return chats[j]; })
       .filter(function (c) { return !!c.archived === showArchived; });
     arr.sort(function (a, b) {
@@ -249,6 +266,19 @@
       arch.textContent = "🗄  Archived (" + archivedCount() + ")";
       arch.onclick = openArchived;
       elList.appendChild(arch);
+    }
+    // TeleKram-style search box as the first row: OK (or just start typing a
+    // name on the search screen it opens).
+    // Not while the list is empty: it would take the initial focus, and keep
+    // it once the chats arrive.
+    if (!showArchived && arr.length) {
+      var sr = document.createElement("div");
+      sr.className = "search-entry";
+      sr.setAttribute("data-nav", "");
+      sr.setAttribute("data-search", "1");
+      sr.textContent = "Search";
+      sr.onclick = enterSearchScreen;
+      elList.appendChild(sr);
     }
     if (showArchived) {
       var back = document.createElement("div");
@@ -285,8 +315,7 @@
       col.className = "chat-text";
       var name = document.createElement("div");
       name.className = "chat-name";
-      name.textContent = (c.pinned ? "📌 " : "") + (c.muted ? "🔇 " : "") +
-        (c.archived ? "🗄 " : "") + (c.name || c.jid);
+      name.textContent = (c.archived ? "🗄 " : "") + (c.name || c.jid);
       var prev = document.createElement("div");
       prev.className = "chat-prev";
       var typed = typingLabel(c.jid);
@@ -300,14 +329,27 @@
 
       row.appendChild(av);
       row.appendChild(col);
+      // Right-hand column: when, then unread count / pinned / muted.
+      var meta = document.createElement("div");
+      meta.className = "chat-meta";
+      var when = document.createElement("div");
+      when.className = "chat-time" + (c.unread > 0 && !c.muted ? " fresh" : "");
+      when.textContent = listTime(c.ts);
+      meta.appendChild(when);
+      var marks = document.createElement("div");
+      marks.className = "chat-marks";
+      if (c.muted) marks.appendChild(document.createTextNode("🔇"));
+      if (c.pinned) marks.appendChild(document.createTextNode("📌"));
       if (c.unread > 0) {
         var badge = document.createElement("span");
-        badge.className = "unread";
+        badge.className = "unread" + (c.muted ? " muted" : "");
         // Past 9 the exact number stops mattering and starts costing width on
         // a 240px screen.
         badge.textContent = c.unread > 9 ? "9+" : String(c.unread);
-        row.appendChild(badge);
+        marks.appendChild(badge);
       }
+      meta.appendChild(marks);
+      row.appendChild(meta);
       elList.appendChild(row);
     });
 
@@ -332,6 +374,170 @@
     // looks exactly like the D-pad being dead.
     restoreChatFocus(keepFocus);
   }
+
+  // ---------- home tabs: Chats · Calls · People ----------
+  // Left/Right on the home screen switch tabs, like TeleKram's Chats/Contacts.
+  //   Chats  — the chat list, with a search box as its first row
+  //   Calls  — the call log the daemon keeps (OK calls back)
+  //   People — the whole WhatsApp address book (OK opens or starts a chat)
+  var HOME_TABS = ["chats", "calls", "people"];
+  var homeTab = "chats";
+  var callLog = null;          // [{id,peer,name,dir,ts,secs}] from the daemon
+  var elTabs = document.getElementById("tabs");
+
+  function paintTabs() {
+    var t = elTabs ? elTabs.querySelectorAll(".tab") : [];
+    for (var i = 0; i < t.length; i++) {
+      t[i].className = "tab" + (t[i].getAttribute("data-tab") === homeTab ? " on" : "");
+    }
+  }
+
+  function switchHomeTab(delta) {
+    var i = HOME_TABS.indexOf(homeTab);
+    homeTab = HOME_TABS[(i + delta + HOME_TABS.length) % HOME_TABS.length];
+    listFocusKey = "";
+    if (homeTab === "calls") W.send(W.T.GETCALLS, { limit: 60 });
+    if (homeTab === "people") W.send(W.T.GETCONTACTS, {});
+    if (homeTab !== "chats") { showArchived = false; archivedRevealed = false; }
+    paintTabs();
+    setHomeSoftkeys();
+    renderChatList();
+    elList.scrollTop = 0;
+  }
+
+  function setHomeSoftkeys() {
+    if (homeTab === "calls") Nav.setSoftkeys("Search", "CALL", "Message");
+    else if (homeTab === "people") Nav.setSoftkeys("Search", "CHAT", "Call");
+    else Nav.setSoftkeys("Search", "SELECT", "Options");
+  }
+
+  // "14:05" today, "Yesterday", "Mon" this week, "19.10." before that.
+  function listTime(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000), now = new Date();
+    var day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+    if (ts >= day0) return timeOf(ts);
+    if (ts >= day0 - 86400) return "Yesterday";
+    if (ts >= day0 - 6 * 86400) return DAY_NAMES[d.getDay()].slice(0, 3);
+    return pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + ".";
+  }
+
+  function callDuration(secs) {
+    if (!secs) return "";
+    var m = Math.floor(secs / 60), s = secs % 60;
+    return m ? m + ":" + pad2(s) : s + "s";
+  }
+
+  function homeAvatar(jid, name) {
+    var av = document.createElement("div");
+    av.className = "avatar";
+    av.textContent = initialsFor(name || jid);
+    av.style.background = colorFor(name || jid);
+    av.setAttribute("data-avatar-jid", jid);
+    return av;
+  }
+
+  function renderCallsTab() {
+    elList.innerHTML = "";
+    if (!callLog) {
+      var wait = document.createElement("div");
+      wait.className = "empty";
+      wait.textContent = "Loading calls…";
+      elList.appendChild(wait);
+      return;
+    }
+    if (!callLog.length) {
+      var none = document.createElement("div");
+      none.className = "empty";
+      none.textContent = "No calls yet. Calls made or received from now on show up here.";
+      elList.appendChild(none);
+      return;
+    }
+    callLog.forEach(function (c) {
+      var row = document.createElement("div");
+      var missed = c.dir === "in" && !c.secs;
+      row.className = "chat-row call-row" + (missed ? " missed" : "");
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-jid", c.peer);
+      row.setAttribute("data-call", "1");
+      row.setAttribute("data-name", c.name || "");
+      var col = document.createElement("div");
+      col.className = "chat-text";
+      var name = document.createElement("div");
+      name.className = "chat-name";
+      name.textContent = c.name || ("+" + c.peer.split("@")[0]);
+      var sub = document.createElement("div");
+      sub.className = "chat-prev";
+      sub.textContent = (c.dir === "in" ? (missed ? "↙ Missed" : "↙ Incoming") : (c.secs ? "↗ Outgoing" : "↗ No answer")) +
+        (c.secs ? " · " + callDuration(c.secs) : "");
+      col.appendChild(name);
+      col.appendChild(sub);
+      var meta = document.createElement("div");
+      meta.className = "chat-meta";
+      var t = document.createElement("div");
+      t.className = "chat-time";
+      t.textContent = listTime(c.ts);
+      meta.appendChild(t);
+      row.appendChild(homeAvatar(c.peer, c.name));
+      row.appendChild(col);
+      row.appendChild(meta);
+      elList.appendChild(row);
+    });
+  }
+
+  function renderPeopleTab() {
+    elList.innerHTML = "";
+    if (!searchContacts) {
+      var wait = document.createElement("div");
+      wait.className = "empty";
+      wait.textContent = "Loading contacts…";
+      elList.appendChild(wait);
+      return;
+    }
+    if (!searchContacts.length) {
+      var none = document.createElement("div");
+      none.className = "empty";
+      none.textContent = "No contacts synced yet.";
+      elList.appendChild(none);
+      return;
+    }
+    var lastLetter = "";
+    searchContacts.forEach(function (ct) {
+      var letter = searchNorm(ct.name).charAt(0).toUpperCase();
+      if (!/[A-Z]/.test(letter)) letter = "#";
+      if (letter !== lastLetter) {
+        lastLetter = letter;
+        var h = document.createElement("div");
+        h.className = "search-section";
+        h.textContent = letter;
+        elList.appendChild(h);
+      }
+      var row = document.createElement("div");
+      row.className = "chat-row";
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-jid", ct.jid);
+      row.setAttribute("data-person", "1");
+      row.setAttribute("data-name", ct.name || "");
+      var col = document.createElement("div");
+      col.className = "chat-text";
+      var name = document.createElement("div");
+      name.className = "chat-name";
+      name.textContent = ct.name;
+      var sub = document.createElement("div");
+      sub.className = "chat-prev";
+      sub.textContent = "+" + ct.jid.split("@")[0];
+      col.appendChild(name);
+      col.appendChild(sub);
+      row.appendChild(homeAvatar(ct.jid, ct.name));
+      row.appendChild(col);
+      elList.appendChild(row);
+    });
+  }
+
+  W.on(W.T.CALLLOG, function (d) {
+    callLog = (d && d.calls) || [];
+    if (!elList.hidden && homeTab === "calls") { renderChatList(); }
+  });
 
   // ---- lazy, throttled avatar loading ----
   // Only fetch avatars for rows near the viewport, at most a few at a time, so
@@ -419,6 +625,7 @@
     var el = Nav.focusedEl() || elList.querySelector("[data-nav]");
     if (!el) return;
     if (el.getAttribute("data-settings")) { enterSetupScreen(enterListScreen); return; }
+    if (el.getAttribute("data-search")) return;
     var jid = el.getAttribute("data-jid");
     if (jid) openChatMenu(jid);
   }
@@ -459,15 +666,31 @@
         if (el.getAttribute("data-archived")) { openArchived(); return; }
         if (el.getAttribute("data-archived-back")) { closeArchived(); return; }
         if (el.getAttribute("data-settings")) { enterSetupScreen(enterListScreen); return; }
+        if (el.getAttribute("data-search")) { enterSearchScreen(); return; }
+        if (el.getAttribute("data-call")) { placeCall(el.getAttribute("data-jid"), el.getAttribute("data-name")); return; }
+        if (el.getAttribute("data-person")) { openSearchHit(el.getAttribute("data-jid"), el.getAttribute("data-name")); return; }
         openThread(el.getAttribute("data-jid"));
       },
       onSoftLeft: enterSearchScreen,
-      // Right on a chat row opens its pin/mute/archive/delete menu. The right
-      // softkey does the same, since Right isn't discoverable on its own.
-      onRight: function () { openMenuForFocusedChat(); },
-      onSoftRight: function () { openMenuForFocusedChat(); }
+      // Left/Right switch between Chats, Calls and People. The chat menu
+      // (pin/mute/archive/delete) stays on the right softkey.
+      onLeft: function () { switchHomeTab(-1); },
+      onRight: function () { switchHomeTab(1); },
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (homeTab === "calls") {
+          if (el && el.getAttribute("data-jid")) openSearchHit(el.getAttribute("data-jid"), el.getAttribute("data-name"));
+          return;
+        }
+        if (homeTab === "people") {
+          if (el && el.getAttribute("data-jid")) placeCall(el.getAttribute("data-jid"), el.getAttribute("data-name"));
+          return;
+        }
+        openMenuForFocusedChat();
+      }
     });
-    Nav.setSoftkeys("Search", "SELECT", "Options");
+    paintTabs();
+    setHomeSoftkeys();
     renderChatList();
   }
 
@@ -4055,11 +4278,11 @@
 
   // ---- outgoing ----
 
-  function placeCall(jid) {
+  function placeCall(jid, knownName) {
     if (!jid || (chats[jid] && chats[jid].group)) return;
     if (activeCall) { toast("Already in a call"); return; }
     if (!window.Call || !Call.supported()) { toast("This phone can't carry call audio"); return; }
-    var name = (chats[jid] && chats[jid].name) || jid;
+    var name = (chats[jid] && chats[jid].name) || knownName || ("+" + jid.split("@")[0]);
     activeCall = { callid: "", from: jid, name: name, outgoing: true };
     // No id yet — the daemon picks it. Call.signal adopts the first one it sees.
     Call.begin(null);
@@ -5004,6 +5227,7 @@
 
   W.on(W.T.CONTACTS, function (d) {
     searchContacts = (d && d.contacts) || [];
+    if (!elList.hidden && homeTab === "people") renderChatList();
     if (!elSearch.hidden && elSearchInput.value.trim()) renderSearch();
   });
 

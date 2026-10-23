@@ -99,6 +99,14 @@ type Manager struct {
 	activeDir       string
 	activePeer      string
 	activeConnected bool
+	// When the active call started ringing / was picked up, for the call log.
+	activeSince time.Time
+	connectedAt time.Time
+
+	// OnCallLog, if set, is told about every finished call (test calls
+	// excluded): who, which way, when it started, and how long it was
+	// connected (0 = missed / declined / not picked up).
+	OnCallLog func(id, peer, dir string, started time.Time, secs int)
 
 	// waiting is a second incoming call that arrived while one was going on.
 	// The app shows it as call waiting; it's answered with callswitch.
@@ -218,6 +226,7 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 			d.AutoAnswer = true
 			m.mu.Lock()
 			m.activeCallID, m.activeCallFrom = callID, fromJID
+			m.activeSince, m.connectedAt = time.Now(), time.Time{}
 			m.activeDir, m.activePeer, m.activeConnected = "in", fromJID, false
 			m.ringing = &d
 			m.mu.Unlock()
@@ -233,6 +242,7 @@ func (m *Manager) NotifyIncoming(callID, fromJID, fromName string, video bool, t
 	}
 	m.activeDir, m.activePeer, m.activeConnected = "in", fromJID, false
 	m.activeCallID = callID
+	m.activeSince, m.connectedAt = time.Now(), time.Time{}
 	m.activeCallFrom = fromJID
 	m.ringing = &d
 	m.mu.Unlock()
@@ -344,6 +354,7 @@ func (m *Manager) HandleAppFrame(ctx context.Context, e ws.Envelope) {
 		m.endCall()
 		m.mu.Lock()
 		m.activeCallID, m.activeCallFrom = w.CallID, w.FromJID
+		m.activeSince, m.connectedAt = time.Now(), time.Time{}
 		m.activeDir, m.activePeer, m.activeConnected = "in", w.FromJID, false
 		m.mu.Unlock()
 		if err := m.answer(ctx); err != nil {
@@ -497,12 +508,26 @@ func dbfs(peak int16) float64 {
 // endCall tears down whatever is up. Safe with nothing running.
 func (m *Manager) endCall() {
 	m.mu.Lock()
+	logID, logPeer, logDir := m.activeCallID, m.activePeer, m.activeDir
+	logSince, logConn := m.activeSince, m.connectedAt
+	m.activeSince, m.connectedAt = time.Time{}, time.Time{}
 	leg, stop, src := m.leg, m.stopPump, m.source
 	m.leg, m.stopPump, m.source = nil, nil, nil
 	m.activeCallID, m.activeCallFrom = "", ""
 	m.activeDir, m.activePeer, m.activeConnected = "", "", false
 	m.ringing = nil
 	m.mu.Unlock()
+
+	if m.OnCallLog != nil && logID != "" && !IsTestCall(logID) && logPeer != "" {
+		if logSince.IsZero() {
+			logSince = time.Now()
+		}
+		secs := 0
+		if !logConn.IsZero() {
+			secs = int(time.Since(logConn).Seconds())
+		}
+		go m.OnCallLog(logID, logPeer, logDir, logSince, secs)
+	}
 
 	// Order matters: stop producing before tearing down what consumes, or the
 	// pump's next tick writes to a closed track and logs an error for
@@ -523,6 +548,7 @@ func (m *Manager) answer(ctx context.Context) error {
 	id := m.activeCallID
 	m.ringing = nil
 	m.activeConnected = true
+	m.connectedAt = time.Now()
 	m.mu.Unlock()
 	if id == "" {
 		return nil
@@ -560,6 +586,7 @@ func (m *Manager) promoteWaiting() {
 	}
 	m.waiting = nil
 	m.activeCallID, m.activeCallFrom = w.CallID, w.FromJID
+	m.activeSince, m.connectedAt = time.Now(), time.Time{}
 	m.activeDir, m.activePeer, m.activeConnected = "in", w.FromJID, false
 	m.ringing = w
 	m.mu.Unlock()
@@ -609,6 +636,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 	}
 	m.mu.Lock()
 	m.activeCallID, m.activeCallFrom = id, dest
+	m.activeSince, m.connectedAt = time.Now(), time.Time{}
 	m.activeDir, m.activePeer, m.activeConnected = "out", dest, false
 	m.source = src
 	m.mu.Unlock()
@@ -618,6 +646,7 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 			ours := m.activeCallID == id
 			if ours {
 				m.activeConnected = true
+				m.connectedAt = time.Now()
 			}
 			m.mu.Unlock()
 			if ours {
