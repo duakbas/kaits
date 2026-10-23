@@ -571,6 +571,19 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
 			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
 
+	case ws.TPollVote:
+		var d struct {
+			MsgID   string   `json:"msgid"`
+			Options []string `json:"options"`
+		}
+		if err := json.Unmarshal(e.Data, &d); err != nil || d.MsgID == "" {
+			hub.PushT(ws.TError, map[string]string{"code": "pollvote", "msg": "bad vote"})
+			return
+		}
+		if err := waCli.VotePoll(ctx, d.MsgID, d.Options); err != nil {
+			hub.PushT(ws.TError, map[string]string{"code": "pollvote", "msg": err.Error()})
+		}
+
 	case ws.TGetCalls:
 		var d struct {
 			Limit int `json:"limit"`

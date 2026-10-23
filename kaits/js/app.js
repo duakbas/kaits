@@ -945,6 +945,7 @@
     if (selectedIsViewable()) return "VIEW";
     var msgs = threads[currentJID] || [];
     var m = msgs[selectIdx];
+    if (m && !m.deleted && m.kind === "poll") return "VOTE";
     if (m && !m.deleted && findLinks(m.text).length) return "OPEN";
     return "ACTIONS";
   }
@@ -973,6 +974,10 @@
     // this is what "clicking a link" has to mean; it matches Enter on a photo
     // opening the photo. The action menu is still one press away on the right
     // softkey, which is where replying to a link lives.
+    if (m && !m.deleted && m.kind === "poll") {
+      openPollVote(m);
+      return;
+    }
     if (m && !m.deleted && findLinks(m.text).length) {
       openLinksOf(m);
       return;
@@ -1826,6 +1831,132 @@
     } catch (e) { /* manifest has no activities in a web build */ }
   }
 
+  // ---------- polls ----------
+  // A poll bubble shows the question and every option with its count and a
+  // bar; your own picks are ticked. OK on a selected poll opens the vote
+  // chooser: single-choice polls vote on OK, multi-choice ones toggle and
+  // send with the right softkey.
+  function renderPollBubble(b, m) {
+    var p = m.poll || { name: m.text || "Poll", options: [], voters: 0 };
+    var box = document.createElement("div");
+    box.className = "poll";
+    var q = document.createElement("div");
+    q.className = "poll-q";
+    q.textContent = "📊 " + (p.name || m.text || "Poll");
+    box.appendChild(q);
+    var top = 0;
+    (p.options || []).forEach(function (o) { if (o.votes > top) top = o.votes; });
+    (p.options || []).forEach(function (o) {
+      var row = document.createElement("div");
+      row.className = "poll-opt" + (o.mine ? " mine" : "");
+      var label = document.createElement("div");
+      label.className = "poll-label";
+      var mark = document.createElement("span");
+      mark.className = "poll-mark";
+      mark.textContent = o.mine ? "✓" : "";
+      var name = document.createElement("span");
+      name.className = "poll-name";
+      name.textContent = o.name;
+      var n = document.createElement("span");
+      n.className = "poll-n";
+      n.textContent = o.votes ? String(o.votes) : "";
+      label.appendChild(mark);
+      label.appendChild(name);
+      label.appendChild(n);
+      var bar = document.createElement("div");
+      bar.className = "poll-bar";
+      var fill = document.createElement("div");
+      fill.className = "poll-fill";
+      fill.style.width = (top ? Math.round(100 * o.votes / top) : 0) + "%";
+      bar.appendChild(fill);
+      row.appendChild(label);
+      row.appendChild(bar);
+      box.appendChild(row);
+    });
+    var foot = document.createElement("div");
+    foot.className = "poll-foot";
+    foot.textContent = (p.voters === 1 ? "1 vote" : (p.voters || 0) + " votes") +
+      (p.multi ? " · pick several" : "") + " · OK to vote";
+    box.appendChild(foot);
+    b.appendChild(box);
+  }
+
+  var pollVote = null;   // { m, picked: {name: true} }
+
+  function openPollVote(m) {
+    var p = m.poll;
+    if (!p || !p.options || !p.options.length) { toast("This poll's options aren't loaded"); return; }
+    pollVote = { m: m, picked: {} };
+    p.options.forEach(function (o) { if (o.mine) pollVote.picked[o.name] = true; });
+    elChatMenuTitle.textContent = p.name || "Poll";
+    paintPollVote();
+    elChatMenu.hidden = false;
+    Nav.setScreen({
+      list: elChatMenu,
+      onEnter: function (e, el) {
+        if (!el || !el.hasAttribute("data-opt")) return;
+        var name = el.getAttribute("data-opt");
+        if (!p.multi) { sendPollVote([name]); return; }
+        if (pollVote.picked[name]) delete pollVote.picked[name]; else pollVote.picked[name] = true;
+        var keep = Nav.focusedEl() ? Array.prototype.indexOf.call(elChatMenuList.querySelectorAll("[data-nav]"), Nav.focusedEl()) : 0;
+        paintPollVote();
+        Nav.focusIndexAt(keep);
+      },
+      onSoftRight: function () {
+        if (p.multi) sendPollVote(Object.keys(pollVote.picked));
+        else {
+          var el = Nav.focusedEl();
+          if (el && el.hasAttribute("data-opt")) sendPollVote([el.getAttribute("data-opt")]);
+        }
+      },
+      onSoftLeft: closePollVote,
+      onBack: closePollVote
+    });
+    Nav.setSoftkeys("Cancel", p.multi ? "TOGGLE" : "VOTE", p.multi ? "Send" : "Vote");
+  }
+
+  function paintPollVote() {
+    var p = pollVote.m.poll;
+    elChatMenuList.innerHTML = "";
+    p.options.forEach(function (o) {
+      var row = document.createElement("div");
+      row.className = "menu-item";
+      row.setAttribute("data-nav", "");
+      row.setAttribute("data-opt", o.name);
+      row.textContent = (pollVote.picked[o.name] ? (p.multi ? "☑ " : "● ") : (p.multi ? "☐ " : "○ ")) + o.name;
+      elChatMenuList.appendChild(row);
+    });
+  }
+
+  function sendPollVote(names) {
+    var m = pollVote && pollVote.m;
+    if (!m) return;
+    W.send(W.T.POLLVOTE, { msgid: m.msgid, options: names });
+    toast(names.length ? "Voted" : "Vote withdrawn");
+    closePollVote();
+  }
+
+  function closePollVote() {
+    pollVote = null;
+    elChatMenu.hidden = true;
+    returnToThread();
+  }
+
+  W.on(W.T.POLLUPDATE, function (d) {
+    if (!d || !d.msgid) return;
+    var arr = threads[d.chat] || [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i].msgid === d.msgid) {
+        arr[i].poll = d.poll;
+        if (currentJID === d.chat && !menuOpen && !pollVote) {
+          try { renderThread(); } catch (e) {}
+        }
+        saveThreadCache(d.chat);
+        break;
+      }
+    }
+  });
+
   // ---------- reply state ----------
   function startReply(m) {
     replyingTo = {
@@ -2029,6 +2160,8 @@
       b.appendChild(stk);
     } else if (m.kind === "location") {
       renderLocationBubble(b, m);
+    } else if (m.kind === "poll") {
+      renderPollBubble(b, m);
     } else if (m.kind === "unsupported") {
       var un = document.createElement("div");
       un.className = "media-file unsupported";
@@ -4805,7 +4938,7 @@
     });
   }
 
-  var THREAD_FIELDS = ["msgid", "chat", "sender", "sendername", "group", "fromme", "ts", "kind", "text", "media",
+  var THREAD_FIELDS = ["msgid", "chat", "sender", "sendername", "group", "fromme", "ts", "kind", "text", "media", "poll",
     "thumb", "mime", "quoted", "quotedtext", "quotedname", "forwarded", "status", "reactions", "lat", "lon",
     "locname", "locaddress"];
 

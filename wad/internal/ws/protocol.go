@@ -46,6 +46,7 @@ const (
 	TLiveLocState = "livelocstate" // {chat, active, until} state of an outgoing live share
 	TContacts     = "contacts"     // reply to "getcontacts": [{jid,name}] everyone you can start a chat with
 	TCallLog      = "calllog"      // reply to "getcalls": [{id,peer,name,dir,ts,secs}] newest first
+	TPollUpdate   = "pollupdate"   // {chat, msgid, poll} a poll's counts changed
 )
 
 // ---- app -> daemon ----
@@ -77,6 +78,7 @@ const (
 	TLiveLoc      = "liveloc"      // {chat, action:"start"|"update"|"stop", lat, lon, acc, secs}
 	TGetContacts  = "getcontacts"  // {} the address book, for search / new chats
 	TGetCalls     = "getcalls"     // {limit?} the call log
+	TPollVote     = "pollvote"     // {msgid, options:[names]} vote in a poll ([] withdraws)
 	TVisible      = "visible"      // {visible} the app is on screen / went to the background (handled by the hub)
 )
 
@@ -123,6 +125,24 @@ type MsgData struct {
 	Lon        float64 `json:"lon,omitempty"`
 	LocName    string  `json:"locname,omitempty"`
 	LocAddress string  `json:"locaddress,omitempty"`
+	// Poll, for Kind == "poll": the question, options with live vote counts,
+	// and which ones we picked.
+	Poll *PollData `json:"poll,omitempty"`
+}
+
+// PollData is a poll as the app shows it.
+type PollData struct {
+	Name    string       `json:"name"`
+	Options []PollOption `json:"options"`
+	Multi   bool         `json:"multi,omitempty"` // more than one option may be picked
+	Voters  int          `json:"voters"`
+}
+
+// PollOption is one answer and how many people picked it.
+type PollOption struct {
+	Name  string `json:"name"`
+	Votes int    `json:"votes"`
+	Mine  bool   `json:"mine,omitempty"`
 }
 
 // ReactionData is one person's reaction to one message. The app groups these by

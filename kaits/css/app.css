@@ -539,9 +539,25 @@ html, body {
   border-radius: 8px;
   padding: 2px 8px;
   margin: 6px auto 4px;
-  width: fit-content;
+  /* display:table shrink-wraps and centres on this 2016 engine, which has no
+     fit-content; clear keeps it off the floated bubbles beside it. */
+  display: table;
+  clear: both;
   max-width: 80%;
 }
+
+/* poll bubble */
+.poll { min-width: 150px; }
+.poll-q { font-weight: 700; margin-bottom: 3px; }
+.poll-opt { margin: 3px 0; }
+.poll-label { display: flex; align-items: center; font-size: 12px; }
+.poll-mark { flex: 0 0 auto; width: 12px; color: var(--accent); font-weight: 700; }
+.poll-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.poll-n { flex: 0 0 auto; margin-left: 6px; font-size: 11px; color: var(--muted); }
+.poll-bar { height: 3px; margin: 2px 0 0 12px; background: rgba(255, 255, 255, 0.12); border-radius: 2px; }
+.poll-fill { height: 3px; background: var(--accent); border-radius: 2px; }
+.poll-opt.mine .poll-name { color: var(--accent); }
+.poll-foot { font-size: 9px; color: var(--muted); margin-top: 4px; }
 
 /* time + delivery ticks, trailing the bubble body */
 .meta {

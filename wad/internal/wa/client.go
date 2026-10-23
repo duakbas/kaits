@@ -672,6 +672,12 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		return
 	}
 
+	// A poll vote likewise decorates the poll it answers.
+	if m.GetPollUpdateMessage() != nil {
+		c.handlePollVote(v)
+		return
+	}
+
 	// A reaction is a message about another message, not a message in its own
 	// right — it decorates an existing bubble rather than adding one.
 	if m.GetReactionMessage() != nil {
@@ -787,6 +793,12 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 			d.Mime = "image/jpeg"
 		}
 
+	case pollOf(m) != nil:
+		p := pollOf(m)
+		d.Kind = "poll"
+		d.Text = p.GetName()
+		c.storePoll(v, chat.String(), p)
+		d.Poll = c.PollData(v.Info.ID)
 	case readableText(m) != "":
 		// Polls, contact cards, events, invites: shown as a readable text
 		// message rather than a placeholder.
@@ -1685,7 +1697,7 @@ func (c *Client) chatListWithFlags() []map[string]any {
 // History returns stored messages for a chat (oldest->newest), paginated by
 // beforeTS (0 = latest page).
 func (c *Client) History(chat string, beforeTS int64, limit int) []ws.MsgData {
-	return c.resolveSenderNames(c.hist.history(chat, beforeTS, limit))
+	return c.attachPolls(c.resolveSenderNames(c.hist.history(chat, beforeTS, limit)))
 }
 
 // resolveSenderNames re-derives each message's display name from its sender JID
