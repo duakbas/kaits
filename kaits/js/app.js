@@ -3353,7 +3353,7 @@
     elStickers.hidden = false;
     bindStickerKeys();
     Nav.setSoftkeys("Cancel", "", "");
-    W.send(W.T.GETSTICKERS, { limit: 60 });
+    W.send(W.T.GETSTICKERS, { limit: 200 });
   }
 
   // The GIF picker is the same grid with a search box on top and a different
@@ -3443,7 +3443,10 @@
       // For stickers, /media/ converts WebP to PNG (and animated ones to GIF)
       // on the way out. For GIFs the daemon proxies Tenor, so either way this
       // is an ordinary image from the one host the app talks to.
-      img.src = mediaBase() + (stickerList[i].media || stickerList[i].preview);
+      // Only the rows near the selection get their picture: with a couple of
+      // hundred favourites, decoding all of them at once is what gets this
+      // app killed for its size.
+      img.setAttribute("data-src", mediaBase() + (stickerList[i].media || stickerList[i].preview));
       img.alt = stickerList[i].desc || "";
       cell.appendChild(img);
       elStickerGrid.appendChild(cell);
@@ -3463,7 +3466,20 @@
     scrollStickerIntoView();
   }
 
+  function loadNearbyStickers() {
+    var cells = elStickerGrid.getElementsByClassName("sticker-cell");
+    var cols = pickerCols();
+    var from = Math.max(0, stickerIdx - cols * 2), to = Math.min(cells.length, stickerIdx + cols * 5);
+    for (var i = from; i < to; i++) {
+      var img = cells[i].firstChild;
+      if (img && img.getAttribute && img.getAttribute("data-src") && !img.getAttribute("src")) {
+        img.src = img.getAttribute("data-src");
+      }
+    }
+  }
+
   function scrollStickerIntoView() {
+    loadNearbyStickers();
     var cells = elStickerGrid.getElementsByClassName("sticker-cell");
     var el = cells[stickerIdx];
     if (!el) return;
@@ -3513,6 +3529,13 @@
     if (elStickers.hidden || pickerMode !== "sticker") return;
     stickerList = (d && d.stickers) || [];
     stickerIdx = 0;
+    // The daemon sends your WhatsApp favourites when it has any, otherwise
+    // the stickers you have been sent. Say which, so an unsynced favourites
+    // list doesn't look like the picker ignoring them.
+    var favs = stickerList.length && stickerList[0].fav;
+    document.getElementById("sticker-head").textContent = favs
+      ? "★ Favourites (" + stickerList.length + ")"
+      : "Recent stickers · no favourites synced yet";
     renderStickers();
   });
 

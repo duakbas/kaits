@@ -1,9 +1,13 @@
 package wa
 
 import (
+	"strings"
+	"time"
+
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // textMsg builds a simple text message. Kept in its own file so the waE2E
@@ -116,41 +120,149 @@ func editedMessageFrom(m *waE2E.Message) (string, string, bool) {
 	return key.GetID(), body, true
 }
 
+// unwrapMore peels the wrapper messages whatsmeow's UnwrapRaw doesn't: photos
+// sent as an album arrive as AssociatedChildMessage, @-mentions of a whole
+// group as GroupMentionedMessage, spoiler text as SpoilerMessage, and so on.
+// Each wraps an ordinary message that renders fine once unwrapped — before
+// this, every one of them showed up as "[unsupported message]".
+func unwrapMore(m *waE2E.Message) *waE2E.Message {
+	for i := 0; i < 4 && m != nil; i++ {
+		var inner *waE2E.Message
+		switch {
+		case m.GetAssociatedChildMessage().GetMessage() != nil:
+			inner = m.GetAssociatedChildMessage().GetMessage()
+		case m.GetGroupMentionedMessage().GetMessage() != nil:
+			inner = m.GetGroupMentionedMessage().GetMessage()
+		case m.GetSpoilerMessage().GetMessage() != nil:
+			inner = m.GetSpoilerMessage().GetMessage()
+		case m.GetBotForwardedMessage().GetMessage() != nil:
+			inner = m.GetBotForwardedMessage().GetMessage()
+		case m.GetStatusMentionMessage().GetMessage() != nil:
+			inner = m.GetStatusMentionMessage().GetMessage()
+		case m.GetGroupStatusMentionMessage().GetMessage() != nil:
+			inner = m.GetGroupStatusMentionMessage().GetMessage()
+		case m.GetViewOnceMessage().GetMessage() != nil:
+			inner = m.GetViewOnceMessage().GetMessage()
+		case m.GetViewOnceMessageV2().GetMessage() != nil:
+			inner = m.GetViewOnceMessageV2().GetMessage()
+		case m.GetEphemeralMessage().GetMessage() != nil:
+			inner = m.GetEphemeralMessage().GetMessage()
+		case m.GetDocumentWithCaptionMessage().GetMessage() != nil:
+			inner = m.GetDocumentWithCaptionMessage().GetMessage()
+		case m.GetDeviceSentMessage().GetMessage() != nil:
+			inner = m.GetDeviceSentMessage().GetMessage()
+		}
+		if inner == nil {
+			return m
+		}
+		m = inner
+	}
+	return m
+}
+
+// readableText turns message types that are really text — polls, contact
+// cards, events, invites — into a body the app shows as an ordinary message.
+func readableText(m *waE2E.Message) string {
+	poll := m.GetPollCreationMessageV3()
+	for _, p := range []*waE2E.PollCreationMessage{m.GetPollCreationMessage(), m.GetPollCreationMessageV2(),
+		m.GetPollCreationMessageV5(), m.GetPollCreationMessageV6()} {
+		if poll == nil && p != nil {
+			poll = p
+		}
+	}
+	if poll != nil {
+		var b strings.Builder
+		b.WriteString("📊 " + poll.GetName())
+		for _, o := range poll.GetOptions() {
+			b.WriteString("\n• " + o.GetOptionName())
+		}
+		return b.String()
+	}
+	if cm := m.GetContactMessage(); cm != nil {
+		return "👤 " + strings.TrimSpace(cm.GetDisplayName()+" "+vcardPhone(cm.GetVcard()))
+	}
+	if ca := m.GetContactsArrayMessage(); ca != nil {
+		var names []string
+		for _, c := range ca.GetContacts() {
+			names = append(names, strings.TrimSpace(c.GetDisplayName()+" "+vcardPhone(c.GetVcard())))
+		}
+		return "👤 " + strings.Join(names, "\n👤 ")
+	}
+	if ev := m.GetEventMessage(); ev != nil {
+		t := "📅 " + ev.GetName()
+		if ts := ev.GetStartTime(); ts > 0 {
+			t += "\n" + time.Unix(ts, 0).Local().Format("Mon 02.01. 15:04")
+		}
+		if loc := ev.GetLocation().GetName(); loc != "" {
+			t += "\n📍 " + loc
+		}
+		return t
+	}
+	if gi := m.GetGroupInviteMessage(); gi != nil {
+		return "👥 Invitation to join " + gi.GetGroupName()
+	}
+	return ""
+}
+
+// vcardPhone pulls the first phone number out of a contact card.
+func vcardPhone(v string) string {
+	for _, line := range strings.Split(v, "\n") {
+		if strings.HasPrefix(strings.ToUpper(line), "TEL") {
+			if i := strings.LastIndex(line, ":"); i >= 0 {
+				return strings.TrimSpace(line[i+1:])
+			}
+		}
+	}
+	return ""
+}
+
 // unsupportedLabel names a message type the app can't render yet, so it can be
 // shown as a placeholder instead of vanishing. Returns "" for message types that
 // legitimately have nothing to display — protocol housekeeping the user never
 // sent and shouldn't see.
 func unsupportedLabel(m *waE2E.Message) string {
 	switch {
-	case m.GetContactMessage() != nil:
-		if n := m.GetContactMessage().GetDisplayName(); n != "" {
-			return "[contact: " + n + "]"
-		}
-		return "[contact card]"
-	case m.GetContactsArrayMessage() != nil:
-		return "[contact cards]"
-	case m.GetPollCreationMessageV3() != nil:
-		if n := m.GetPollCreationMessageV3().GetName(); n != "" {
-			return "[poll: " + n + "]"
-		}
-		return "[poll]"
-	case m.GetPollUpdateMessage() != nil:
-		return "[poll vote]"
-	case m.GetEventMessage() != nil:
-		return "[event]"
+	case m.GetPollUpdateMessage() != nil, m.GetEncReactionMessage() != nil,
+		m.GetEncEventResponseMessage() != nil, m.GetKeepInChatMessage() != nil,
+		m.GetPinInChatMessage() != nil, m.GetMessageHistoryBundle() != nil,
+		m.GetMessageHistoryNotice() != nil, m.GetPlaceholderMessage() != nil,
+		m.GetAlbumMessage() != nil, m.GetStickerSyncRmrMessage() != nil,
+		m.GetPollAddOptionMessage() != nil, m.GetEncCommentMessage() != nil,
+		m.GetGroupRootKeyShare() != nil, m.GetRootSecretDistributeMessage() != nil:
+		// Votes, reactions, pins, "keep" flags, album headers: all about other
+		// messages, none a message of their own.
+		return ""
+	case m.GetProtocolMessage() != nil, m.GetSenderKeyDistributionMessage() != nil,
+		m.GetFastRatchetKeySenderKeyDistributionMessage() != nil:
+		return "" // housekeeping, not a message the user sent
+	case m.GetCallLogMesssage() != nil:
+		return "📞 call"
 	case m.GetProductMessage() != nil:
 		return "[product]"
-	case m.GetGroupInviteMessage() != nil:
-		return "[group invite]"
-	case m.GetViewOnceMessage() != nil, m.GetViewOnceMessageV2() != nil,
-		m.GetViewOnceMessageV2Extension() != nil:
-		return "[view-once message]"
-	case m.GetPtvMessage() != nil:
-		return "[video note]"
-	case m.GetProtocolMessage() != nil, m.GetSenderKeyDistributionMessage() != nil:
-		return "" // housekeeping, not a message the user sent
+	case m.GetStickerPackMessage() != nil:
+		return "[sticker pack]"
+	case m.GetSecretEncryptedMessage() != nil:
+		return "[open on your phone to view]"
+	case m.GetPollResultSnapshotMessage() != nil, m.GetPollResultSnapshotMessageV3() != nil:
+		return "[poll results]"
+	case m.GetButtonsMessage() != nil, m.GetTemplateMessage() != nil, m.GetListMessage() != nil,
+		m.GetInteractiveMessage() != nil, m.GetHighlyStructuredMessage() != nil:
+		return "[business message]"
 	}
-	return "[unsupported message]"
+	// Name the field, so an unknown type can be recognised (and supported) from
+	// the placeholder alone instead of being a mystery.
+	name := ""
+	m.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		if n := string(fd.Name()); n != "messageContextInfo" {
+			name = n
+			return false
+		}
+		return true
+	})
+	if name == "" {
+		return ""
+	}
+	return "[unsupported: " + name + "]"
 }
 
 // markForwarded stamps a message as a forward, so the recipient's client shows

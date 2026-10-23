@@ -659,7 +659,10 @@ func (c *Client) pushMessage(v *events.Message) { c.handleMsg(v, true) }
 // if live — notifies the app. History-sync messages call this with live=false
 // so they're stored but don't spam the UI as new-message notifications.
 func (c *Client) handleMsg(v *events.Message, live bool) {
-	m := v.Message
+	m := unwrapMore(v.Message)
+	if m == nil {
+		return
+	}
 
 	// Status/"Updates" posts arrive as messages in status@broadcast and would
 	// otherwise show up as a chat from a mysterious "~status". They're a
@@ -726,8 +729,12 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 		d.Mime = au.GetMimetype()
 		d.MediaURL = "/media/" + v.Info.ID
 		c.cacheMedia(v.Info.ID, au, au.GetMimetype())
-	case m.GetVideoMessage() != nil:
+	case m.GetVideoMessage() != nil || m.GetPtvMessage() != nil:
+		// A "video note" (the round one) is an ordinary video underneath.
 		vm := m.GetVideoMessage()
+		if vm == nil {
+			vm = m.GetPtvMessage()
+		}
 		// WhatsApp sends GIFs as video with GifPlayback set. Flag it so the app
 		// can autoplay+loop it silently instead of showing a play control.
 		if vm.GetGifPlayback() {
@@ -779,6 +786,12 @@ func (c *Client) handleMsg(v *events.Message, live bool) {
 			d.MediaURL = "/locthumb/" + v.Info.ID
 			d.Mime = "image/jpeg"
 		}
+
+	case readableText(m) != "":
+		// Polls, contact cards, events, invites: shown as a readable text
+		// message rather than a placeholder.
+		d.Kind = "text"
+		d.Text = readableText(m)
 
 	default:
 		// Anything we don't render yet — contact cards, polls, view-once,
@@ -2169,29 +2182,16 @@ func firstID(ids []types.MessageID) string {
 	return string(ids[0])
 }
 
-// RecentStickers is the sticker picker's source: your favourites first, then
-// every other distinct sticker this account has seen, newest first.
-//
-// Favourites lead because they are the ones you chose. The rest follow because
-// the favourites list can be empty — a fresh pairing, or an account that never
-// used the feature — and a picker with nothing in it is not a feature.
+// RecentStickers is the sticker picker's source: your favourites — the ones
+// you starred in WhatsApp, synced from app state — and nothing else, once
+// there are any. Only when no favourite has synced yet (a fresh pairing, or
+// an account that never used the feature) does it fall back to the stickers
+// this account has been sent, newest first, so the picker isn't empty.
 func (c *Client) RecentStickers(limit int) []stickerEntry {
-	favs := c.hist.favouriteStickers(limit)
-	out := favs
-	if len(out) >= limit && limit > 0 {
-		return out
+	if favs := c.hist.favouriteStickers(limit); len(favs) > 0 {
+		return favs
 	}
-	seen := make(map[string]bool, len(favs))
-	for _, f := range favs {
-		seen[f.MsgID] = true
-	}
-	for _, e := range c.hist.recentStickers(limit) {
-		if seen[e.MsgID] {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
+	return c.hist.recentStickers(limit)
 }
 
 // StickerGIF returns an animated sticker as a GIF this phone can animate,
