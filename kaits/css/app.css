@@ -17,15 +17,33 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* Form fields don't inherit the page font by default, which would leave the
+   composer and search box without the emoji font. */
+input, textarea, button { font-family: inherit; }
+
+/* Our own copy of OpenMoji (18.0, colour layers). The phone's engine is from
+   early 2016 and treats every emoji added since as an unknown character: it
+   won't take those from an installed font even when the font is named here —
+   tested on the 2720 Flip. A font the app ships itself it does use, for all
+   of them. Listed right after Open Sans, so letters, digits and # still come
+   from Open Sans and only what it lacks comes from here. */
+@font-face {
+  font-family: "KaitsEmoji";
+  src: url("../fonts/emoji.ttf");
+  /* Emoji only. The font also has digits, # and a (very wide) space for the
+     keycap emojis; without this range a phone lacking Open Sans would draw
+     every number from it — invisibly. */
+  unicode-range: U+00A9, U+00AE, U+200D, U+203C, U+2049, U+20E3, U+2122, U+2139,
+    U+2194-21AA, U+231A-23FF, U+24C2, U+25AA-25FE, U+2600-27BF, U+2934-2935,
+    U+2B05-2B55, U+3030, U+303D, U+3297, U+3299, U+FE0F, U+1F000-1FAFF,
+    U+E0020-E007F;
+}
 
 html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  /* OpenMoji by name: emojis Open Sans lacks come straight from the phone's
-     emoji font instead of depending on the engine's system-wide fallback,
-     which on KaiOS 2.5 left most of them as boxes. */
-  font-family: "Open Sans", "Helvetica Neue", Arial, "OpenMoji", sans-serif;
+  font-family: "Open Sans", "KaitsEmoji", "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   line-height: 1.3;
   overflow: hidden;           /* the app manages its own scroll regions */
@@ -729,6 +747,15 @@ header .status.closed { color: var(--danger); }
   text-overflow: ellipsis;
 }
 .search-body { font-size: 12px; margin-top: 1px; }
+.search-name { font-size: 14px; color: var(--text); }
+/* Section labels between Chats / New chat / Messages. Not focusable. */
+.search-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  padding: 5px 8px 2px;
+}
 
 /* archived entry / back row in the chat list */
 .archived-entry {
@@ -896,6 +923,20 @@ header .status.closed { color: var(--danger); }
 /* A GIF is a wide picture, not a square one, so its cell is wider and the row
    holds two rather than three. */
 .sticker-cell.gif { width: 108px; height: 76px; }
+/* Emoji drawer: six to a row, text glyphs from the bundled emoji font. */
+.emoji-cell {
+  display: inline-block;
+  width: 16.6%;
+  height: 36px;
+  line-height: 32px;
+  font-size: 24px;
+  text-align: center;
+  vertical-align: top;
+  border: 2px solid transparent;
+  box-sizing: border-box;
+}
+.emoji-cell.sel { border-color: var(--accent, #2ec4b6); }
+#sticker-head.on-bar { color: var(--text); background: var(--panel); }
 
 /* ---- video in a bubble: a still with a play badge ---- */
 /* Not a <video>. Its controls need a pointer this phone does not have, and

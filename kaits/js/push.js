@@ -136,8 +136,49 @@
   if (navigator.serviceWorker) {
     navigator.serviceWorker.addEventListener("message", function (ev) {
       if (ev.data && ev.data.type === "openchat" && ev.data.jid) {
-        if (window.App && window.App.openChat) window.App.openChat(ev.data.jid);
+        openChatSoon(ev.data.jid);
       }
+    });
+  }
+
+  // The route KaiOS actually takes. Tapping a notification in the phone's
+  // notification centre doesn't run the worker's notificationclick here: the
+  // system wakes the APP with a system message instead — "notification" for
+  // one the page raised, "serviceworker-notification" for one the worker
+  // raised. Either carries the notification's tag ("wa-<jid>") and, usually,
+  // its data. Without a handler the tap just brought the app up on the list.
+  function jidFromSystemMessage(msg) {
+    if (!msg) return "";
+    if (msg.clicked === false) return "";            // shown, not tapped
+    var d = msg.data;
+    if (typeof d === "string") { try { d = JSON.parse(d); } catch (e) { d = null; } }
+    if (d && d.jid) return d.jid;
+    var tag = String(msg.tag || "");
+    if (tag.indexOf("wa-") === 0 && tag !== "wa-call" && tag !== "wa-generic") return tag.slice(3);
+    return "";
+  }
+
+  var chatsLoaded = false;
+  var openWhenLoaded = "";
+  W.on(W.T.CHATLIST, function () {
+    chatsLoaded = true;
+    if (!openWhenLoaded) return;
+    var jid = openWhenLoaded;
+    openWhenLoaded = "";
+    if (window.App && window.App.openChat) window.App.openChat(jid);
+  });
+
+  function openChatSoon(jid) {
+    if (!jid) return;
+    if (chatsLoaded && window.App && window.App.openChat) window.App.openChat(jid);
+    else openWhenLoaded = jid;
+  }
+
+  if (navigator.mozSetMessageHandler) {
+    ["notification", "serviceworker-notification"].forEach(function (kind) {
+      try {
+        navigator.mozSetMessageHandler(kind, function (msg) { openChatSoon(jidFromSystemMessage(msg)); });
+      } catch (e) { /* not declared in this build's manifest: the worker route remains */ }
     });
   }
 
@@ -150,14 +191,9 @@
   // so this waits for the first chatlist rather than firing immediately.
   var wanted = pendingChatFromHash();
   if (wanted) {
-    W.on(W.T.CHATLIST, function () {
-      if (!wanted) return;
-      var jid = wanted;
-      wanted = "";
-      // Clear the fragment so a later refresh doesn't reopen it.
-      try { window.location.hash = ""; } catch (e) {}
-      if (window.App && window.App.openChat) window.App.openChat(jid);
-    });
+    // Clear the fragment so a later refresh doesn't reopen it.
+    try { window.location.hash = ""; } catch (e) {}
+    openChatSoon(wanted);
   }
 
   // Exposed for testing from the console: App.testNotify(). Shows the same

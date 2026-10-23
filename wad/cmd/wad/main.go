@@ -570,6 +570,10 @@ func routeAppFrame(ctx context.Context, e ws.Envelope, waCli *wa.Client, cm *cal
 		hub.Push(ws.Envelope{T: ws.TSearchResult, ID: e.ID,
 			Data: mustJSON(map[string]any{"q": d.Q, "results": waCli.Search(d.Q, d.Chat, d.Limit)})})
 
+	case ws.TGetContacts:
+		hub.Push(ws.Envelope{T: ws.TContacts, ID: e.ID,
+			Data: mustJSON(map[string]any{"contacts": waCli.Contacts()})})
+
 	case ws.TGetStickers:
 		var d struct {
 			Limit int `json:"limit"`

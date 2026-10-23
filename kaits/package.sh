@@ -57,7 +57,7 @@ rm -rf "$BUILD"
 mkdir -p "$STAGE"
 
 cp -R "$HERE/index.html" "$HERE/sw.js" "$HERE/css" "$HERE/js" "$HERE/icons" \
-      "$HERE/audio" "$STAGE/"
+      "$HERE/audio" "$HERE/fonts" "$STAGE/"
 
 # The keepalive loop is generated, not hand-written, and the app is silently
 # less able to survive backgrounding without it — a missing file here would

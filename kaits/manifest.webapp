@@ -37,6 +37,9 @@
   "messages": [
     {
       "serviceworker-notification": "/index.html"
+    },
+    {
+      "notification": "/index.html"
     }
   ],
   "locales": {
@@ -47,5 +50,21 @@
     }
   },
   "default_locale": "en-US",
-  "cursor": false
+  "cursor": false,
+  "activities": {
+    "share": {
+      "filters": {
+        "type": [
+          "image/*",
+          "video/*",
+          "audio/*",
+          "application/*",
+          "text/*",
+          "url"
+        ]
+      },
+      "disposition": "window",
+      "href": "/index.html"
+    }
+  }
 }

@@ -653,6 +653,9 @@
     clearSelection(); // just drop the highlight; no need to rebuild the thread
     Nav.setScreen({
       onUp: enterSelectMode,          // arrow up starts selecting messages
+      // Down has nothing below the composer to go to, so it opens the emoji
+      // drawer — one key away, like the keyboard panel on other phones.
+      onDown: function () { openEmojiPicker(); },
       // NOT onLeft. Attachments used to live off Left from the composer, which
       // put them on the key the text field needs: Left is how you move the
       // caret back through what you have typed, and on a T9 keypad that is not
@@ -843,6 +846,7 @@
     elChatMenuTitle.textContent = "Attach";
     elChatMenuList.innerHTML = "";
     var attachItems = [
+      { action: "emoji", label: "😀  Emoji" },
       { action: "photo", label: "📷  Photo" },
       { action: "video", label: "🎬  Video" },
       { action: "audio", label: "🎵  Audio" },
@@ -1443,6 +1447,8 @@
   function openForwardPicker(m) {
     fwdSource = m;
     var picker = document.getElementById("fwd-picker");
+    var fwdTitle = picker.querySelector(".fwd-title");
+    if (fwdTitle) fwdTitle.textContent = "Forward to…";
     var list = document.getElementById("fwd-list");
     list.innerHTML = "";
     // list all known chats except the current one, newest first
@@ -1481,6 +1487,113 @@
     document.getElementById("fwd-picker").hidden = true;
     fwdSource = null;
     enterComposeMode();
+  }
+
+  // ---------- "Share by…" target ----------
+  // Kaits registers for the system "share" activity (manifest "activities"),
+  // so the Gallery, Camera, Music, Files and the browser offer it. What comes
+  // in is either files (blobs) or a link/text. You pick a chat; files are
+  // sent straight away, a link or text is put in the composer for you to add
+  // to before sending.
+  var shareQueue = null;   // { blobs:[], names:[], text:"" } waiting for a chat
+
+  function handleShareActivity(req) {
+    var d = (req && req.source && req.source.data) || {};
+    var blobs = d.blobs || (d.blob ? [d.blob] : []);
+    var names = d.filenames || d.filepaths || [];
+    var text = d.url || d.text || "";
+    if (!blobs.length && !text) { toast("Nothing to share"); return; }
+    shareQueue = { blobs: blobs, names: names, text: text };
+    // Started cold by the share: the chat list isn't here yet.
+    if (Object.keys(chats).length) openShareChooser();
+    else W.on(W.T.CHATLIST, function () { if (shareQueue) openShareChooser(); });
+  }
+
+  function openShareChooser() {
+    if (!shareQueue) return;
+    var picker = document.getElementById("fwd-picker");
+    var list = document.getElementById("fwd-list");
+    list.innerHTML = "";
+    var n = shareQueue.blobs.length;
+    var title = picker.querySelector(".fwd-title");
+    if (title) title.textContent = n ? "Send " + (n === 1 ? "1 file" : n + " files") + " to…" : "Share with…";
+    Object.keys(chats).map(function (j) { return chats[j]; })
+      .filter(function (c) { return !c.archived || c.pinned; })
+      .sort(function (a, b) { return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.ts || 0) - (a.ts || 0); })
+      .forEach(function (c) {
+        var row = document.createElement("div");
+        row.className = "menu-item";
+        row.setAttribute("data-nav", "");
+        row.setAttribute("data-jid", c.jid);
+        row.textContent = c.name || c.jid;
+        row.onclick = function () { shareTo(c.jid); };
+        list.appendChild(row);
+      });
+    // Whatever was on screen (a chooser of our own included) is dropped.
+    closeChooserOverlays();
+    show(elList);
+    picker.hidden = false;
+    Nav.setScreen({
+      list: picker,
+      onEnter: function (e, el) { if (el && el.getAttribute("data-jid")) shareTo(el.getAttribute("data-jid")); },
+      onSoftRight: function () {
+        var el = Nav.focusedEl();
+        if (el && el.getAttribute("data-jid")) shareTo(el.getAttribute("data-jid"));
+      },
+      onSoftLeft: cancelShare,
+      onBack: cancelShare
+    });
+    Nav.setSoftkeys("Cancel", "", "Send");
+    Nav.refreshFocus();
+  }
+
+  function cancelShare() {
+    shareQueue = null;
+    document.getElementById("fwd-picker").hidden = true;
+    enterListScreen();
+  }
+
+  function shareTo(jid) {
+    var q = shareQueue;
+    shareQueue = null;
+    document.getElementById("fwd-picker").hidden = true;
+    if (!q || !jid) { enterListScreen(); return; }
+    openThread(jid);
+    if (q.text) {
+      var v = elInput.value || "";
+      elInput.value = v ? v + " " + q.text : q.text;
+      try { elInput.dispatchEvent(new Event("input")); } catch (e) {}
+    }
+    q.blobs.forEach(function (b, i) {
+      var mime = (b && b.type) || "";
+      var kind = mime.indexOf("image/") === 0 ? "image"
+        : mime.indexOf("video/") === 0 ? "video"
+        : mime.indexOf("audio/") === 0 ? "audio" : "doc";
+      // One after another, not all at once: each is read into memory as
+      // base64 before it goes out, and a handful of photos at once is exactly
+      // what gets this app killed for its size.
+      setTimeout(function () {
+        blobToBase64AndSend(b, kind, baseName(q.names[i] || (b && b.name) || ""));
+      }, i * 1500);
+    });
+  }
+
+  // The overlays that own the keypad. A share arriving while one is open
+  // replaces it; leaving it up would leave two things fighting for the keys.
+  function closeChooserOverlays() {
+    ["chat-menu", "action-menu", "stickers"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.hidden = true;
+    });
+  }
+
+  if (navigator.mozSetMessageHandler) {
+    try {
+      navigator.mozSetMessageHandler("activity", function (req) {
+        var name = req && req.source && req.source.name;
+        if (name === "share") handleShareActivity(req);
+      });
+    } catch (e) { /* manifest has no activities in a web build */ }
   }
 
   // ---------- reply state ----------
@@ -2958,6 +3071,7 @@
   // dead. Anything that owns the screen says so, and the caller leaves it be.
   function runAttach(action) {
     if (action === "location") { sendLocation(); return false; }
+    if (action === "emoji") { openEmojiPicker(); return true; }
     if (action === "sticker") { openStickerPicker(); return true; }
     if (action === "gif") { openGifPicker(); return true; }
     if (action === "livelocation") return startLiveLocation();
@@ -2988,7 +3102,7 @@
   var stickerList = [];
   var stickerIdx = 0;
   var stickerChat = "";
-  var pickerMode = "sticker";   // "sticker" | "gif"
+  var pickerMode = "sticker";   // "sticker" | "gif" | "emoji"
   var STICKER_COLS = 3;
   var GIF_COLS = 2;
 
@@ -3181,6 +3295,194 @@
     // either refine the query or press Down.
     if (stickerList.length) Nav.setSoftkeys("Cancel", "SEARCH", "");
   });
+
+  // ---------- emoji drawer ----------
+  // The keyboard on this phone has no emoji panel, so the app carries one:
+  // every emoji (no skin-tone variants), grouped like a phone keyboard, drawn
+  // with the app's own copy of OpenMoji so even the newest ones render.
+  //
+  // Keys: the D-pad moves; OK inserts and closes; the right softkey inserts
+  // and stays open (for several in a row); * and # switch group, and so does
+  // Left/Right on the group bar you reach with Up from the top row. A "Recent"
+  // group comes first once you've used any.
+  var EMOJI_COLS = 6;
+  var EMOJI_RECENT_KEY = "kaits.emojiRecent";
+  var emojiGroupsNow = [];
+  var emojiGroup = 0;
+  var emojiIdx = 0;
+  var emojiOnBar = false;
+  var emojiCaret = null;
+
+  function emojiRecent() {
+    try {
+      var r = JSON.parse(localStorage.getItem(EMOJI_RECENT_KEY) || "[]");
+      return Array.isArray(r) ? r : [];
+    } catch (e) { return []; }
+  }
+
+  function rememberEmoji(ch) {
+    var r = emojiRecent().filter(function (x) { return x !== ch; });
+    r.unshift(ch);
+    try { localStorage.setItem(EMOJI_RECENT_KEY, JSON.stringify(r.slice(0, 24))); } catch (e) {}
+  }
+
+  function buildEmojiGroups() {
+    var g = (window.EMOJI_GROUPS || []).map(function (x) {
+      return { name: x[0], icon: x[1], list: x[2].split(" ") };
+    });
+    var recent = emojiRecent();
+    if (recent.length) g.unshift({ name: "Recent", icon: "🕘", list: recent });
+    return g;
+  }
+
+  function openEmojiPicker() {
+    if (!currentJID || !window.EMOJI_GROUPS) return;
+    // Where the caret was, so the emoji lands there and not at the end.
+    var len = (elInput.value || "").length;
+    var s = elInput.selectionStart, e = elInput.selectionEnd;
+    emojiCaret = {
+      start: typeof s === "number" ? s : len,
+      end: typeof e === "number" ? e : len
+    };
+    try { elInput.blur(); } catch (err) {}
+    var sink = document.getElementById("focus-sink");
+    if (sink && sink.focus) { try { sink.focus(); } catch (err) {} }
+    pickerMode = "emoji";
+    elGifQ.hidden = true;
+    emojiGroupsNow = buildEmojiGroups();
+    emojiGroup = 0;
+    emojiIdx = 0;
+    emojiOnBar = false;
+    elStickers.hidden = false;
+    renderEmojiGroup();
+    bindEmojiKeys();
+  }
+
+  function emojiHead() {
+    var g = emojiGroupsNow[emojiGroup];
+    if (!g) return "";
+    return (emojiOnBar ? "◀ " : "") + g.icon + " " + g.name + "  (" + (emojiGroup + 1) + "/" +
+      emojiGroupsNow.length + ")" + (emojiOnBar ? " ▶" : "  · * #");
+  }
+
+  function renderEmojiGroup() {
+    var head = document.getElementById("sticker-head");
+    head.textContent = emojiHead();
+    head.className = emojiOnBar ? "on-bar" : "";
+    elStickerGrid.innerHTML = "";
+    var g = emojiGroupsNow[emojiGroup];
+    if (!g) return;
+    // One string of markup rather than hundreds of appendChild calls: the
+    // People group is 390 cells, and on this phone building them one node at
+    // a time is a visible pause.
+    var html = [];
+    for (var i = 0; i < g.list.length; i++) {
+      html.push('<span class="emoji-cell' + (i === emojiIdx && !emojiOnBar ? " sel" : "") +
+        '">' + g.list[i] + "</span>");
+    }
+    elStickerGrid.innerHTML = html.join("");
+    elStickerGrid.scrollTop = 0;
+    scrollEmojiIntoView();
+    Nav.setSoftkeys("Close", "INSERT", "Add");
+  }
+
+  function switchEmojiGroup(delta) {
+    var n = emojiGroupsNow.length;
+    if (!n) return;
+    emojiGroup = (emojiGroup + delta + n) % n;
+    emojiIdx = 0;
+    renderEmojiGroup();
+  }
+
+  function moveEmoji(delta) {
+    var g = emojiGroupsNow[emojiGroup];
+    if (!g) return;
+    var next = emojiIdx + delta;
+    if (next < 0) {
+      // Up from the top row: onto the group bar.
+      if (delta === -EMOJI_COLS) { emojiOnBar = true; renderEmojiGroup(); }
+      return;
+    }
+    if (next >= g.list.length) {
+      // Down from a short last row lands on the final emoji, not nowhere.
+      if (delta === EMOJI_COLS && emojiIdx < g.list.length - 1) next = g.list.length - 1;
+      else return;
+    }
+    var cells = elStickerGrid.getElementsByClassName("emoji-cell");
+    if (cells[emojiIdx]) cells[emojiIdx].className = "emoji-cell";
+    emojiIdx = next;
+    if (cells[emojiIdx]) cells[emojiIdx].className = "emoji-cell sel";
+    scrollEmojiIntoView();
+  }
+
+  function scrollEmojiIntoView() {
+    var cells = elStickerGrid.getElementsByClassName("emoji-cell");
+    var el = cells[emojiIdx];
+    if (!el) return;
+    var box = elStickerGrid;
+    var top = el.offsetTop - box.offsetTop;
+    if (top < box.scrollTop) box.scrollTop = top;
+    else if (top + el.offsetHeight > box.scrollTop + box.clientHeight) {
+      box.scrollTop = top + el.offsetHeight - box.clientHeight;
+    }
+  }
+
+  function bindEmojiKeys() {
+    Nav.setScreen({
+      onKey: function (e) {
+        if (e.key === "*") { switchEmojiGroup(-1); return true; }
+        if (e.key === "#") { switchEmojiGroup(1); return true; }
+        return false;
+      },
+      onLeft: function () { if (emojiOnBar) switchEmojiGroup(-1); else moveEmoji(-1); },
+      onRight: function () { if (emojiOnBar) switchEmojiGroup(1); else moveEmoji(1); },
+      onUp: function () { if (!emojiOnBar) moveEmoji(-EMOJI_COLS); },
+      onDown: function () {
+        if (emojiOnBar) { emojiOnBar = false; renderEmojiGroup(); return; }
+        moveEmoji(EMOJI_COLS);
+      },
+      onEnter: function () {
+        if (emojiOnBar) { emojiOnBar = false; renderEmojiGroup(); return; }
+        insertEmoji(false);
+      },
+      onSoftRight: function () { if (!emojiOnBar) insertEmoji(true); },
+      onSoftLeft: closeEmojiPicker,
+      onBack: closeEmojiPicker
+    });
+  }
+
+  function insertEmoji(stay) {
+    var g = emojiGroupsNow[emojiGroup];
+    var ch = g && g.list[emojiIdx];
+    if (!ch) return;
+    var v = elInput.value || "";
+    var c = emojiCaret || { start: v.length, end: v.length };
+    elInput.value = v.slice(0, c.start) + ch + v.slice(c.end);
+    var pos = c.start + ch.length;
+    emojiCaret = { start: pos, end: pos };
+    rememberEmoji(ch);
+    // Drafts and the typing indicator listen for input events; setting value
+    // from script fires none.
+    try { elInput.dispatchEvent(new Event("input")); } catch (e) {}
+    if (stay) { toast(ch + " added"); return; }
+    closeEmojiPicker();
+  }
+
+  function closeEmojiPicker() {
+    elStickers.hidden = true;
+    elStickerGrid.innerHTML = "";
+    var head = document.getElementById("sticker-head");
+    head.className = "";
+    var caret = emojiCaret;
+    pickerMode = "sticker";
+    returnToThread();
+    // Put the caret back after the emoji: compose mode focuses the field on
+    // the next tick, which would otherwise leave it wherever Gecko likes.
+    setTimeout(function () {
+      if (!caret) return;
+      try { elInput.setSelectionRange(caret.start, caret.end); } catch (e) {}
+    }, 60);
+  }
 
   // ---------- sending attachments ----------
   // The bytes come from the phone's own Camera/Gallery via a pick activity,
@@ -3470,12 +3772,30 @@
   }
 
   // ---------- search ----------
+  // Three sections, cheapest first:
+  //   Chats    — the chat list already on the phone, filtered as you type
+  //   People   — the address book (fetched once per visit), minus anyone you
+  //              already have a chat with: this is how you start a NEW chat
+  //   Messages — the daemon's full-text search, which is the expensive part,
+  //              so it waits until you stop typing for a moment (or press
+  //              the right softkey) and asks for 20 hits, not 60
+  // Typing a phone number also offers "New chat with +…".
   var searchDebounce = null;
+  var msgSearchTimer = null;
+  var searchContacts = null;   // [{jid,name}] from the daemon
+  var searchMsgs = null;       // null | "pending" | [results] for searchMsgsQ
+  var searchMsgsQ = "";
+  var SEARCH_RENDER_MS = 200;
+  var SEARCH_MESSAGES_MS = 1500;
 
   function enterSearchScreen() {
     show(elSearch);
     elSearchResults.innerHTML = "";
     elSearchInput.value = "";
+    searchMsgs = null;
+    searchMsgsQ = "";
+    // The address book can change between visits; it's one small request.
+    W.send(W.T.GETCONTACTS, {});
     Nav.setScreen({
       list: elSearch,
       // Arrows move the text caret while the box has focus, so stepping into
@@ -3489,61 +3809,193 @@
       // No Back softkey: the red key goes back. Softkeys are for actions.
       onBack: enterListScreen,
       onEnter: function (e, el) {
-        // Enter on a result opens its chat; Enter in the box just searches.
         if (el && el.getAttribute("data-jid")) {
-          openThread(el.getAttribute("data-jid"));
+          openSearchHit(el.getAttribute("data-jid"), el.getAttribute("data-name") || "");
         } else {
-          runSearch();
+          runMessageSearch();
         }
       },
-      onSoftRight: runSearch
+      onSoftRight: runMessageSearch
     });
-    Nav.setSoftkeys("", "SEARCH", "Search");
+    Nav.setSoftkeys("", "OPEN", "Messages");
+    renderSearch();
     setTimeout(function () { elSearchInput.focus(); }, 0);
   }
 
-  function runSearch() {
+  // Lowercase, accents off, the "~" WhatsApp puts on self-chosen names off —
+  // so "zurich" finds "Zürich" and "~Sam" is found by "sam".
+  function searchNorm(s) {
+    s = String(s || "").toLowerCase().replace(/^~/, "");
+    try { s = s.normalize("NFD").replace(/[̀-ͯ]/g, ""); } catch (e) {}
+    return s;
+  }
+
+  function digitsOf(s) { return String(s || "").replace(/[^0-9]/g, ""); }
+
+  // A typed phone number as a WhatsApp address. Swiss habits assumed for the
+  // short forms: 00… is the international prefix, a single leading 0 means +41.
+  function numberToJid(q) {
+    if (!/^[+0-9 ()\/.-]+$/.test(q)) return "";
+    var d = digitsOf(q);
+    if (q.trim().charAt(0) !== "+") {
+      if (d.indexOf("00") === 0) d = d.slice(2);
+      else if (d.charAt(0) === "0") d = "41" + d.slice(1);
+    }
+    return d.length >= 8 && d.length <= 15 ? d + "@s.whatsapp.net" : "";
+  }
+
+  // 0 = the name starts with it, 1 = a word in it does, 2 = it's inside, -1 no.
+  function matchRank(name, jid, q, qd) {
+    var n = searchNorm(name);
+    if (n.indexOf(q) === 0) return 0;
+    if (n.indexOf(" " + q) >= 0) return 1;
+    if (n.indexOf(q) >= 0) return 2;
+    if (qd.length >= 3 && digitsOf(jid.split("@")[0]).indexOf(qd) >= 0) return 2;
+    return -1;
+  }
+
+  function onSearchInput() {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(renderSearch, SEARCH_RENDER_MS);
+    if (msgSearchTimer) clearTimeout(msgSearchTimer);
+    msgSearchTimer = null;
+    var q = elSearchInput.value.trim();
+    if (q.length >= 3) msgSearchTimer = setTimeout(runMessageSearch, SEARCH_MESSAGES_MS);
+  }
+
+  function runMessageSearch() {
+    if (msgSearchTimer) { clearTimeout(msgSearchTimer); msgSearchTimer = null; }
     var q = elSearchInput.value.trim();
     if (q.length < 2) { toast("Type at least 2 characters"); return; }
-    W.send(W.T.SEARCH, { q: q, limit: 60 });
+    if (q === searchMsgsQ && searchMsgs) return;   // already have (or await) these
+    searchMsgsQ = q;
+    searchMsgs = "pending";
+    renderSearch();
+    W.send(W.T.SEARCH, { q: q, limit: 20 });
   }
 
-  function scheduleSearch() {
-    if (searchDebounce) clearTimeout(searchDebounce);
-    // Wait for a pause in typing: every keystroke scanning the history would
-    // be wasteful, and on a keypad each character takes a moment anyway.
-    searchDebounce = setTimeout(runSearch, 500);
+  function searchHeader(text) {
+    var h = document.createElement("div");
+    h.className = "search-section";
+    h.textContent = text;
+    elSearchResults.appendChild(h);
   }
 
-  function renderSearchResults(d) {
-    elSearchResults.innerHTML = "";
-    var results = (d && d.results) || [];
-    if (!results.length) {
-      var none = document.createElement("div");
-      none.className = "empty";
-      none.textContent = "No messages found";
-      elSearchResults.appendChild(none);
-      return;
-    }
-    results.forEach(function (r) {
-      var row = document.createElement("div");
-      row.className = "search-row";
-      row.setAttribute("data-nav", "");
-      row.setAttribute("data-jid", r.chat);
-      row.onclick = function () { openThread(r.chat); };
-
-      var head = document.createElement("div");
-      head.className = "search-head";
-      head.textContent = (r.chatname || r.chat) + " · " +
-        (r.fromme ? "You" : (r.sendername || "")) + " · " + timeOf(r.ts);
+  function searchPersonRow(jid, name, sub) {
+    var row = document.createElement("div");
+    row.className = "search-row";
+    row.setAttribute("data-nav", "");
+    row.setAttribute("data-jid", jid);
+    row.setAttribute("data-name", name || "");
+    row.onclick = function () { openSearchHit(jid, name); };
+    var head = document.createElement("div");
+    head.className = "search-head search-name";
+    head.textContent = name || ("+" + jid.split("@")[0]);
+    row.appendChild(head);
+    if (sub) {
       var body = document.createElement("div");
       body.className = "search-body";
-      body.textContent = truncate(r.text || "[" + r.kind + "]", 70);
-      row.appendChild(head);
+      body.textContent = sub;
       row.appendChild(body);
-      elSearchResults.appendChild(row);
+    }
+    elSearchResults.appendChild(row);
+  }
+
+  function renderSearch() {
+    searchDebounce = null;
+    var raw = elSearchInput.value.trim();
+    var q = searchNorm(raw), qd = digitsOf(raw);
+    elSearchResults.innerHTML = "";
+    if (!q) {
+      var hint = document.createElement("div");
+      hint.className = "empty";
+      hint.textContent = "Type a name, a number or a word";
+      elSearchResults.appendChild(hint);
+      Nav.refreshFocus();
+      return;
+    }
+
+    // Chats, best match first, then most recent.
+    var hits = [];
+    Object.keys(chats).forEach(function (j) {
+      var c = chats[j];
+      var r = matchRank(c.name || "", j, q, qd);
+      if (r >= 0) hits.push({ c: c, r: r });
     });
+    hits.sort(function (a, b) { return a.r - b.r || (b.c.ts || 0) - (a.c.ts || 0); });
+    if (hits.length) {
+      searchHeader("Chats");
+      hits.slice(0, 8).forEach(function (h) {
+        searchPersonRow(h.c.jid, h.c.name, truncate(h.c.preview || "", 40));
+      });
+    }
+
+    // People you have no chat with yet.
+    var people = [];
+    (searchContacts || []).forEach(function (ct) {
+      if (chats[ct.jid]) return;
+      var r = matchRank(ct.name, ct.jid, q, qd);
+      if (r >= 0) people.push({ ct: ct, r: r });
+    });
+    people.sort(function (a, b) { return a.r - b.r; });
+    var typed = numberToJid(raw);
+    if (people.length || (typed && !chats[typed])) {
+      searchHeader("New chat");
+      if (typed && !chats[typed]) searchPersonRow(typed, "", "Start a chat with this number");
+      people.slice(0, 10).forEach(function (p) {
+        if (p.ct.jid !== typed) searchPersonRow(p.ct.jid, p.ct.name, "+" + p.ct.jid.split("@")[0]);
+      });
+    }
+
+    // Messages: only once they've been asked for, and only for this query.
+    if (searchMsgs && searchMsgsQ === raw) {
+      searchHeader("Messages");
+      if (searchMsgs === "pending") {
+        var wait = document.createElement("div");
+        wait.className = "empty";
+        wait.textContent = "Searching messages…";
+        elSearchResults.appendChild(wait);
+      } else if (!searchMsgs.length) {
+        var none = document.createElement("div");
+        none.className = "empty";
+        none.textContent = "No messages found";
+        elSearchResults.appendChild(none);
+      } else {
+        searchMsgs.forEach(function (r) {
+          var row = document.createElement("div");
+          row.className = "search-row";
+          row.setAttribute("data-nav", "");
+          row.setAttribute("data-jid", r.chat);
+          row.setAttribute("data-name", r.chatname || "");
+          row.onclick = function () { openSearchHit(r.chat, r.chatname); };
+          var head = document.createElement("div");
+          head.className = "search-head";
+          head.textContent = (r.chatname || r.chat) + " · " +
+            (r.fromme ? "You" : (r.sendername || "")) + " · " + timeOf(r.ts);
+          var body = document.createElement("div");
+          body.className = "search-body";
+          body.textContent = truncate(r.text || "[" + r.kind + "]", 70);
+          row.appendChild(head);
+          row.appendChild(body);
+          elSearchResults.appendChild(row);
+        });
+      }
+    } else if (!hits.length && !people.length && !typed && raw.length < 3) {
+      var more = document.createElement("div");
+      more.className = "empty";
+      more.textContent = "Nothing yet — keep typing";
+      elSearchResults.appendChild(more);
+    }
     Nav.refreshFocus();
+  }
+
+  // Opening someone with no chat yet: give the list an entry with their name,
+  // so the thread header says who it is. The first message creates the chat
+  // on WhatsApp's side.
+  function openSearchHit(jid, name) {
+    if (!jid) return;
+    if (!chats[jid]) chats[jid] = { jid: jid, name: name || ("+" + jid.split("@")[0]), ts: 0, preview: "", unread: 0 };
+    openThread(jid);
   }
 
   // ---------- incoming call screen ----------
@@ -4544,7 +4996,15 @@
   });
 
   W.on(W.T.SEARCHRESULT, function (d) {
-    if (!elSearch.hidden) renderSearchResults(d);
+    // A reply to an older query (typing moved on) is dropped, not shown.
+    if (!d || d.q !== searchMsgsQ) return;
+    searchMsgs = d.results || [];
+    if (!elSearch.hidden) renderSearch();
+  });
+
+  W.on(W.T.CONTACTS, function (d) {
+    searchContacts = (d && d.contacts) || [];
+    if (!elSearch.hidden && elSearchInput.value.trim()) renderSearch();
   });
 
   W.on(W.T.PROFILE, function (p) {
@@ -4681,7 +5141,7 @@
   // softkey presses don't register as composing.
   elInput.addEventListener("input", noteTyping);
   elInput.addEventListener("input", stashDraft);
-  elSearchInput.addEventListener("input", scheduleSearch);
+  elSearchInput.addEventListener("input", onSearchInput);
 
   // Scrolling to the top of a thread loads an older page. D-pad navigation goes
   // through moveSelect instead, which calls the same helper — scrollIntoView
