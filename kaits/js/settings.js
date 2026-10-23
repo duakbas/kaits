@@ -32,14 +32,21 @@
     // for. The cost is an audio pipeline held open; the switch is on the
     // Settings screen next to the kill rate for anyone who would rather have
     // the battery.
-    keepalive: true,
+    // Now OFF: push wakes the phone for a message whether or not the app is
+    // alive, so holding an audio pipeline open to dodge the reaper buys
+    // nothing but battery drain.
+    keepalive: false,
 
     // Throw the UI away when the app goes out of sight and rebuild it on
     // return. The system kills whichever backgrounded process is largest, and
     // nearly all of this app's size is things only a person looking at it
     // needs — message DOM, chat rows, decoded images, loaded history. The
     // daemon holds all of it, so dropping it costs a rebuild and nothing else.
-    shrink: true
+    // Now OFF too, for the same reason: it existed to make the app small
+    // enough to survive in the background. With push it may as well be
+    // reclaimed — it cold-starts from the offline cache — and leaving the UI
+    // in place means coming back is instant instead of a full rebuild.
+    shrink: false
   };
 
   function loadPrefs() {
@@ -49,6 +56,14 @@
     } catch (e) { return {}; }
   }
   var prefs = loadPrefs();
+  // One-time: phones that stored "on" from the pre-push days get the new
+  // defaults. Either can still be switched back on in Settings.
+  if (!prefs.pushEra) {
+    prefs.keepalive = false;
+    prefs.shrink = false;
+    prefs.pushEra = true;
+    try { localStorage.setItem(PREFS, JSON.stringify(prefs)); } catch (e) {}
+  }
 
   function load() {
     try {

@@ -237,11 +237,36 @@
     Nav.focusIndexAt(want >= 0 ? want : 0);
   }
 
+  var chatRows = {};          // jid -> {row, av, sig}: the chats tab, kept between renders
+  var listSearchRow = null, listCog = null;
+
+  // Make parent's children exactly `want`, in order, moving as few nodes as
+  // possible: a chat jumping to the top is one insert, the rest stay put.
+  function syncChildren(parent, want) {
+    var inWant = [];
+    for (var i = 0; i < want.length; i++) want[i].__kw = 1;
+    var kids = parent.childNodes;
+    for (var k = kids.length - 1; k >= 0; k--) {
+      if (!kids[k].__kw) parent.removeChild(kids[k]);
+    }
+    for (var j = 0; j < want.length; j++) {
+      if (parent.childNodes[j] !== want[j]) parent.insertBefore(want[j], parent.childNodes[j] || null);
+      inWant.push(want[j]);
+    }
+    for (var m = 0; m < inWant.length; m++) inWant[m].__kw = 0;
+  }
+
+  // Other tabs and teardowns empty the list; the kept rows must not be
+  // mistaken for still being in it.
+  function forgetChatRows() { chatRows = {}; listSearchRow = null; listCog = null; }
+
   function renderChatList() {
     if (dormant) return;
     // Remember before the rebuild destroys the rows.
     var keepFocus = listFocusKey;
     if (homeTab !== "chats") {
+      // Those tabs build from scratch; the chats tab rebuilds once on return.
+      if (chatRows && Object.keys(chatRows).length) { elList.innerHTML = ""; forgetChatRows(); }
       if (homeTab === "calls") renderCallsTab(); else renderPeopleTab();
       scheduleAvatarLoad();
       restoreChatFocus(keepFocus);
@@ -254,7 +279,11 @@
       return (b.ts || 0) - (a.ts || 0);
     });
 
-    elList.innerHTML = "";
+    // Rows are kept and patched, not rebuilt. A rebuild on every incoming
+    // message made the whole list blink on the phone: Gecko re-decodes every
+    // picture that leaves and re-enters the document, and re-lays out every
+    // row. Now a new message touches one row's text and moves that one row.
+    var want = [];
 
     // The archived entry only appears once you've pressed Up past the top, so
     // it costs nothing until wanted.
@@ -265,20 +294,22 @@
       arch.setAttribute("data-archived", "1");
       arch.textContent = "🗄  Archived (" + archivedCount() + ")";
       arch.onclick = openArchived;
-      elList.appendChild(arch);
+      want.push(arch);
     }
     // TeleKram-style search box as the first row: OK (or just start typing a
     // name on the search screen it opens).
     // Not while the list is empty: it would take the initial focus, and keep
     // it once the chats arrive.
     if (!showArchived && arr.length) {
-      var sr = document.createElement("div");
-      sr.className = "search-entry";
-      sr.setAttribute("data-nav", "");
-      sr.setAttribute("data-search", "1");
-      sr.textContent = "Search";
-      sr.onclick = enterSearchScreen;
-      elList.appendChild(sr);
+      if (!listSearchRow) {
+        listSearchRow = document.createElement("div");
+        listSearchRow.className = "search-entry";
+        listSearchRow.setAttribute("data-nav", "");
+        listSearchRow.setAttribute("data-search", "1");
+        listSearchRow.textContent = "Search";
+        listSearchRow.onclick = enterSearchScreen;
+      }
+      want.push(listSearchRow);
     }
     if (showArchived) {
       var back = document.createElement("div");
@@ -287,15 +318,20 @@
       back.setAttribute("data-archived-back", "1");
       back.textContent = "←  Back to chats";
       back.onclick = closeArchived;
-      elList.appendChild(back);
+      want.push(back);
     }
     if (!arr.length) {
       var empty = document.createElement("div");
       empty.className = "empty";
       empty.textContent = "No chats yet. Waiting for messages…";
-      elList.appendChild(empty);
+      want.push(empty);
     }
     arr.forEach(function (c) {
+      var typedNow = typingLabel(c.jid);
+      var sig = [c.name, c.archived, typedNow, drafts[c.jid], c.preview, c.unread, c.muted,
+                 c.pinned, listTime(c.ts)].join("\u0001");
+      var old = chatRows[c.jid];
+      if (old && old.sig === sig) { want.push(old.row); return; }
       var row = document.createElement("div");
       row.className = "chat-row";
       row.setAttribute("data-nav", "");
@@ -305,12 +341,16 @@
       // avatar: initials immediately; real photo lazy-loaded when the row is
       // visible (via observer below), throttled so we don't fire 400+ requests
       // at once and trip WhatsApp's rate limit.
-      var av = document.createElement("div");
-      av.className = "avatar";
-      av.textContent = initialsFor(c.name || c.jid);
-      av.style.background = colorFor(c.name || c.jid);
-      av.setAttribute("data-avatar-jid", c.jid); // observer picks this up
-      adoptAvatar(av, c.jid);
+      // The avatar node itself carries over from the old row, picture and all.
+      var av = old && old.av;
+      if (!av) {
+        av = document.createElement("div");
+        av.className = "avatar";
+        av.textContent = initialsFor(c.name || c.jid);
+        av.style.background = colorFor(c.name || c.jid);
+        av.setAttribute("data-avatar-jid", c.jid); // observer picks this up
+        adoptAvatar(av, c.jid);
+      }
 
       var col = document.createElement("div");
       col.className = "chat-text";
@@ -319,7 +359,7 @@
       name.textContent = (c.archived ? "🗄 " : "") + (c.name || c.jid);
       var prev = document.createElement("div");
       prev.className = "chat-prev";
-      var typed = typingLabel(c.jid);
+      var typed = typedNow;
       if (typed) { prev.className += " typing"; prev.textContent = typed; }
       else if (drafts[c.jid]) {
         prev.className += " draft";
@@ -355,7 +395,11 @@
       }
       meta.appendChild(marks);
       row.appendChild(meta);
-      elList.appendChild(row);
+      // Swap in place so the row keeps its spot (and the old one its focus
+      // class is re-applied by restoreChatFocus below).
+      if (old && old.row.parentNode === elList) elList.replaceChild(row, old.row);
+      chatRows[c.jid] = { row: row, av: av, sig: sig };
+      want.push(row);
     });
 
     // Settings sits at the very bottom, past every chat. A LAN address changes
@@ -364,14 +408,17 @@
     // Not while the list is otherwise empty: it would be the only focusable row
     // and would capture the initial focus before any chat exists.
     if (arr.length) {
-    var cog = document.createElement("div");
-    cog.className = "chat-row archived-entry";
-    cog.setAttribute("data-nav", "");
-    cog.setAttribute("data-settings", "1");
-    cog.textContent = "⚙  Settings";
-    cog.onclick = function () { enterSetupScreen(enterListScreen); };
-    elList.appendChild(cog);
+      if (!listCog) {
+        listCog = document.createElement("div");
+        listCog.className = "chat-row archived-entry";
+        listCog.setAttribute("data-nav", "");
+        listCog.setAttribute("data-settings", "1");
+        listCog.textContent = "⚙  Settings";
+        listCog.onclick = function () { enterSetupScreen(enterListScreen); };
+      }
+      want.push(listCog);
     }
+    syncChildren(elList, want);
 
     scheduleAvatarLoad();
     // Put the highlight back. Without this every incoming message wipes it, and
@@ -579,6 +626,7 @@
   // entry holds an Image. Stop the machinery rather than leaving it to notice.
   function stopAvatarWork() {
     avatarImgs = {}; avatarFresh = {};
+    forgetChatRows();
     if (avatarObserver) {
       try { avatarObserver.disconnect(); } catch (e) {}
       avatarObserver = null;
