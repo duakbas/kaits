@@ -603,9 +603,20 @@
 
   function scheduleAvatarLoad() {
     if (!("IntersectionObserver" in window)) {
-      // fallback: no observer (old engines) — load the first ~12 only
-      var els = elList.querySelectorAll("[data-avatar-jid]");
-      for (var i = 0; i < els.length && i < 12; i++) enqueueAvatar(els[i]);
+      // Gecko 48 (the phone) has no IntersectionObserver. This used to load
+      // the first 12 and stop, so everything further down stayed initials.
+      // Instead: whatever is on screen (plus a screen's worth either side),
+      // checked again whenever the list scrolls.
+      scanVisibleAvatars();
+      if (!elList.__avScroll) {
+        elList.__avScroll = 1;
+        // Capture on document: whichever box actually scrolls, its scroll
+        // event passes through here (scroll doesn't bubble, but it captures).
+        document.addEventListener("scroll", function () {
+          if (avatarScanTimer) return;
+          avatarScanTimer = setTimeout(function () { avatarScanTimer = null; scanVisibleAvatars(); }, 150);
+        }, true);
+      }
       return;
     }
     if (avatarObserver) avatarObserver.disconnect();
@@ -620,6 +631,20 @@
     elList.querySelectorAll("[data-avatar-jid]").forEach(function (el) {
       avatarObserver.observe(el);
     });
+  }
+
+  var avatarScanTimer = null;
+  function scanVisibleAvatars() {
+    if (elList.hidden) return;
+    // Screen coordinates, so it doesn't matter which element is scrolling.
+    var h = window.innerHeight || 320;
+    var lo = -h, hi = 2 * h;
+    var els = elList.querySelectorAll("[data-avatar-jid]:not([data-avatar-done])");
+    for (var i = 0; i < els.length; i++) {
+      var r = els[i].getBoundingClientRect();
+      if (r.top > hi) break;                // rows are in order; the rest are further down
+      if (r.bottom >= lo) enqueueAvatar(els[i]);
+    }
   }
 
   // Going dormant drops every row the observer was watching, and each queued
