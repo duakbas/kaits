@@ -188,8 +188,22 @@ html, body {
 .chat-time { font-size: 10px; color: var(--muted); white-space: nowrap; }
 .chat-time.fresh { color: var(--accent); }
 .chat-row.focused .chat-time { color: #cfe9d8; }
-.chat-marks { display: flex; align-items: center; gap: 2px; font-size: 10px; min-height: 16px; }
+.chat-marks { display: flex; align-items: center; gap: 3px; font-size: 13px; line-height: 16px; min-height: 16px; }
 .unread.muted { background: #6a7a74; }
+/* Pinned: a drawn push-pin (round head, short needle) — the emoji one is a
+   hairline at this size. */
+.pin-mark { position: relative; display: inline-block; width: 12px; height: 14px; }
+.pin-mark::before {
+  content: ""; position: absolute; left: 1px; top: 1px;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted);
+}
+.pin-mark::after {
+  content: ""; position: absolute; left: 4px; top: 8px;
+  width: 2px; height: 6px; background: var(--muted);
+  transform: rotate(20deg);
+}
+.chat-row.focused .pin-mark::before, .chat-row.focused .pin-mark::after { background: #cfe9d8; }
 /* Calls tab: a missed call reads in red, like the phone's own call log. */
 .call-row.missed .chat-name, .call-row.missed .chat-prev { color: var(--danger); }
 /* TeleKram-style search box, first row of the chat list. */
@@ -202,7 +216,26 @@ html, body {
   color: var(--muted);
   font-size: 12px;
 }
-.search-entry::before { content: "\2315  "; }
+/* Magnifier drawn in CSS: the phone's fonts have no search glyph. */
+.search-entry { position: relative; padding-left: 24px; }
+.search-entry::before {
+  content: "";
+  position: absolute;
+  left: 9px; top: 50%;
+  width: 7px; height: 7px;
+  margin-top: -6px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.search-entry::after {
+  content: "";
+  position: absolute;
+  left: 18px; top: 50%;
+  width: 2px; height: 5px;
+  margin-top: 1px;
+  background: currentColor;
+  transform: rotate(-45deg);
+}
 .search-entry.focused { border-color: var(--accent); color: var(--text); }
 .unread {
   min-width: 16px;
@@ -293,10 +326,15 @@ html, body {
 }
 
 /* media inside bubbles */
+/* Fixed boxes, so a picture loading (or not, offline) never changes the
+   bubble's height and shoves the thread and the selection around. The photo
+   fills the box (cropped at the edges); opening it shows the whole thing. */
 .media-img {
   display: block;
-  max-width: 160px;
-  max-height: 160px;
+  width: 160px;
+  height: 120px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 4px;
 }
 .caption { margin-top: 3px; font-size: 12px; }
@@ -307,8 +345,9 @@ html, body {
 }
 .media-sticker {
   display: block;
-  max-width: 120px;
-  max-height: 120px;
+  width: 100px;
+  height: 100px;
+  object-fit: contain;
 }
 .media-file {
   font-size: 12px;

@@ -339,7 +339,11 @@
       var marks = document.createElement("div");
       marks.className = "chat-marks";
       if (c.muted) marks.appendChild(document.createTextNode("🔇"));
-      if (c.pinned) marks.appendChild(document.createTextNode("📌"));
+      if (c.pinned) {
+        var pin = document.createElement("span");
+        pin.className = "pin-mark";
+        marks.appendChild(pin);
+      }
       if (c.unread > 0) {
         var badge = document.createElement("span");
         badge.className = "unread" + (c.muted ? " muted" : "");
@@ -829,6 +833,7 @@
     // Clear optimistically; the daemon confirms with a chatupdate once the read
     // receipt has actually gone out.
     c.unread = 0;
+    saveChatsCache();
     // Drop any paging state belonging to the chat we just left, or a reply
     // still in flight for it would keep this chat from loading older pages.
     loadingOlder = false;
@@ -838,6 +843,8 @@
     show(elThread);
     clearReply();
     forceScrollBottom = true;
+    // Show what we had last time straight away; the daemon's page replaces it.
+    try { loadCachedThread(jid); } catch (e) {}
     // ask the daemon for stored history for this chat (latest page)
     if (!threads[jid] || !threads[jid].loadedHistory) {
       W.send(W.T.GETHISTORY, { jid: jid, before: 0, limit: 40 });
@@ -4577,6 +4584,8 @@
   // ---------- data handlers ----------
   function pushMsg(m) {
     (threads[m.chat] = threads[m.chat] || []).push(m);
+    saveChatsCache();
+    if (threads[m.chat].loadedHistory || currentJID === m.chat) saveThreadCache(m.chat);
     var c = chats[m.chat] = chats[m.chat] || { jid: m.chat, name: m.chat };
     // Prefer the daemon-resolved chat name (group subject or contact name).
     if (m.chatname) c.name = m.chatname;
@@ -4735,6 +4744,87 @@
     }
     document.addEventListener("visibilitychange", onVis, false);
     document.addEventListener("mozvisibilitychange", onVis, false);
+  }
+
+  // ---------- offline cache ----------
+  // The chat list and the last messages of recently opened chats are kept in
+  // localStorage, so the app opens straight onto what you saw last time — even
+  // with no connection — instead of an empty list that fills in a second
+  // later. The daemon stays the source of truth: everything is refreshed from
+  // it as soon as the socket is up, and its answer replaces the cache.
+  var CACHE_CHATS = "kaits.c.chats";
+  var CACHE_THREAD = "kaits.c.t.";      // + jid
+  var CACHE_INDEX = "kaits.c.tidx";     // jids with a cached thread, most recent first
+  var CACHE_THREADS_MAX = 25;
+  var CACHE_MSGS_MAX = 40;
+  var cacheTimers = {};
+
+  function cacheGet(key) {
+    try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
+  }
+  function cachePut(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); return true; } catch (e) { return false; }
+  }
+  // Writes are coalesced: a burst of messages costs one write, not fifty.
+  function cacheLater(key, fn) {
+    if (cacheTimers[key]) return;
+    cacheTimers[key] = setTimeout(function () { cacheTimers[key] = null; try { fn(); } catch (e) {} }, 1500);
+  }
+
+  function saveChatsCache() {
+    cacheLater(CACHE_CHATS, function () {
+      var out = Object.keys(chats).map(function (j) {
+        var c = chats[j];
+        return { jid: c.jid, name: c.name, group: !!c.group, pinned: !!c.pinned, muted: !!c.muted,
+                 archived: !!c.archived, ts: c.ts || 0, preview: (c.preview || "").slice(0, 80), unread: c.unread || 0 };
+      }).filter(function (c) { return c.ts; });   // placeholders for not-yet-started chats stay out
+      cachePut(CACHE_CHATS, out);
+    });
+  }
+
+  var THREAD_FIELDS = ["msgid", "chat", "sender", "sendername", "group", "fromme", "ts", "kind", "text", "media",
+    "thumb", "mime", "quoted", "quotedtext", "quotedname", "forwarded", "status", "reactions", "lat", "lon",
+    "locname", "locaddress"];
+
+  function saveThreadCache(jid) {
+    if (!jid) return;
+    cacheLater(CACHE_THREAD + jid, function () {
+      var arr = threads[jid] || [];
+      var slim = arr.slice(-CACHE_MSGS_MAX).map(function (m) {
+        var o = {};
+        for (var i = 0; i < THREAD_FIELDS.length; i++) {
+          var k = THREAD_FIELDS[i];
+          if (m[k] !== undefined && m[k] !== "" && m[k] !== false) o[k] = m[k];
+        }
+        return o;
+      });
+      var idx = (cacheGet(CACHE_INDEX) || []).filter(function (j) { return j !== jid; });
+      idx.unshift(jid);
+      while (idx.length > CACHE_THREADS_MAX) {
+        try { localStorage.removeItem(CACHE_THREAD + idx.pop()); } catch (e) {}
+      }
+      // Full storage: drop the oldest cached chats until it fits.
+      while (!cachePut(CACHE_THREAD + jid, slim) && idx.length > 1) {
+        try { localStorage.removeItem(CACHE_THREAD + idx.pop()); } catch (e) {}
+      }
+      cachePut(CACHE_INDEX, idx);
+    });
+  }
+
+  // Before anything is on screen: what we had last time.
+  function loadCachedChats() {
+    var list = cacheGet(CACHE_CHATS);
+    if (!Array.isArray(list)) return;
+    list.forEach(function (c) { if (c && c.jid && !chats[c.jid]) chats[c.jid] = c; });
+  }
+
+  // A cached thread fills in when a chat is opened and nothing is loaded yet.
+  // It is NOT marked loadedHistory, so the daemon is still asked; its answer
+  // merges by msgid.
+  function loadCachedThread(jid) {
+    if (threads[jid] && threads[jid].length) return;
+    var arr = cacheGet(CACHE_THREAD + jid);
+    if (Array.isArray(arr) && arr.length) threads[jid] = arr;
   }
 
   // ---------- going dormant ----------
@@ -5082,6 +5172,7 @@
     // sort oldest->newest by timestamp
     arr.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
     arr.loadedHistory = true;
+    saveThreadCache(d.jid);
 
     // Clear the in-flight flag on the reply itself rather than a timer — a slow
     // reply used to unblock early and let a second request pile on, while a
@@ -5137,6 +5228,7 @@
         };
       });
       renderChatList(); // always render — list may be the visible screen after refresh
+      saveChatsCache();
     }
   });
 
@@ -5924,6 +6016,7 @@
   // Boot. An unconfigured app has nowhere to connect, so it asks first and
   // connects afterwards.
   if (Settings.configured()) {
+    try { loadCachedChats(); } catch (e) {}
     enterListScreen();
     W.connect();
   } else {
