@@ -703,6 +703,8 @@ func avatarHandler(c *wa.Client) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", mime)
 		w.Header().Set("Cache-Control", "private, max-age=86400")
+		// lets the app shrink it on a canvas and keep a copy offline
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Write(data)
 	}
 }

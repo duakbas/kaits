@@ -310,6 +310,7 @@
       av.textContent = initialsFor(c.name || c.jid);
       av.style.background = colorFor(c.name || c.jid);
       av.setAttribute("data-avatar-jid", c.jid); // observer picks this up
+      adoptAvatar(av, c.jid);
 
       var col = document.createElement("div");
       col.className = "chat-text";
@@ -438,6 +439,7 @@
     av.textContent = initialsFor(name || jid);
     av.style.background = colorFor(name || jid);
     av.setAttribute("data-avatar-jid", jid);
+    adoptAvatar(av, jid);
     return av;
   }
 
@@ -576,6 +578,7 @@
   // Going dormant drops every row the observer was watching, and each queued
   // entry holds an Image. Stop the machinery rather than leaving it to notice.
   function stopAvatarWork() {
+    avatarImgs = {}; avatarFresh = {};
     if (avatarObserver) {
       try { avatarObserver.disconnect(); } catch (e) {}
       avatarObserver = null;
@@ -584,11 +587,77 @@
     avatarActive = 0;
   }
 
+  // Avatars survive a re-render. Every incoming message rebuilds the list,
+  // and building fresh rows used to drop each picture back to initials and
+  // fetch it again — the flicker. A loaded picture's <img> is kept here and
+  // moved into the new row; people with no picture are remembered (also
+  // across restarts) so they aren't asked for over and over.
+  // A small copy of each picture is also kept in storage, so the list comes
+  // up with faces straight away after a restart; the real one is still
+  // fetched once per session in case it changed.
+  var avatarImgs = {};                      // jid -> <img> on screen
+  var avatarFresh = {};                     // jid -> fetched this session
+  var AVATAR_NONE_KEY = "kaits.c.noavatar";
+  var AVATAR_PIX_KEY = "kaits.c.avpix";
+  var AVATAR_PIX_MAX = 120;
+  var AVATAR_NONE_TTL = 3 * 86400000;       // re-ask after 3 days: people add pictures
+  var avatarNone = cacheGet(AVATAR_NONE_KEY) || {};   // jid -> time it 404'd
+  var avatarPix = cacheGet(AVATAR_PIX_KEY) || {};     // jid -> small data: URL
+
+  function noAvatar(jid) {
+    var t = avatarNone[jid];
+    return t && (typeof t !== "number" || Date.now() - t < AVATAR_NONE_TTL);
+  }
+
   function enqueueAvatar(av) {
     if (av.getAttribute("data-avatar-done")) return;
     av.setAttribute("data-avatar-done", "1");
+    var jid = av.getAttribute("data-avatar-jid");
+    if (jid && avatarImgs[jid]) showAvatarImg(av, avatarImgs[jid]);
+    if (!jid || avatarFresh[jid] || noAvatar(jid)) return;
     avatarQueue.push(av);
     pumpAvatars();
+  }
+
+  function rememberAvatarPix(jid, img) {
+    try {
+      var c = document.createElement("canvas");
+      c.width = c.height = 40;
+      var w = img.naturalWidth, h = img.naturalHeight, side = Math.min(w, h);
+      c.getContext("2d").drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, 40, 40);
+      avatarPix[jid] = c.toDataURL("image/jpeg", 0.8);   // throws if the daemon lacks CORS
+    } catch (e) { return; }
+    var keys = Object.keys(avatarPix);
+    if (keys.length > AVATAR_PIX_MAX) {
+      // keep the ones for the chats nearest the top
+      keys.sort(function (a, b) { return ((chats[b] || {}).ts || 0) - ((chats[a] || {}).ts || 0); });
+      keys.slice(AVATAR_PIX_MAX).forEach(function (k) { delete avatarPix[k]; });
+    }
+    cacheLater(AVATAR_PIX_KEY, function () {
+      if (!cachePut(AVATAR_PIX_KEY, avatarPix)) {   // storage full: halve and retry
+        Object.keys(avatarPix).slice(AVATAR_PIX_MAX / 2).forEach(function (k) { delete avatarPix[k]; });
+        cachePut(AVATAR_PIX_KEY, avatarPix);
+      }
+    });
+  }
+
+  function showAvatarImg(av, img) {
+    av.textContent = "";
+    av.style.background = "none";
+    av.appendChild(img);
+  }
+
+  // Called while rows are built: a picture we already have goes in at once,
+  // before the row is even on screen.
+  function adoptAvatar(av, jid) {
+    if (!avatarImgs[jid] && avatarPix[jid]) {
+      var img = new Image();
+      img.className = "avatar-img";
+      img.src = avatarPix[jid];
+      avatarImgs[jid] = img;
+    }
+    if (avatarImgs[jid]) showAvatarImg(av, avatarImgs[jid]);
+    if (avatarFresh[jid] || noAvatar(jid)) av.setAttribute("data-avatar-done", "1");
   }
 
   function pumpAvatars() {
@@ -599,13 +668,27 @@
       avatarActive++;
       var img = new Image();
       img.className = "avatar-img";
-      (function (av, img) {
+      img.crossOrigin = "anonymous";            // lets the small copy be saved
+      (function (av, img, jid) {
         img.onload = function () {
-          av.textContent = ""; av.style.background = "none"; av.appendChild(img);
+          avatarFresh[jid] = 1;
+          var old = avatarImgs[jid];
+          if (old && old.parentNode) old.parentNode.replaceChild(img, old);
+          avatarImgs[jid] = img;
+          rememberAvatarPix(jid, img);
+          // The row may have been rebuilt while this loaded; put it in the
+          // current one.
+          var cur = elList.querySelector('[data-avatar-jid="' + jid.replace(/"/g, "") + '"]') || av;
+          showAvatarImg(cur, img);
           avatarActive--; pumpAvatars();
         };
-        img.onerror = function () { avatarActive--; pumpAvatars(); };
-      })(av, img);
+        img.onerror = function () {
+          avatarNone[jid] = Date.now();
+          avatarFresh[jid] = 1;
+          cacheLater(AVATAR_NONE_KEY, function () { cachePut(AVATAR_NONE_KEY, avatarNone); });
+          avatarActive--; pumpAvatars();
+        };
+      })(av, img, jid);
       img.src = mediaBase() + "/avatar/" + encodeURIComponent(jid);
     }
   }
