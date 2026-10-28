@@ -52,7 +52,15 @@ func newOpusEncoder(rate, bitrate int) (*opusEncoder, error) {
 	}
 	// FEC with an assumed 5% loss: mobile data drops packets, and FEC lets
 	// the phone rebuild a lost one from the next instead of a click.
-	if r := C.wad_opus_enc_ctl(e, C.int(bitrate), 1, 5, 10); r != C.OPUS_OK {
+	//
+	// Off by default since passthrough (WAD_CALL_OPUS_FEC): at a fixed bitrate
+	// FEC costs the main audio 0.4-0.6 PESQ, and packet duplication protects
+	// against loss better without touching quality. See passthru.go.
+	fec, loss := 0, 0
+	if callAudio.fec {
+		fec, loss = 1, 5
+	}
+	if r := C.wad_opus_enc_ctl(e, C.int(bitrate), C.int(fec), C.int(loss), 10); r != C.OPUS_OK {
 		C.opus_encoder_destroy(e)
 		return nil, fmt.Errorf("opus encoder ctl: %s", C.GoString(C.opus_strerror(r)))
 	}

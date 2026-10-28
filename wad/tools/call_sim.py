@@ -176,9 +176,9 @@ def f32to16(x):
 
 
 # ----------------------------------------------------------------- opus helpers
-def encoder(fec):
+def encoder(fec, bitrate=OPUS_BITRATE):
     e = opuslib.Encoder(SR, 1, "voip")
-    e.bitrate, e.complexity = OPUS_BITRATE, 10
+    e.bitrate, e.complexity = bitrate, 10
     # opuslib's property setters for these two are broken; call the ctl directly
     ctl, api = opuslib.api.encoder.encoder_ctl, opuslib.api.ctl
     ctl(e.encoder_state, api.set_inband_fec, 1 if fec else 0)
@@ -210,9 +210,9 @@ def phone_receive(packets, n_slots, target_ms, fec):
     return np.concatenate(out), plc
 
 
-def leg_send(frames_by_slot, send_ms, net, rng, fec, dup_ms=0):
+def leg_send(frames_by_slot, send_ms, net, rng, fec, dup_ms=0, bitrate=OPUS_BITRATE):
     """Encode 20 ms frames (in slot order) and push them over the phone leg."""
-    e = encoder(fec)
+    e = encoder(fec, bitrate)
     slots = sorted(frames_by_slot)
     n = len(slots)
     tmax = max(send_ms.values()) + 1000
@@ -265,7 +265,7 @@ def path_current(sig16, trace, net, rng, fec=True):
     return out, {"starved": starved, "plc": plc, "trimmed": q.trimmed, "delay": target}
 
 
-def path_passthru(sig16, trace, net, rng, fec=True, dup_ms=0):
+def path_passthru(sig16, trace, net, rng, fec=True, dup_ms=0, bitrate=OPUS_BITRATE):
     frames, send = {}, {}
     last, dropped = -1, 0
     for t, i in sorted(trace):
@@ -277,7 +277,7 @@ def path_passthru(sig16, trace, net, rng, fec=True, dup_ms=0):
             s = i * 3 + k
             frames[s] = f32to16(sig16[s * LEG_FRAME:(s + 1) * LEG_FRAME])
             send[s] = t
-    packets = leg_send(frames, send, net, rng, fec, dup_ms)
+    packets = leg_send(frames, send, net, rng, fec, dup_ms, bitrate)
     nominal = {s: s * 20 for s in packets}
     off = min(a - nominal[s] for s, (a, _) in packets.items())
     target = np.percentile([a - nominal[s] - off for s, (a, _) in packets.items()], 95)
@@ -344,6 +344,7 @@ def run(name, net, secs, seeds, wavdir):
         ("passthru, no redundancy",   lambda s, tr, r: path_passthru(s, tr, net, r, fec=False)),
         ("passthru + Opus FEC",       lambda s, tr, r: path_passthru(s, tr, net, r, fec=True)),
         ("passthru + duplicate 40ms", lambda s, tr, r: path_passthru(s, tr, net, r, fec=False, dup_ms=40)),
+        ("NEW: passthru+dup, 64k",    lambda s, tr, r: path_passthru(s, tr, net, r, fec=False, dup_ms=40, bitrate=64000)),
     ]
     sigs = {"sine": sine(secs), "voice": speech(secs)}
     n = len(sigs["sine"]) // WA_FRAME

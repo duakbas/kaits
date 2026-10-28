@@ -61,9 +61,10 @@ const LegRate = 16000
 // LegFrame is 20 ms at LegRate: the cadence the pump writes in.
 const LegFrame = LegRate / 50
 
-// opusBitrate for the phone leg. Wideband speech is transparent well below
-// this; the headroom is for FEC, which spends bits to survive lost packets.
-const opusBitrate = 32000
+// opusBitrate for the phone leg: WAD_CALL_OPUS_KBPS, default 64 kbit/s. At
+// 32k this second encode was costing more quality than the network: PESQ 2.83
+// with FEC, 3.44 without, 4.33 at 64k (tools/call_sim.py). See passthru.go.
+var opusBitrate = callAudio.opusKbps * 1000
 
 // legCodec is one codec the daemon can offer the phone.
 type legCodec struct {
@@ -155,9 +156,17 @@ type PhoneLeg struct {
 	down    *Down2
 	up      *Up2
 	pending []int16 // 16 kHz samples not yet a whole frame
-	lastSeq uint16
-	haveSeq bool
-	rxCodec string
+
+	// WriteTimed state (under wmu): position in WhatsApp's stream, in 16 kHz
+	// samples since its first frame, and the next 20 ms slot to send.
+	tStarted  bool
+	tLastWa   uint32
+	tPos      int64
+	tNextSlot int64
+	tStats    timedStats
+	lastSeq   uint16
+	haveSeq   bool
+	rxCodec   string
 
 	mu      sync.Mutex
 	wmu     sync.Mutex
@@ -443,38 +452,9 @@ func (l *PhoneLeg) WritePCM(pcm []int16) error {
 
 	l.pending = append(l.pending, pcm...)
 	for len(l.pending) >= LegFrame {
-		frame := l.pending[:LegFrame]
-		var payload []byte
-		var ticks uint32
-		switch codec {
-		case "opus":
-			if l.opusEnc == nil {
-				enc, err := newOpusEncoder(LegRate, opusBitrate)
-				if err != nil {
-					return err
-				}
-				l.opusEnc = enc
-			}
-			b, err := l.opusEnc.Encode(frame)
-			if err != nil {
-				return err
-			}
-			payload, ticks = b, 960 // 20 ms at Opus's 48 kHz RTP clock
-		case "g722":
-			if l.g722Enc == nil {
-				enc, err := newG722Encoder()
-				if err != nil {
-					return err
-				}
-				l.g722Enc = enc
-			}
-			payload, ticks = l.g722Enc.Encode(frame), 160 // 8000 Hz clock, see codecG722
-		default:
-			if l.down == nil {
-				l.down = NewDown2()
-			}
-			nb := l.down.Process(i16tof32(frame))
-			payload, ticks = EncodeULaw(nb), uint32(len(nb))
+		payload, ticks, err := l.encodeFrame(codec, l.pending[:LegFrame])
+		if err != nil {
+			return err
 		}
 		l.pending = l.pending[LegFrame:]
 		if err := l.track.write(payload, ticks); err != nil {
@@ -485,6 +465,120 @@ func (l *PhoneLeg) WritePCM(pcm []int16) error {
 		l.pending = l.pending[:0:0] // let the backing array go
 	}
 	return nil
+}
+
+// encodeFrame encodes one 20 ms LegRate frame in the negotiated codec and
+// says how many RTP clock ticks it spans. Caller holds wmu.
+func (l *PhoneLeg) encodeFrame(codec string, frame []int16) ([]byte, uint32, error) {
+	switch codec {
+	case "opus":
+		if l.opusEnc == nil {
+			enc, err := newOpusEncoder(LegRate, opusBitrate)
+			if err != nil {
+				return nil, 0, err
+			}
+			l.opusEnc = enc
+		}
+		b, err := l.opusEnc.Encode(frame)
+		if err != nil {
+			return nil, 0, err
+		}
+		return b, 960, nil // 20 ms at Opus's 48 kHz RTP clock
+	case "g722":
+		if l.g722Enc == nil {
+			enc, err := newG722Encoder()
+			if err != nil {
+				return nil, 0, err
+			}
+			l.g722Enc = enc
+		}
+		return l.g722Enc.Encode(frame), 160, nil // 8000 Hz clock, see codecG722
+	default:
+		if l.down == nil {
+			l.down = NewDown2()
+		}
+		nb := l.down.Process(i16tof32(frame))
+		return EncodeULaw(nb), uint32(len(nb)), nil
+	}
+}
+
+// WriteTimed sends one WhatsApp frame to the phone NOW, placed by its RTP
+// timestamp (16 kHz units) rather than by when it arrived. See passthru.go.
+//
+// Each 20 ms of audio has a slot, counted from the first frame sent; the slot
+// fixes both the RTP timestamp and the sequence number. So a frame WhatsApp
+// never delivered leaves a gap in both — to the phone's jitter buffer that is
+// packet loss, which it conceals — and a late frame keeps its place in time.
+//
+// A frame older than what has already gone out is dropped: the encoder is
+// stateful and has moved on, and the phone has concealed that slot already or
+// is about to. Audio before the leg has negotiated a codec is dropped too.
+func (l *PhoneLeg) WriteTimed(waTS uint32, pcm []int16) error {
+	if len(pcm) < LegFrame {
+		return nil
+	}
+	l.mu.Lock()
+	closed := l.closed
+	l.mu.Unlock()
+	if closed {
+		return nil
+	}
+	codec := l.track.codecName()
+	if codec == "" {
+		return nil
+	}
+	l.wmu.Lock()
+	defer l.wmu.Unlock()
+
+	if !l.tStarted {
+		l.tStarted, l.tLastWa, l.tPos, l.tNextSlot = true, waTS, 0, 0
+	} else {
+		d := int64(int32(waTS - l.tLastWa)) // signed: handles wrap and lateness
+		l.tLastWa = waTS
+		if d > 2*LegRate || d < -2*LegRate {
+			// Not jitter: the stream restarted (new SSRC, relay switch). Carry
+			// on from the next slot instead of leaving or rewinding a gap.
+			l.tStats.rebases++
+			l.tPos = l.tNextSlot * LegFrame
+		} else {
+			l.tPos += d
+		}
+	}
+	slot := l.tPos / LegFrame
+	if l.tPos < 0 {
+		slot = (l.tPos - LegFrame + 1) / LegFrame
+	}
+	if slot < l.tNextSlot {
+		l.tStats.late++
+		return nil
+	}
+	l.tStats.gapMs += int(slot-l.tNextSlot) * 20
+	l.tStats.frames++
+
+	for i := 0; i+LegFrame <= len(pcm); i += LegFrame {
+		payload, ticks, err := l.encodeFrame(codec, pcm[i:i+LegFrame])
+		if err != nil {
+			return err
+		}
+		dup, err := l.track.writeSlot(payload, slot, ticks, callAudio.dup)
+		if err != nil {
+			return err
+		}
+		if dup {
+			l.tStats.dupSent++
+		}
+		slot++
+	}
+	l.tNextSlot = slot
+	return nil
+}
+
+func (l *PhoneLeg) takeTimedStats() timedStats {
+	l.wmu.Lock()
+	defer l.wmu.Unlock()
+	s := l.tStats
+	l.tStats = timedStats{}
+	return s
 }
 
 func (l *PhoneLeg) readTrack(tr *webrtc.TrackRemote) {

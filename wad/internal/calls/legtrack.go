@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -28,6 +29,14 @@ type legTrack struct {
 	seq   uint16
 	ts    uint32
 	first bool
+
+	// writeSlot: the seq/ts of slot 0, fixed at the first slotted write.
+	slotted bool
+	seq0    uint16
+	ts0     uint32
+
+	// wmu serialises WriteRTP: duplicates go out from timer goroutines.
+	wmu sync.Mutex
 }
 
 var errNotBound = errors.New("audio track not bound yet")
@@ -98,8 +107,59 @@ func (t *legTrack) write(payload []byte, ticks uint32) error {
 	if w == nil {
 		return errNotBound
 	}
+	t.wmu.Lock()
 	_, err := w.WriteRTP(&h, payload)
+	t.wmu.Unlock()
 	return err
+}
+
+// writeSlot sends the frame for 20 ms slot `slot` (see PhoneLeg.WriteTimed):
+// sequence number and timestamp both follow from the slot, so slots never
+// written look exactly like lost packets to the receiver. With dup > 0 the
+// same packet goes out again dup later; it reports whether a copy was queued.
+func (t *legTrack) writeSlot(payload []byte, slot int64, ticks uint32, dup time.Duration) (bool, error) {
+	t.mu.Lock()
+	w := t.w
+	if !t.slotted {
+		// Continue from wherever the track's counters are, so a leg that
+		// already sent something (it doesn't today) stays monotonic.
+		t.slotted, t.seq0, t.ts0 = true, t.seq, t.ts
+	}
+	h := rtp.Header{
+		Version:        2,
+		PayloadType:    t.pt,
+		SequenceNumber: t.seq0 + uint16(slot),
+		Timestamp:      t.ts0 + uint32(slot)*ticks,
+		SSRC:           t.ssrc,
+		Marker:         t.first,
+	}
+	t.first = false
+	t.mu.Unlock()
+	if w == nil {
+		return false, errNotBound
+	}
+	t.wmu.Lock()
+	_, err := w.WriteRTP(&h, payload)
+	t.wmu.Unlock()
+	if err != nil || dup <= 0 {
+		return false, err
+	}
+	// The receiver's SRTP replay window keeps whichever copy arrives first.
+	again := h
+	p := append([]byte(nil), payload...)
+	time.AfterFunc(dup, func() {
+		t.mu.Lock()
+		w := t.w
+		t.mu.Unlock()
+		if w == nil {
+			return // leg closed meanwhile
+		}
+		hh := again
+		t.wmu.Lock()
+		_, _ = w.WriteRTP(&hh, p)
+		t.wmu.Unlock()
+	})
+	return true, nil
 }
 
 func mimeName(m string) string {

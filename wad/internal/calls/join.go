@@ -129,6 +129,9 @@ func (j *jitter) takeTrimmed() int {
 // because doing that is the step with the risk that cannot be undone. Run the
 // tone test first (`/debug/call`); it proves everything here except meowcaller.
 func (m *Manager) answerRealCall(ctx context.Context, callID string) error {
+	if tb, ok := m.be.(TimedBackend); ok && callAudio.passthru {
+		return m.answerPassthru(ctx, callID, tb)
+	}
 	// One second. Past that the audio is no longer part of the conversation.
 	q := newJitter(LegRate)
 

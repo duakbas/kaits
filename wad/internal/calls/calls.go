@@ -625,8 +625,20 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 	}
 	m.mu.Unlock()
 
-	q := newJitter(LegRate)
-	src, id, err := m.be.Dial(ctx, dest, func(pcm []float32) { q.push(f32to16(pcm)) })
+	var (
+		q   *jitter
+		dl  *downlink
+		src PCMSource
+		id  string
+		err error
+	)
+	if tb, ok := m.be.(TimedBackend); ok && callAudio.passthru {
+		dl = &downlink{}
+		src, id, err = tb.DialTimed(ctx, dest, dl.frame)
+	} else {
+		q = newJitter(LegRate)
+		src, id, err = m.be.Dial(ctx, dest, func(pcm []float32) { q.push(f32to16(pcm)) })
+	}
 	if err != nil {
 		return err
 	}
@@ -661,6 +673,11 @@ func (m *Manager) Dial(ctx context.Context, dest, name string) error {
 		_ = m.be.Hangup(ctx, id, dest)
 		m.endCall()
 		return err
+	}
+	if dl != nil {
+		m.wirePassthru(id, leg, src, dl)
+		log.Printf("calls: calling %s (%s)", name, id)
+		return nil
 	}
 	leg.OnPCM(func(pcm []int16) {
 		if err := src.Write(i16tof32(pcm)); err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/purpshell/meowcaller"
@@ -128,11 +129,46 @@ func (b *MeowBackend) Watch(callID string, accepted func(), ended func(reason st
 	})
 }
 
+// AnswerTimed is Answer with timestamped audio (TimedBackend).
+func (b *MeowBackend) AnswerTimed(ctx context.Context, callID string, sink TimedPCMSink) (PCMSource, error) {
+	call, ok := b.lookup(callID)
+	if !ok {
+		return nil, fmt.Errorf("call %s is not one we know about", callID)
+	}
+	src, err := b.attachSink(call, newTimedAdapter(call.ID(), sink), true)
+	if err != nil {
+		return nil, err
+	}
+	return b.answer(call, src)
+}
+
+// DialTimed is Dial with timestamped audio (TimedBackend).
+func (b *MeowBackend) DialTimed(ctx context.Context, dest string, sink TimedPCMSink) (PCMSource, string, error) {
+	call, err := b.cli.Call(ctx, dest)
+	if err != nil {
+		return nil, "", fmt.Errorf("dial %s: %w", dest, err)
+	}
+	b.mu.Lock()
+	b.calls[call.ID()] = call
+	b.mu.Unlock()
+	call.OnEnd(func(reason string) { b.forget(call.ID()) })
+
+	src, err := b.attachSink(call, newTimedAdapter(call.ID(), sink), true)
+	if err != nil {
+		return nil, "", err
+	}
+	return src, call.ID(), nil
+}
+
 func (b *MeowBackend) start(call *meowcaller.Call, sink PCMSink) (PCMSource, error) {
 	src, err := b.attach(call, sink)
 	if err != nil {
 		return nil, err
 	}
+	return b.answer(call, src)
+}
+
+func (b *MeowBackend) answer(call *meowcaller.Call, src PCMSource) (PCMSource, error) {
 	if err := call.Answer(); err != nil {
 		src.Close()
 		return nil, fmt.Errorf("answer %s: %w", call.ID(), err)
@@ -144,10 +180,20 @@ func (b *MeowBackend) start(call *meowcaller.Call, sink PCMSink) (PCMSource, err
 // frames after the peer connects are not dropped on the floor while we are
 // still building the plumbing.
 func (b *MeowBackend) attach(call *meowcaller.Call, sink PCMSink) (PCMSource, error) {
-	var sinks []meowcaller.AudioSink
-
+	var primary meowcaller.AudioSink
 	if sink != nil {
-		sinks = append(sinks, meowcaller.SinkFunc(func(frame []float32) { sink(frame) }))
+		primary = meowcaller.SinkFunc(func(frame []float32) { sink(frame) })
+	}
+	return b.attachSink(call, primary, false)
+}
+
+// attachSink wires primary (and the recorder, if any) to the call. timed says
+// primary is a timedAdapter: the fan-out then has to pass timestamps on too,
+// or meowcaller would not see a TimedAudioSink and would re-time everything.
+func (b *MeowBackend) attachSink(call *meowcaller.Call, primary meowcaller.AudioSink, timed bool) (PCMSource, error) {
+	var sinks []meowcaller.AudioSink
+	if primary != nil {
+		sinks = append(sinks, primary)
 	}
 	if b.recordDir != "" {
 		path := filepath.Join(b.recordDir,
@@ -170,7 +216,11 @@ func (b *MeowBackend) attach(call *meowcaller.Call, sink PCMSink) (PCMSource, er
 	case 1:
 		call.Receive(sinks[0])
 	default:
-		call.Receive(multiSink(sinks))
+		if timed {
+			call.Receive(timedMultiSink{multiSink(sinks)})
+		} else {
+			call.Receive(multiSink(sinks))
+		}
 	}
 
 	bridge := newPCMBridge()
@@ -222,6 +272,62 @@ func (m multiSink) Close() error {
 	}
 	return firstErr
 }
+
+// timedMultiSink is a multiSink that also takes timestamped frames: the
+// timed sinks get them with the timestamp, the rest (the recorder) bare.
+type timedMultiSink struct{ multiSink }
+
+func (m timedMultiSink) WriteTimedFrame(ts uint32, frame []float32) error {
+	var firstErr error
+	for _, s := range m.multiSink {
+		var err error
+		if t, ok := s.(interface {
+			WriteTimedFrame(uint32, []float32) error
+		}); ok {
+			err = t.WriteTimedFrame(ts, frame)
+		} else {
+			err = s.WriteFrame(frame)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// timedAdapter turns a TimedPCMSink into a meowcaller sink. meowcaller as
+// patched by deploy/patch-vendor.sh calls WriteTimedFrame; an unpatched one
+// (a plain `go build` against the module cache) calls WriteFrame, and then
+// the timestamps are synthesised from the frame count — no gap information,
+// but still no re-clocking. The method set is matched structurally, so this
+// compiles whether or not the patch is there.
+type timedAdapter struct {
+	callID string
+	fn     TimedPCMSink
+	warned atomic.Bool
+	next   atomic.Uint32
+}
+
+func newTimedAdapter(callID string, fn TimedPCMSink) *timedAdapter {
+	return &timedAdapter{callID: callID, fn: fn}
+}
+
+func (a *timedAdapter) WriteTimedFrame(ts uint32, frame []float32) error {
+	a.fn(ts, frame)
+	return nil
+}
+
+func (a *timedAdapter) WriteFrame(frame []float32) error {
+	if !a.warned.Swap(true) {
+		log.Printf("calls: %s: meowcaller is not patched (deploy/patch-vendor.sh); "+
+			"timestamps are synthesised, lost audio will not be detected", a.callID)
+	}
+	ts := a.next.Add(uint32(len(frame))) - uint32(len(frame))
+	a.fn(ts, frame)
+	return nil
+}
+
+func (a *timedAdapter) Close() error { return nil }
 
 // pcmBridge is our audio going the other way: whatever the phone sends is
 // written in, and meowcaller pulls it out one 960-sample frame at a time.
